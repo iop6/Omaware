@@ -107,7 +107,7 @@ The main branch is always the next version in development, and its builds end in
 
 **To make a release:**
 
-1. In [CHANGELOG.md](../CHANGELOG.md), move the "Unreleased" notes under the new version number and date.
+1. Add the new version to the top of [CHANGELOG.md](../CHANGELOG.md): a heading with the version and date, and one short line per change.
 2. In `CMakeLists.txt`, set the version and remove the `-dev` suffix.
 3. Build and run the tests.
 4. Commit, then tag: `git tag -a vX.Y.Z -m "OmaWare X.Y.Z"`.
