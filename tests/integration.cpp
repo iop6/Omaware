@@ -572,7 +572,7 @@ private slots:
         QCOMPARE(power->property("text").toString(), QString(originalState == 1 ? "Pause" : "Resume"));
         QTest::mouseClick(window, Qt::LeftButton, Qt::NoModifier, center(power));
         QTRY_COMPARE(stateCodeOf(extraUuid_), toggledState); QTRY_VERIFY(!backend_->busy());
-        QCOMPARE(window->property("selectedUuid").toString(), uuid_); QVERIFY(console->hasFrame());
+        QCOMPARE(window->property("selectedUuid").toString(), uuid_); QTRY_VERIFY(console->hasFrame());   // its console was opened just above; the first picture arrives shortly
         QTRY_VERIFY((otherRow = rowFor(extraUuid_)) && otherRow->isVisible()); QTest::mouseClick(window, Qt::RightButton, Qt::NoModifier, center(otherRow)); QTRY_VERIFY(vmMenu->property("opened").toBool());
         QTRY_COMPARE(power->property("text").toString(), QString(toggledState == 1 ? "Pause" : "Resume"));
         QTest::mouseClick(window, Qt::LeftButton, Qt::NoModifier, center(power));

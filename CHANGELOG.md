@@ -12,6 +12,15 @@ All notable changes to OmaWare are listed here. The format follows
   instantly without using extra space; others are copied in the background with a progress bar
   and a Cancel button. Dropping one ISO opens Create VM with it chosen.
 
+- A download button at the bottom of the sidebar checks GitHub for a new version at any time.
+- Updating now asks first: a window shows what's new and warns that running VMs will be paused,
+  and **Update now** downloads, pauses them, installs and restarts.
+
+### Changed
+
+- Closing OmaWare always pauses running VMs, including when it restarts for an update. The
+  "Leave them running" setting is gone.
+
 ### Fixed
 
 - The ISO list in Create VM now shows the chosen ISO however it was picked (Browse, the ISO Shop or a drop).

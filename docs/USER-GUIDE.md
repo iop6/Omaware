@@ -9,6 +9,7 @@
 - [Snapshots](#snapshots)
 - [The ISO Shop](#the-iso-shop)
 - [Monitor, log and command prompt](#monitor-log-and-command-prompt)
+- [Updating OmaWare](#updating-omaware)
 - [Settings and themes](#settings-and-themes)
 - [Closing OmaWare](#closing-omaware)
 - [Keyboard shortcuts](#keyboard-shortcuts)
@@ -172,26 +173,32 @@ Deleting ISOs is quick, and always asks once in place before anything is removed
 
 **New VM** on a card or file opens the create dialog with that ISO chosen, the matching operating system selected (when your computer knows it) and a name suggested. OmaWare only contacts the publishers when you open the shop or press **Check for updates**.
 
+## Updating OmaWare
+
+The **download button** at the bottom of the sidebar checks GitHub for a new version at any time, and OmaWare also checks once a day (turn this off in **Settings → Updates**). When one is out, a window shows what's new and warns before anything happens: updating restarts OmaWare, so running VMs are paused first. **Update now** downloads the new version, checks it against the release's checksums, pauses your VMs, and restarts into it on the page you were on; then **Resume all** continues the VMs exactly where they left off. **Not now** changes nothing. The previous version is kept next to the app as `app.previous`.
+
+- A copy that wasn't installed from a release package (for example, built from source) can't update itself; the window links to the download instead.
+- If a VM can't be paused, the window says which one and offers **Update anyway** (it keeps running) or **Keep OmaWare open**.
+
 ## Settings and themes
 
 The theme buttons at the bottom of the sidebar switch between **following Omarchy** (when installed), **dark**, **light** and **hacker** (green on black). **Settings** has:
 
 - Text size: 100%, 115% or 130%.
 - **Storage:** where your VMs and ISOs are, with a button to open the folder.
-- **Updates:** your version, **Check now**, and whether OmaWare checks GitHub for new releases automatically (once a day). When an update is out, the sidebar offers **Update**; it downloads and checks the new version in the background, then **Restart now** switches to it in a moment and reopens the page you were on. Your VMs keep running. The version you had stays next to the app as `app.previous`.
+- **Updates:** your version, **Check for updates**, and whether OmaWare checks GitHub automatically (once a day). See [Updating OmaWare](#updating-omaware).
 - **Reduce motion**, which turns off animations.
-- **When OmaWare closes**: pause running VMs, or leave them running.
+- **When OmaWare closes**: a reminder that running VMs are always paused.
 - The OmaWare version.
 
 When following Omarchy, OmaWare reads the current Omarchy theme's colors and updates as soon as you change themes. It only reads the theme; it never changes anything in Omarchy.
 
 ## Closing OmaWare
 
-By default, closing OmaWare **pauses every running VM** it manages, then closes. A paused VM keeps its memory, so it continues exactly where it was.
+Closing OmaWare always **pauses every running VM** it manages, then closes; restarting for an update does the same. A paused VM keeps its memory, so it continues exactly where it was.
 
 - Next time you open OmaWare, those VMs are tagged `auto-paused` and a banner offers **Resume all**, or **Choose…** to pick which ones to resume. You can also resume any VM on its own.
 - If a VM can't be paused (for example, while a snapshot is being taken), OmaWare tells you and offers **Close anyway** or **Keep OmaWare open**.
-- **Settings → When OmaWare closes → Leave them running** turns this off.
 - If the computer restarts, paused VMs come back stopped and what was in their memory is lost, as with running VMs.
 - Only a normal close pauses VMs. If OmaWare crashes or is killed, they keep running.
 

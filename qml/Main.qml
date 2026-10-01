@@ -76,7 +76,7 @@ ApplicationWindow {
         if (pausingForExit) { close.accepted = false; return }
         // Pause running VMs first so they pick up where they left off next time; the window closes once that finishes.
         const running = backend.connected ? backend.domains.filter(function(row) { return row.owned && row.stateCode === 1 }) : []
-        if (closeMode !== "pause" || running.length === 0) return
+        if (running.length === 0) return
         close.accepted = false
         pausingForExit = true
         exitDialog.failures = []
@@ -143,7 +143,6 @@ ApplicationWindow {
     property var pendingVmAction: null
 
     // ---- Pause on close, and several VMs selected at once ----------------
-    property string closeMode: String(preferences.get("closeMode", "pause"))   // "pause" or "keep"
     property bool pausingForExit: false
     property bool exiting: false
     // Set when this copy was started by OmaWare itself after an update: reopen where you were.
@@ -303,7 +302,7 @@ ApplicationWindow {
         case "theme:omarchy": case "theme:dark": case "theme:light": case "theme:hacker": { const mode = command.key.split(":")[1]; theme.setMode(mode); preferences.set("theme", mode); break }
         case "testvm": if (backend.connected && !backend.busy) backend.createTest(); break
         case "isos": openShop(); break
-        case "updates": appearanceInfo.open(); updater.check(); break
+        case "updates": openUpdates(true); break
         case "activity": activityDialog.open(); break
         case "appearance": appearanceInfo.open(); break
         case "reconnect": backend.reconnect(); break
@@ -386,6 +385,7 @@ ApplicationWindow {
             if (!root.pausingForExit) return
             root.exitPaused = uuids
             preferences.set("exitPaused", JSON.stringify(uuids))
+            if (root.updatePhase === "pausing") { if (failures.length === 0) root.restartIntoUpdate(); else root.updateFailures = failures; return }
             if (failures.length === 0) { root.exiting = true; exitDialog.close(); Qt.callLater(root.close); return }
             exitDialog.failures = failures
         }
@@ -663,7 +663,7 @@ ApplicationWindow {
                             AppButton { visible: backend.domains.length > 0; text: "Reset filters"; tone: "quiet"; Layout.alignment: Qt.AlignHCenter; onClicked: { root.searchQuery = ""; root.stateFilter = 0 } }
                         }
                     }
-                    // A new OmaWare version: download it, then restart into it (VMs keep running).
+                    // A new OmaWare version: the update dialog explains what happens to running VMs before updating.
                     Rectangle {
                         objectName: "updateBanner"
                         visible: !root.sidebarRail && !updater.development && ["available", "downloading", "ready"].indexOf(updater.status) >= 0
@@ -680,9 +680,10 @@ ApplicationWindow {
                                 visible: updater.status !== "downloading"
                                 spacing: 6
                                 AppButton {
-                                    text: updater.status === "ready" ? "Restart now" : updater.canInstall ? "Update" : "Get it"; tone: "primary"; implicitHeight: 28; Layout.fillWidth: true
-                                    hint: updater.status === "ready" ? "Takes a moment. Your VMs keep running." : updater.canInstall ? "Download and check the new version" : "Open the releases page"
-                                    onClicked: updater.status === "ready" ? updater.installAndRestart() : updater.canInstall ? updater.download() : Qt.openUrlExternally(updater.page)
+                                    objectName: "updateBannerButton"
+                                    text: "Update…"; tone: "primary"; implicitHeight: 28; Layout.fillWidth: true
+                                    hint: "See what's new and update"
+                                    onClicked: root.openUpdates(false)
                                 }
                                 AppButton { text: "What's new"; tone: "quiet"; implicitHeight: 28; onClicked: Qt.openUrlExternally(updater.page) }
                             }
@@ -754,6 +755,16 @@ ApplicationWindow {
                         Layout.fillWidth: true; spacing: 2
                         AppButton { objectName: "openSettings"; text: "Settings"; tone: "quiet"; leftPadding: 0; rightPadding: 2; implicitWidth: 74; font.pixelSize: Math.round((11) * theme.textScale); hint: theme.status; onClicked: appearanceInfo.open() }
                         Item { Layout.fillWidth: true }
+                        AppButton {
+                            objectName: "checkUpdates"
+                            implicitWidth: 32; implicitHeight: 34; leftPadding: 7; rightPadding: 7
+                            iconName: "download"; tone: "quiet"
+                            readonly property bool waiting: ["available", "downloading", "ready"].indexOf(updater.status) >= 0
+                            ink: waiting ? theme.colors.accent : theme.colors.muted
+                            hint: waiting ? "OmaWare " + updater.latest + " is available" : "Check GitHub for a new version"
+                            onClicked: root.openUpdates(true)
+                            Rectangle { visible: parent.waiting; width: 7; height: 7; radius: 4; color: theme.colors.accent; anchors.right: parent.right; anchors.top: parent.top; anchors.margins: 5 }
+                        }
                         Repeater {
                             model: [{label: "Follow Omarchy", mode: "omarchy", icon: "monitor"}, {label: "Dark appearance", mode: "dark", icon: "moon"}, {label: "Light appearance", mode: "light", icon: "sun"}, {label: "Hacker appearance · green on black", mode: "hacker", icon: "terminal"}].filter(function(m) { return m.mode !== "omarchy" || theme.omarchyAvailable })
                             AppButton {
@@ -1113,10 +1124,52 @@ ApplicationWindow {
     NetworkDialog { id: networkDialog }
     IsoLibrary { id: isoLibrary; objectName: "isoLibrary" }
     Updater { id: updater; objectName: "updater" }
-    // Updates restart OmaWare without pausing VMs: they keep running, and the new copy reopens on the same page.
+    // Updating restarts OmaWare: running VMs are paused first (see applyUpdate), and the new copy reopens on the same page.
     Connections {
         target: updater
-        function onQuitRequested() { preferences.set("restoreNavigation", root.navigation); root.exiting = true; Qt.callLater(root.close) }
+        // VMs were already paused (or you chose to update anyway); anything else still pauses on the way out.
+        function onQuitRequested() { preferences.set("restoreNavigation", root.navigation); if (root.updatePhase === "restarting") root.exiting = true; Qt.callLater(root.close) }
+        function onChanged() {
+            if (root.updating && root.updatePhase === "" && updater.status === "ready") root.applyUpdate()
+            else if (updater.status === "error" && root.updatePhase !== "pausing") { root.updating = false; root.updatePhase = "" }
+        }
+    }
+    // Updating: download, pause running VMs, swap the new version in and restart. Nothing happens without "Update now".
+    property bool updating: false           // "Update now" was pressed; apply as soon as the download is ready
+    property string updatePhase: ""         // "pausing" or "restarting" while applying
+    property var updateFailures: []
+    property int updateRunning: 0           // how many VMs were running when applying started
+    readonly property int runningOwned: backend.connected ? backend.domains.filter(function(row) { return row.owned && row.stateCode === 1 }).length : 0
+    function openUpdates(check) {
+        updateDialog.open()
+        if (check && !updater.development && ["checking", "downloading", "ready"].indexOf(updater.status) < 0 && updatePhase === "") updater.check()
+    }
+    function startUpdate() {
+        updateFailures = []; updating = true
+        if (updater.status === "ready") applyUpdate()
+        else updater.download()
+    }
+    function applyUpdate() {
+        updateRunning = runningOwned
+        if (runningOwned === 0) { restartIntoUpdate(); return }
+        updatePhase = "pausing"; pausingForExit = true
+        display.releaseInput()
+        backend.pauseForExit()
+    }
+    function restartIntoUpdate() {
+        updateFailures = []; updatePhase = "restarting"; pausingForExit = false
+        if (!updater.installAndRestart()) { updatePhase = ""; updating = false }
+    }
+    function cancelUpdate() { updating = false; updatePhase = ""; updateFailures = []; pausingForExit = false }
+    UpdateDialog {
+        id: updateDialog
+        updater: updater
+        runningCount: root.updatePhase === "" ? root.runningOwned : root.updateRunning
+        phase: root.updatePhase; failures: root.updateFailures
+        onUpdateNow: root.startUpdate()
+        onUpdateAnyway: root.restartIntoUpdate()
+        onStay: { root.cancelUpdate(); close() }
+        onClosed: if (root.updatePhase === "") root.updating = false
     }
     // A quiet daily check, unless turned off in Settings. Development builds never update themselves.
     property bool autoUpdate: preferences.get("autoUpdateCheck", true) !== false && preferences.get("autoUpdateCheck", true) !== "false"
@@ -1373,17 +1426,14 @@ ApplicationWindow {
                         : updater.status === "upToDate" ? "✓ You have the latest version (" + updater.current + ")."
                         : updater.status === "available" ? "OmaWare " + updater.latest + " is available." + (updater.canInstall ? "" : " Download it from the releases page.")
                         : updater.status === "downloading" ? "Downloading OmaWare " + updater.latest + "… " + Math.round(updater.progress * 100) + "%"
-                        : updater.status === "ready" ? "OmaWare " + updater.latest + " is ready. Restarting takes a moment; your VMs keep running."
+                        : updater.status === "ready" ? "OmaWare " + updater.latest + " is downloaded and ready to install."
                         : updater.status === "error" ? updater.error
                         : "You have OmaWare " + updater.current + "."
                 }
                 Flow {
                     Layout.fillWidth: true
                     spacing: 6
-                    AppButton { objectName: "updateCheck"; visible: !updater.development && ["idle", "upToDate", "error"].indexOf(updater.status) >= 0; text: "Check now"; tone: "quiet"; implicitHeight: 28; onClicked: updater.check() }
-                    AppButton { objectName: "updateDownload"; visible: updater.status === "available" && updater.canInstall; text: "Download update"; tone: "primary"; implicitHeight: 28; onClicked: updater.download() }
-                    AppButton { objectName: "updateRestart"; visible: updater.status === "ready"; text: "Restart now"; tone: "primary"; implicitHeight: 28; onClicked: updater.installAndRestart() }
-                    AppButton { visible: !!updater.latest && updater.status !== "upToDate"; text: "What's new"; tone: "quiet"; implicitHeight: 28; onClicked: Qt.openUrlExternally(updater.page) }
+                    AppButton { objectName: "updateCheck"; visible: !updater.development; text: ["available", "downloading", "ready"].indexOf(updater.status) >= 0 ? "Update…" : "Check for updates"; tone: ["available", "downloading", "ready"].indexOf(updater.status) >= 0 ? "primary" : "quiet"; implicitHeight: 28; onClicked: { appearanceInfo.close(); root.openUpdates(true) } }
                 }
                 AppCheckBox {
                     objectName: "autoUpdateCheck"; visible: !updater.development
@@ -1395,11 +1445,7 @@ ApplicationWindow {
                 Label { visible: !updater.development; text: "Once a day, OmaWare asks GitHub whether a new version is out."; color: theme.colors.muted; Layout.fillWidth: true; wrapMode: Text.WordWrap; font.pixelSize: Math.round(10 * theme.textScale) }
             }
             Label { text: "When OmaWare closes" }
-            AppSelect { objectName: "closeMode"; Accessible.name: "What happens to running VMs when OmaWare closes"; Layout.fillWidth: true; model: ["Pause running VMs", "Leave them running"]
-                currentIndex: root.closeMode === "keep" ? 1 : 0
-                onActivated: { root.closeMode = currentIndex === 1 ? "keep" : "pause"; preferences.set("closeMode", root.closeMode) }
-            }
-            Label { text: root.closeMode === "pause" ? "Paused VMs keep their memory and continue exactly where they were when you resume them. They are lost if the computer restarts." : "VMs keep running in the background after OmaWare closes."; color: theme.colors.muted; Layout.fillWidth: true; wrapMode: Text.WordWrap; font.pixelSize: Math.round((11) * theme.textScale) }
+            Label { objectName: "closeNote"; text: "Running VMs are paused, including when OmaWare restarts for an update. Paused VMs keep their memory and continue exactly where they were when you resume them, but not after the computer restarts."; color: theme.colors.muted; Layout.fillWidth: true; wrapMode: Text.WordWrap; font.pixelSize: Math.round((11) * theme.textScale) }
             Label { text: theme.status; color: theme.colors.muted; Layout.fillWidth: true; wrapMode: Text.WordWrap; font.pixelSize: Math.round((12) * theme.textScale)}
             Label { text: ": opens the command prompt. ? shows every shortcut."; color: theme.colors.muted; Layout.fillWidth: true; wrapMode: Text.WordWrap; font.pixelSize: Math.round((11) * theme.textScale)}
             Label { objectName: "appVersion"; text: "OmaWare" + (Qt.application.version ? " " + Qt.application.version : ""); color: theme.colors.muted; Layout.fillWidth: true; font.pixelSize: Math.round((11) * theme.textScale)}

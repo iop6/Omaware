@@ -13,12 +13,12 @@ class QNetworkReply;
 // check() reads the latest release; download() fetches its Linux package next to the app folder,
 // checks it against the release's SHA256SUMS and every file inside against the package's own
 // checksums, and unpacks it. install() swaps the new folder in (keeping the old one as
-// "<folder>.previous"), and restart() starts the new version and asks this one to quit. Running VMs
-// are not touched. Development builds ("-dev") and installs that aren't a self-contained folder
+// "<folder>.previous"), and restart() starts the new version and asks this one to quit. The window
+// pauses running VMs before calling it, as it does whenever OmaWare closes. Development builds ("-dev") and installs that aren't a self-contained folder
 // (for example a build installed to ~/.local) are never changed; they only point to the releases page.
 class Updater : public QObject {
     Q_OBJECT
-    Q_PROPERTY(QString current READ current CONSTANT)
+    Q_PROPERTY(QString current READ current NOTIFY changed)
     Q_PROPERTY(QString latest READ latest NOTIFY changed)
     // idle, checking, upToDate, available, downloading, ready, error
     Q_PROPERTY(QString status READ status NOTIFY changed)
@@ -28,7 +28,7 @@ class Updater : public QObject {
     Q_PROPERTY(double progress READ progress NOTIFY changed)
     // Whether this copy can update itself in place.
     Q_PROPERTY(bool canInstall READ canInstall NOTIFY changed)
-    Q_PROPERTY(bool development READ development CONSTANT)
+    Q_PROPERTY(bool development READ development NOTIFY changed)
 public:
     explicit Updater(QObject *parent = nullptr);
     QString current() const { return current_; }
@@ -52,7 +52,7 @@ public:
 
     // For tests: another app folder, version or release feed.
     void setAppDir(const QString &dir) { appDir_ = dir; emit changed(); }
-    void setCurrent(const QString &version) { current_ = version; }
+    void setCurrent(const QString &version) { current_ = version; emit changed(); }
     void setFeed(const QUrl &url) { feed_ = url; }
     QString appDir() const { return appDir_; }
 

@@ -54,6 +54,7 @@ Canvas {
         case "sun": circle(12, 12, 4); for (let a = 0; a < 8; ++a) { let t = a * Math.PI / 4; line([12 + 7 * Math.cos(t), 12 + 7 * Math.sin(t), 12 + 10 * Math.cos(t), 12 + 10 * Math.sin(t)]) } break
         case "moon": ctx.beginPath(); ctx.arc(12, 12, 9, -.5, 4.1); ctx.quadraticCurveTo(7, 15, 19.9, 7.7); ctx.stroke(); break
         case "info": circle(12, 12, 9); line([12, 11, 12, 17]); circle(12, 7, .5); break
+        case "download": line([12, 3, 12, 15]); line([7, 10, 12, 15, 17, 10]); line([4, 20, 20, 20]); break
         case "check": line([5, 12, 10, 17, 20, 6]); break
         case "shield": line([12, 3, 20, 6, 20, 12, 12, 21, 4, 12, 4, 6, 12, 3]); line([9, 12, 11, 14, 15, 10]); break
         case "terminal": box(2, 4, 20, 16); line([6, 9, 10, 12, 6, 15]); line([12, 16, 17, 16]); break

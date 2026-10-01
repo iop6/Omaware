@@ -12,7 +12,7 @@ OmaWare is a virtual machine manager for Linux desktops. It runs QEMU/KVM virtua
 - **Containment** for VMs running untrusted software: isolated networks only, no shared folders, clipboard or USB passthrough.
 - **Monitor:** live CPU, memory, disk and network use for your computer and every VM.
 - **Organized workspace:** favorites, folders, tags, search, a command prompt, keyboard shortcuts, and actions on several VMs at once.
-- **Pause on close:** running VMs are paused when OmaWare closes and can be resumed next time.
+- **Pause on close:** running VMs are always paused when OmaWare closes (updates included) and can be resumed next time.
 - **Themes:** follow Omarchy, dark, light or hacker (green on black), with larger text and reduced-motion options.
 
 ## Install
@@ -52,7 +52,7 @@ If the window stays blank on a machine without working GPU drivers, start OmaWar
 
 ## Updating
 
-OmaWare checks GitHub for a new release once a day (turn this off in **Settings → Updates**). When one is out, the sidebar says so: **Update** downloads it in the background and checks it against the release's checksums, and **Restart now** switches to it in a moment, right back on the page you were on. Your VMs keep running throughout, and the previous version is kept next to the app as `app.previous`. Copies built from source update by building the new version.
+The **download button** at the bottom of the sidebar checks GitHub for a new version at any time, and OmaWare also checks once a day (turn this off in **Settings → Updates**). When one is out, a window shows what's new and warns before anything happens: updating restarts OmaWare, so running VMs are paused first. **Update now** downloads the new version, checks it against the release's checksums, pauses your VMs, and restarts into it on the page you were on; then **Resume all** continues the VMs exactly where they left off. **Not now** changes nothing. The previous version is kept next to the app as `app.previous`. Copies built from source update by building the new version.
 
 ## Good to know
 

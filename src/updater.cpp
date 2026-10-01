@@ -173,7 +173,7 @@ bool Updater::install() {
 }
 bool Updater::restart() {
     const auto launcher = QFileInfo::exists(appDir_ + "/omaware.sh") ? appDir_ + "/omaware.sh" : appDir_ + "/omaware";
-    if (!QProcess::startDetached(launcher, {"--restarted"})) { set("error", "OmaWare couldn't start again. Start it yourself; your VMs are still running."); return false; }
+    if (!QProcess::startDetached(launcher, {"--restarted"})) { set("error", "OmaWare couldn't start again. Start it yourself; your VMs are paused and can be resumed there."); return false; }
     emit quitRequested();
     return true;
 }

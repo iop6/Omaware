@@ -10,7 +10,10 @@
 #include "isolibrary.h"
 #include "updater.h"
 #include "paths.h"
+#include <QCryptographicHash>
+#include <QJsonArray>
 #include <QJsonDocument>
+#include <QJsonObject>
 #include <QtEndian>
 #include <QtTest>
 #include <QProcess>
@@ -1529,7 +1532,7 @@ private slots:
             return root ? find(root) : nullptr;
         };
         auto press = [&](QQuickWindow *window, QString name, Qt::KeyboardModifiers modifiers = Qt::NoModifier) {
-            auto target = item(window->contentItem(), name);
+            auto target = item(window->contentItem()->parentItem() ? window->contentItem()->parentItem() : window->contentItem(), name);
             if (!target || !target->isVisible() || !target->isEnabled()) return false;
             QTest::mouseClick(window, Qt::LeftButton, modifiers, target->mapToScene({target->width() / 2, target->height() / 2}).toPoint()); return true;
         };
@@ -1571,29 +1574,59 @@ private slots:
             QTRY_VERIFY(state(a) == VIR_DOMAIN_RUNNING && state(b) == VIR_DOMAIN_RUNNING); QTRY_VERIFY(!backend->busy());
             QTRY_VERIFY(!item(window->contentItem(), "exitPausedBanner")->isVisible());
             QTRY_VERIFY(window->property("exitPaused").toList().isEmpty());
-            // "Leave them running" closes without touching VMs.
-            window->setProperty("closeMode", "keep");
+            // There is no setting to leave VMs running: closing always pauses them. (The test skips it
+            // here only to keep both VMs running for the update below.)
+            QVERIFY(!item(window->contentItem()->parentItem(), "closeMode"));
+            window->setProperty("exiting", true);
             window->close(); QTRY_VERIFY(!window->isVisible());
-            QTest::qWait(500); QCOMPARE(state(a), VIR_DOMAIN_RUNNING);
+            QCOMPARE(state(a), VIR_DOMAIN_RUNNING);
         }
         {
-            // Restarting into an update closes OmaWare without pausing VMs, starts the new copy and reopens the same page.
+            // Updating: a button checks GitHub (a local feed here), the dialog warns that running VMs will be
+            // paused, and "Update now" downloads, pauses them, swaps the new version in and restarts on the same page.
             QQmlApplicationEngine engine; connect(&engine, &QQmlEngine::warnings, this, [&](QList<QQmlError> items) { warnings += items; });
             auto window = open(engine); QVERIFY(window);
             QTRY_VERIFY(item(window->contentItem(), "vmRow_" + b));
             window->setProperty("navigation", "networks");
-            QTemporaryDir bundle; QVERIFY(bundle.isValid());
-            const auto marker = bundle.filePath("started");
-            { QFile launcher(bundle.filePath("omaware.sh")); QVERIFY(launcher.open(QIODevice::WriteOnly)); launcher.write(("#!/bin/sh\necho \"$@\" > '" + marker + "'\n").toUtf8()); launcher.close();
-              launcher.setPermissions(launcher.permissions() | QFile::ExeOwner); }
-            auto updater = window->findChild<QObject *>("updater"); QVERIFY(updater);
-            qobject_cast<Updater *>(updater)->setAppDir(bundle.path());
-            QVERIFY(QMetaObject::invokeMethod(updater, "restart"));
-            QTRY_VERIFY(!window->isVisible());
+            QTemporaryDir release; QVERIFY(release.isValid());
+            auto write = [](const QString &path, const QByteArray &data, bool executable = false) {
+                QDir().mkpath(QFileInfo(path).absolutePath()); QFile f(path); f.open(QIODevice::WriteOnly); f.write(data); f.close();
+                if (executable) f.setPermissions(f.permissions() | QFile::ExeOwner);
+            };
+            auto sums = [](const QString &root, const QStringList &names) {
+                QByteArray out;
+                for (const auto &name : names) { QFile f(root + "/" + name); f.open(QIODevice::ReadOnly); out += QCryptographicHash::hash(f.readAll(), QCryptographicHash::Sha256).toHex() + "  " + name.toUtf8() + "\n"; }
+                QFile list(root + "/SHA256SUMS"); list.open(QIODevice::WriteOnly); list.write(out);
+            };
+            const auto app = release.filePath("app"), marker = release.filePath("started");
+            write(app + "/omaware", "old", true); sums(app, {"omaware"});
+            const auto stage = release.filePath("build/omaware-9.9.9-linux-x86_64");
+            write(stage + "/omaware", "new", true); write(stage + "/omaware.sh", ("#!/bin/sh\necho \"$@\" > '" + marker + "'\n").toUtf8(), true);
+            sums(stage, {"omaware", "omaware.sh"});
+            QProcess tar; tar.start("tar", {"-czf", release.filePath("omaware-9.9.9-linux-x86_64.tar.gz"), "-C", release.filePath("build"), "omaware-9.9.9-linux-x86_64"}); QVERIFY(tar.waitForFinished()); QCOMPARE(tar.exitCode(), 0);
+            QFile package(release.filePath("omaware-9.9.9-linux-x86_64.tar.gz")); QVERIFY(package.open(QIODevice::ReadOnly));
+            write(release.filePath("SHA256SUMS"), QCryptographicHash::hash(package.readAll(), QCryptographicHash::Sha256).toHex() + "  omaware-9.9.9-linux-x86_64.tar.gz\n");
+            write(release.filePath("release.json"), QJsonDocument(QJsonObject{{"tag_name", "v9.9.9"}, {"html_url", "https://example/release"}, {"body", "## Changes\n- Something new"},
+                {"assets", QJsonArray{QJsonObject{{"name", "omaware-9.9.9-linux-x86_64.tar.gz"}, {"browser_download_url", QUrl::fromLocalFile(release.filePath("omaware-9.9.9-linux-x86_64.tar.gz")).toString()}},
+                                      QJsonObject{{"name", "SHA256SUMS"}, {"browser_download_url", QUrl::fromLocalFile(release.filePath("SHA256SUMS")).toString()}}}}}).toJson());
+            auto updater = qobject_cast<Updater *>(window->findChild<QObject *>("updater")); QVERIFY(updater);
+            updater->setAppDir(app); updater->setCurrent("1.0.0"); updater->setFeed(QUrl::fromLocalFile(release.filePath("release.json")));
+            // The sidebar button checks and shows the dialog with the warning; nothing changes until "Update now".
+            QVERIFY(press(window, "checkUpdates"));
+            QTRY_COMPARE(updater->status(), QString("available"));
+            auto dialog = window->findChild<QObject *>("updateDialog"); QVERIFY(dialog); QTRY_VERIFY(dialog->property("opened").toBool());
+            const auto warning = dialog->findChild<QObject *>("updateWarningText")->property("text").toString();
+            QVERIFY2(warning.contains("2 running VMs will be paused"), qPrintable(warning));
+            QVERIFY(capture(window, "update-prompt"));
+            QTest::qWait(300); QCOMPARE(state(a), VIR_DOMAIN_RUNNING);
+            QTRY_VERIFY(ready(window, "updateNow")); QVERIFY(press(window, "updateNow"));
+            QTRY_VERIFY_WITH_TIMEOUT(!window->isVisible(), 20000);
+            QCOMPARE(state(a), VIR_DOMAIN_PAUSED); QCOMPARE(state(b), VIR_DOMAIN_PAUSED);
             QTRY_VERIFY(QFile::exists(marker));
             QFile started(marker); QVERIFY(started.open(QIODevice::ReadOnly)); QCOMPARE(started.readAll().trimmed(), QByteArray("--restarted"));
-            QTest::qWait(500); QCOMPARE(state(a), VIR_DOMAIN_RUNNING); QCOMPARE(state(b), VIR_DOMAIN_RUNNING);
+            QFile installed(app + "/omaware"); QVERIFY(installed.open(QIODevice::ReadOnly)); QCOMPARE(installed.readAll(), QByteArray("new"));
             QCOMPARE(Workspace().get("restoreNavigation").toString(), QString("networks"));
+            QCOMPARE(QJsonDocument::fromJson(Workspace().get("exitPaused").toString().toUtf8()).array().size(), 2);
         }
         {
             // The new copy reopens on that page.
@@ -1601,7 +1634,16 @@ private slots:
             auto window = open(engine); QVERIFY(window);
             window->setProperty("restarted", true);
             QTRY_COMPARE(window->property("navigation").toString(), QString("networks"));
-            window->setProperty("closeMode", "keep"); window->close(); QTRY_VERIFY(!window->isVisible());
+            // The VMs paused for the update are offered for resuming.
+            QTRY_VERIFY(item(window->contentItem(), "exitPausedBanner") && item(window->contentItem(), "exitPausedBanner")->isVisible());
+            // The Networks page refreshes as it opens; wait until that's done so the click isn't ignored.
+            QTRY_VERIFY(!backend->busy() && ready(window, "resumeAllPaused")); QTest::qWait(500);
+            QTRY_VERIFY(!backend->busy()); QVERIFY(press(window, "resumeAllPaused"));
+            QTRY_VERIFY2(state(a) == VIR_DOMAIN_RUNNING && state(b) == VIR_DOMAIN_RUNNING, qPrintable(QString("%1 %2 busy=%3 marked=%4 error=%5").arg(state(a)).arg(state(b)).arg(backend->busy()).arg(window->property("marked").toList().size()).arg(window->property("operationError").toString())));
+            QTRY_VERIFY(!backend->busy());
+            // Closing pauses them again.
+            window->close(); QTRY_VERIFY_WITH_TIMEOUT(!window->isVisible(), 20000);
+            QCOMPARE(state(a), VIR_DOMAIN_PAUSED); QCOMPARE(state(b), VIR_DOMAIN_PAUSED);
         }
         QGuiApplication::setQuitOnLastWindowClosed(true);
         QVERIFY2(warnings.isEmpty(), qPrintable(warnings.isEmpty() ? QString{} : warnings.first().toString()));
