@@ -103,4 +103,14 @@ Omarchy colors.toml ── file watcher ── toml++ ── Theme ── QML co
 
 ## Releasing
 
-See [Versions](../README.md#versions) in the README.
+The main branch is always the next version in development, and its builds end in `-dev` (for example `1.1.0-dev`). Each finished version is a git tag (`v1.0.0`) and a [GitHub Release](https://github.com/iop6/Omaware/releases) with release notes, a ready-to-run app, a source archive and checksums. The version is set once, in `CMakeLists.txt`; `omaware --version` and the Settings panel show it. [CHANGELOG.md](../CHANGELOG.md) lists what changed in each version.
+
+**To make a release:**
+
+1. In [CHANGELOG.md](../CHANGELOG.md), move the "Unreleased" notes under the new version number and date.
+2. In `CMakeLists.txt`, set the version and remove the `-dev` suffix.
+3. Build and run the tests.
+4. Commit, then tag: `git tag -a vX.Y.Z -m "OmaWare X.Y.Z"`.
+5. Build the app package (the binary, its private LibVNCClient in `lib/`, `vnc-abi-test`, `packaging/omaware.sh` and `packaging/install.sh`, the license files and a `SHA256SUMS` covering them) and the source archive, and publish them with a `SHA256SUMS` for both as the GitHub Release for the tag. The built-in updater looks for `omaware-X.Y.Z-linux-x86_64.tar.gz` and `SHA256SUMS` there.
+6. Set `CMakeLists.txt` to the next version, put the `-dev` suffix back, and commit.
+
