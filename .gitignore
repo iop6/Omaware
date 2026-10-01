@@ -1,0 +1,10 @@
+/build*/
+/.cache/
+*.qcow2
+*.raw
+*.iso
+*.vmdk
+*.log
+*.ppm
+/artifacts/
+__pycache__/

@@ -1,0 +1,45 @@
+Subject: [PATCH 2/2] libvncclient: handle QEMU key ACK before pixel bounds
+Author: Omaware contributors
+Date: 2026-09-27
+Upstream-Status: Not submitted; local compatibility fix
+License: GPL-2.0-or-later (same as modified upstream file)
+Base: LibVNCServer-0.9.15 9b54b1ec32731bd23158ca014dc18014db4194c3
+Depends-On: 041ea576c3dddd6c7169935aaf8889673024fbfc
+
+QEMU's set_encodings() sends its ExtendedKeyEvent capability ACK before
+vnc_desktop_resize(). The ACK contains current server surface dimensions,
+which may exceed the dimensions sent in ServerInit. It has no pixel data.
+Handle it with the other pseudo-rectangles before validating pixel bounds.
+Keep ordinary framebuffer rectangle validation unchanged.
+
+The associated socketpair regression fails with both clean 0.9.15 and the
+screen-ID-zero backport alone, and passes with this additional fix. This is
+an original local patch, not a backport of an upstream commit.
+
+--- a/src/libvncclient/rfbclient.c
++++ b/src/libvncclient/rfbclient.c
+@@ -2127,6 +2127,13 @@
+ 	continue;
+       }
+       
++      /* A capability ACK has no pixels. QEMU can send its new surface size
++       * here before sending the corresponding framebuffer resize. */
++      if (rect.encoding == rfbEncodingQemuExtendedKeyEvent) {
++        SetClient2Server(client, rfbQemuEvent);
++        continue;
++      }
++
+       if (rect.encoding == rfbEncodingKeyboardLedState) {
+           /* OK! We have received a keyboard state message!!! */
+           client->KeyboardLedStateEnabled = 1;
+@@ -2533,10 +2540,6 @@
+      }
+ 
+ #endif
+-
+-      case rfbEncodingQemuExtendedKeyEvent:
+-        SetClient2Server(client, rfbQemuEvent);
+-        break;
+ 
+       default:
+ 	 {

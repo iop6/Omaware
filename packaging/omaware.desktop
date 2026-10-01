@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=OmaWare
+GenericName=Virtual Machine Manager
+Comment=Run and manage QEMU/KVM virtual machines
+Exec=omaware
+Icon=computer
+Terminal=false
+Categories=System;Emulator;
+Keywords=vm;virtual;qemu;kvm;libvirt;snapshot;
