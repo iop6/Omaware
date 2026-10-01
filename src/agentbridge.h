@@ -113,6 +113,10 @@ private:
     void deleteLab(const QString &slug, Reply reply);
     void setCable(const QVariantMap &vm, const QVariantMap &args, Reply reply);
 
+    void managementTool(const QString &tool, const QVariantMap &vm, const QVariantMap &args, Reply reply);
+    void waitForVm(const QVariantMap &vm, const QVariantMap &args, Reply reply);
+    void transferFile(const QVariantMap &vm, const QVariantMap &args, Reply reply);
+
     // Building an approved lab.
     void startBuild(const QString &login, const QString &user, const QString &password);
     void buildStep(int index);

@@ -7,6 +7,7 @@
 #include "labs.h"
 #include "logins.h"
 #include "paths.h"
+#include "mcpserver.h"
 #include <QCoreApplication>
 #include <QDateTime>
 #include <QDir>
@@ -136,6 +137,8 @@ void AgentBridge::markScreen(const QString &uuid, const QString &name) {
 
 // ---- Calls into OmaWare -----------------------------------------------------------------------
 void AgentBridge::call(const QString &op, QVariantMap input, Done done, int attempt) {
+    if (!enabled_) { done(false, {{"message", "AI agent access was turned off."}}); return; }
+    input["agentRequest"] = true;
     const auto tag = QUuid::createUuid().toString(QUuid::WithoutBraces);
     input["requestTag"] = tag;
     pending_[tag] = done;
@@ -146,6 +149,8 @@ void AgentBridge::call(const QString &op, QVariantMap input, Done done, int atte
     QTimer::singleShot(400, this, [this, op, input, done, attempt] { call(op, input, done, attempt + 1); });
 }
 void AgentBridge::callAgent(const QString &op, QVariantMap input, Done done) {
+    if (!enabled_) { done(false, {{"message", "AI agent access was turned off."}}); return; }
+    input["agentRequest"] = true;
     const auto tag = QUuid::createUuid().toString(QUuid::WithoutBraces);
     input["requestTag"] = tag;
     pending_[tag] = done;
@@ -187,6 +192,7 @@ void AgentBridge::answer(const QString &id, bool yes) {
 void AgentBridge::handle(const QString &tool, const QVariantMap &args, Reply reply) {
     if (!enabled_ && tool != "ping") { reply(failure("AI agent access is turned off in OmaWare's Settings.")); return; }
     QString error;
+    if (!Mcp::validateManagementArguments(tool, args, error)) { reply(failure(error, {{"code", "invalid_argument"}})); return; }
     auto vmArg = [&]() { return findVm(args.value("vm").toString(), error); };
     if (tool == "ping") { reply(success({{"version", QCoreApplication::applicationVersion()}})); return; }
     if (tool == "omaware_overview") { overview(reply); return; }
@@ -196,6 +202,9 @@ void AgentBridge::handle(const QString &tool, const QVariantMap &args, Reply rep
     const auto vm = vmArg();
     if (vm.isEmpty()) { reply(failure(error)); return; }
     const auto uuid = vm["uuid"].toString(), name = vm["short"].toString();
+    if (QStringList{"vm_details", "diagnose_vm", "update_vm_resources", "clone_vm", "manage_iso", "manage_network_adapter"}.contains(tool)) { managementTool(tool, vm, args, reply); return; }
+    if (tool == "wait_for_vm") { waitForVm(vm, args, reply); return; }
+    if (tool == "transfer_file") { transferFile(vm, args, reply); return; }
     if (tool == "vm_power") {
         static const QMap<QString, QString> actions{{"start", "start"}, {"shutdown", "shutdown"}, {"force_off", "force-off"}, {"pause", "pause"}, {"resume", "resume"}, {"restart", "restart"}};
         const auto action = actions.value(args.value("action").toString());
@@ -451,6 +460,8 @@ void AgentBridge::runOverSsh(const QVariantMap &vm, const QVariantMap &lab, cons
             for (const auto &ip : nic["ips"].toList()) if (address.isEmpty()) address = ip.toString();
         }
         if (address.isEmpty()) { reply(failure(vm["short"].toString() + " has no address OmaWare can reach yet. It may still be starting (wait a minute), or it's only on isolated networks; then use its screen.")); return; }
+        QString eligibilityError;
+        if (!enabled_ || findVm(vm["uuid"].toString(), eligibilityError).isEmpty()) { reply(failure("Agent access or VM eligibility changed.")); return; }
         const auto slug = lab["slug"].toString(), user = lab["user"].toString();
         if (!CloudSeed::validUser(user) || !QRegularExpression("^[0-9.]+$").match(address).hasMatch()) { reply(failure("The lab's login details are damaged.")); return; }
         auto process = new QProcess(this);

@@ -27,6 +27,7 @@
 #include <QJsonDocument>
 #include <QNetworkInterface>
 #include <QProcess>
+#include <QStorageInfo>
 #include <QLockFile>
 #include <QRegularExpression>
 #include <QStandardPaths>
@@ -570,6 +571,7 @@ void VmWorker::manage(QString op, QVariantMap in) {
     const auto uuid = in["uuid"].toString();
     Domain domain(virDomainLookupByUUIDString(conn_, uuid.toUtf8().constData()), virDomainFree);
     if (!domain) { done(false, lastError("Find VM")); return; }
+    if (in.value("agentRequest").toBool() && (!owned(domain.get()) || virDomainIsPersistent(domain.get()) != 1 || Containment::enabled(xmlOf(domain.get())))) { done(false, "Agents require an owned, persistent, non-contained VM."); return; }
     const bool active = virDomainIsActive(domain.get()) == 1;
     if (op == "stats") {
         virDomainInfo info{}; QVariantMap result{{"uuid", uuid}, {"active", active}};
@@ -645,6 +647,73 @@ void VmWorker::manage(QString op, QVariantMap in) {
         done(true, "Checkpoints loaded", {{"uuid", uuid}, {"items", rows}, {"currentId", history["currentId"]}, {"storage", Checkpoints::storage(conn_, uuid)}, {"blocker", createBlocker}, {"restoreBlocker", restoreBlocker}}); return;
     }
     if (!owned(domain.get()) || virDomainIsPersistent(domain.get()) != 1) { done(false, "This operation requires an OmaWare-managed persistent VM."); return; }
+    // Agent-originated operations recheck policy on the worker, not just cached inventory.
+    if (in.value("agentRequest").toBool() && Containment::enabled(xml)) { done(false, "Contained VMs cannot be accessed by agents."); return; }
+    if (op == "vm.readiness") {
+        int state = 0, reason = 0;
+        const bool running = virDomainGetState(domain.get(), &state, &reason, 0) == 0 && state == VIR_DOMAIN_RUNNING;
+        bool agentReady = false;
+        if (running && in["probeAgent"].toBool()) {
+            char *raw = virDomainQemuAgentCommand(domain.get(), "{\"execute\":\"guest-ping\"}", 2, 0);
+            if (raw) { agentReady = QJsonDocument::fromJson(raw).object().contains("return"); free(raw); }
+        }
+        done(true, "Readiness observed.", {{"running", running}, {"guest_agent", agentReady}}); return;
+    }
+    if (op == "vm.details") {
+        QString failure;
+        auto details = DomainConfig::describe(xml, failure);
+        if (!failure.isEmpty()) { done(false, failure); return; }
+        auto live = active ? DomainConfig::describe(xmlOf(domain.get(), true), failure) : details;
+        PendingChanges pending(uuid);
+        details["active"] = active;
+        details["liveInterfaces"] = live["interfaces"];
+        details["agentConnected"] = active && live["agentConnected"].toBool();
+        details["changes"] = pending.items(xml);
+        details["pendingConflict"] = !pending.matches(xml);
+        QString status;
+        QVariantList options;
+        for (const auto &v : NetworkCatalog::discover(conn_, status))
+            if (!in.value("agentRequest").toBool() || v.toMap()["id"] == "user" || v.toMap()["managed"].toBool()) options.append(v);
+        details["networkOptions"] = options;
+        // Inspect metadata only, on the worker thread. Never read disk contents or host logs.
+        QVariantList diskChecks;
+        for (const auto &value : details["disks"].toList()) {
+            const auto disk = value.toMap();
+            const auto source = disk["source"].toString();
+            QVariantMap check{{"target", disk["target"]}, {"device", disk["device"]}};
+            if (source.isEmpty() || disk["type"] != "file") {
+                check["checked"] = false;
+                check["reason"] = source.isEmpty() ? "No media attached" : "Not a local file-backed disk";
+            } else {
+                QFileInfo file(source);
+                check["checked"] = true;
+                check["exists"] = file.exists();
+                check["readable"] = file.isReadable();
+                if (file.exists()) check["file_bytes"] = file.size();
+                QStorageInfo storage(file.absolutePath());
+                if (storage.isValid() && storage.isReady()) {
+                    check["filesystem_available_bytes"] = storage.bytesAvailable();
+                    check["filesystem_read_only"] = storage.isReadOnly();
+                }
+            }
+            diskChecks.append(check);
+        }
+        details["diskDiagnostics"] = diskChecks;
+        done(true, "VM configuration loaded.", details); return;
+    }
+    if (op == "adapter.save") {
+        if (in.value("agentRequest").toBool() && !in["remove"].toBool()) {
+            QString status; bool allowed = false;
+            for (const auto &v : NetworkCatalog::discover(conn_, status)) {
+                const auto choice = v.toMap();
+                if (choice["id"] == in["networkId"] && (choice["id"] == "user" || choice["managed"].toBool())) allowed = true;
+            }
+            if (!allowed) { done(false, "Agents may attach only to OmaWare-managed networks or private user networking."); return; }
+        }
+        QString message;
+        const bool ok = changeNetwork(uuid, in["mac"].toString(), in["networkId"].toString(), in["model"].toString(), in["linkUp"].toBool(), in["remove"].toBool(), in["revision"].toString(), message);
+        done(ok, message); return;
+    }
     if (op == "vm.power") {
         const auto action = in["action"].toString();
         if (!QStringList{"start", "shutdown", "force-off", "pause", "resume", "remove"}.contains(action)) { done(false, "Unknown power action."); return; }
@@ -989,6 +1058,10 @@ void VmWorker::manage(QString op, QVariantMap in) {
     if (op == "hardware.save") {
         virNodeInfo host{}; virNodeGetInfo(conn_, &host);
         if (in.value("cpus", 1).toUInt() > std::max(1u, host.cpus) || in.value("memoryMiB", 256).toULongLong() > host.memory / 1024) { done(false, "The requested CPU or RAM exceeds this host's available capacity."); return; }
+        if (in.value("agentRequest").toBool() && in.contains("iso") && !in["iso"].toString().isEmpty()) {
+            const QFileInfo iso(in["iso"].toString());
+            if (iso.isSymLink() || !iso.isFile() || iso.canonicalPath() != QFileInfo(Paths::isos()).canonicalFilePath() || !iso.fileName().endsWith(".iso", Qt::CaseInsensitive)) { done(false, "Agents can only attach regular ISO files from OmaWare's local library."); return; }
+        }
         updated = Configuration::hardware(xml, in, failure);
     } else if (op == "pending.discard") {
         if (pending.baseline().isEmpty() || !pending.matches(xml)) { done(false, "The pending-change record no longer matches this VM. Refresh and reconcile its configuration first."); return; }
@@ -1028,6 +1101,7 @@ void VmWorker::manage(QString op, QVariantMap in) {
         if (!verdict["violations"].toStringList().isEmpty()) failure = "This VM is contained: " + Containment::summary(verdict);
     }
     if (!failure.isEmpty()) { if (!newDisk.isEmpty()) QFile::remove(newDisk); done(false, failure); return; }
+    if (op == "hardware.save" && in.value("dryRun").toBool()) { done(true, "Validated without changing the VM.", {{"dry_run", true}, {"changes", Configuration::changes(xml, updated)}, {"revision", DomainConfig::revision(xml)}, {"requires_restart", active}}); return; }
     if ((active || !pending.baseline().isEmpty()) && !pending.prepare(xml, failure)) { if (!newDisk.isEmpty()) QFile::remove(newDisk); done(false, failure); return; }
     Domain saved(virDomainDefineXMLFlags(conn_, updated.toUtf8().constData(), VIR_DOMAIN_DEFINE_VALIDATE), virDomainFree);
     if (!saved) { auto error = lastError("Save VM configuration"); if (!newDisk.isEmpty()) QFile::remove(newDisk); done(false, error); return; }

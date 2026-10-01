@@ -10,7 +10,7 @@ OmaWare is a virtual machine manager for Linux desktops. It runs QEMU/KVM virtua
 - **Snapshots** in a branching tree. Snapshots of a running VM include its memory, so going back resumes it exactly where it was, without rebooting.
 - **Networks made simple:** a live map of how your VMs connect, with their IP addresses. Drag a VM onto a network to connect it, pull a virtual cable to disconnect it, see at a glance which VMs can reach the internet, and cut them all off with one click. Changes apply to running VMs straight away.
 - **Containment** for VMs running untrusted software: isolated networks only, no shared folders, clipboard or USB passthrough.
-- **AI agents:** let an agent such as Claude Code build labs (networks and VMs set up from cloud images) from a description, use VM screens, run commands in lab VMs and take snapshots. You approve every lab and set its password in OmaWare; the agent never sees it. Off until you turn it on.
+- **AI agents:** let an agent such as Claude Code build labs (networks and VMs set up from cloud images) from a description, use VM screens, run guest commands, transfer files, inspect readiness and diagnostics, resize or clone VMs, manage ISO media and adapters, and take snapshots. You approve every lab and set its password in OmaWare; the agent never sees it. Off until you turn it on. See the [agent tool reference](docs/USER-GUIDE.md#agent-tools).
 - **Monitor:** live CPU, memory, disk and network use for your computer and every VM.
 - **Organized workspace:** favorites, folders, tags, search, a command prompt, keyboard shortcuts, and actions on several VMs at once.
 - **Pause on close:** running VMs are always paused when OmaWare closes (updates included) and can be resumed next time.

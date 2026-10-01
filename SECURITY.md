@@ -21,7 +21,9 @@ Agent access is off until you turn it on in Settings. When it's on:
 - Agents see and use only OmaWare's own VMs, never contained ones.
 - Labs are built only after you approve them in OmaWare. The plan shows every command that will run inside the VMs.
 - Agents never receive passwords. You set lab passwords in OmaWare; they're stored in your system's password store (or a private file only you can read), and VMs get only a SHA-512 hash. `type_login` types a password into a VM for the agent. An agent could still read it if it had it typed somewhere it's shown, so use a separate password for labs (**Generate** makes one).
-- Restoring a snapshot and deleting a lab always ask you first.
+- Restoring a snapshot and deleting a lab always ask you first. The added VM-management tools also ask before CPU/RAM or ISO changes, cloning, adapter edits and file transfers.
+- Agent transfers are limited to a private `omaware/transfers` folder on the host and small files (32 KiB). Host and guest transfers reject symlinks, hardlinks and special files; existing destinations are protected by default. Guest transfer commands require Linux and Python 3. Obvious credential-file names are rejected, but this is not content-based secret detection: put only files you intend to share in the transfer folder.
+- VM details and diagnostics expose selected configuration and filesystem metadata, not raw domain XML, host log files or guest file contents. A full clone still copies guest identities and credentials; its network cables start disconnected so you can change them before connecting it.
 - Lab VMs are reached over SSH with a key OmaWare makes for each lab, checked against a host key OmaWare made for each VM (no "trust on first use").
 - What a VM shows on screen or prints can try to steer an agent (prompt injection). Keep VMs running untrusted software contained, and review what an agent proposes.
 - Every agent action is in the activity log; typed text never is.

@@ -347,6 +347,10 @@ private slots:
         Updater loose; loose.setAppDir(dir.filePath("build")); loose.setCurrent("1.0.0"); QVERIFY(!loose.canInstall());
     }
     void singleInstance() {
+        // This test deliberately exercises the global process scan as well as the lock.
+        // Never close a user's running app (which would pause VMs) to make a unit test pass.
+        if (!InstanceGuard::otherProcesses().isEmpty())
+            QSKIP("Close OmaWare manually to exercise the global single-instance lock test.");
         QTemporaryDir dir; QVERIFY(dir.isValid());
         const auto path = dir.filePath("omaware.lock");
         QVERIFY(InstanceGuard::otherProcesses("omaware-no-such-program").isEmpty());

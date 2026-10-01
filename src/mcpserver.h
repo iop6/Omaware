@@ -14,4 +14,6 @@ int run();
 QByteArray respond(const QByteArray &message, const std::function<QVariantMap(const QString &tool, const QVariantMap &args)> &forward);
 // The tool list, for tests.
 QVariantList tools();
+// Strict validation for the eight management tools; legacy tools keep their existing validators.
+bool validateManagementArguments(const QString &tool, const QVariantMap &args, QString &error);
 }
