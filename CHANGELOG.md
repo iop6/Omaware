@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.4.0 (unreleased)
+
+- Eight additional MCP tools for VM details, readiness checks, diagnostics, file transfers, CPU/RAM changes, cloning, local ISO media and network adapters.
+- Agent file transfers use a dedicated host transfer folder rather than arbitrary host paths; VM ownership and containment restrictions still apply.
+
 ## 1.3.0 (2026-10-01)
 
 - AI agents (such as Claude Code) can use OmaWare when you turn it on in Settings: build labs of networks and VMs from a description, use VM screens, run commands in lab VMs, take and restore snapshots, and plug or pull network cables.

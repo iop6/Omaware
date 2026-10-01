@@ -29,6 +29,7 @@
 | `src/instance.*` | Keeps OmaWare to one running copy per user. |
 | `src/updater.*` | Built-in updates from GitHub Releases (`Updater` in QML): checks, verified download, in-place swap and restart. |
 | `src/agentbridge.*` | AI agent access (`agent` in QML): the local socket `omaware mcp` talks to, the tools, the user's approvals, and building and deleting labs. |
+| `src/agentmanagement.cpp`, `src/agenttransfer.*` | Agent VM-management tools, bounded readiness checks, and confined file transfers. |
 | `src/mcpserver.*` | `omaware mcp`: the Model Context Protocol server agents start; describes the tools and forwards calls to the app. |
 | `src/labplan.*`, `src/labs.*` | Checking an agent's lab plan; the record of built labs (their networks, VMs, login name and SSH keys). |
 | `src/cloudimages.*`, `src/cloudseed.*` | Cloud images for labs (download and checksum), and the cloud-init setup disc (an ISO 9660 image OmaWare writes itself). |
@@ -58,6 +59,7 @@ The script downloads LibVNCServer 0.9.15 at a pinned commit, checks both patch f
 ## Tests
 
 - **Unit tests** (`ctest`, run by `build.sh`): palette handling, domain XML, network rules, snapshot bookkeeping and the patched VNC decoder. Safe anywhere.
+- **Agent regression tests** (also in `ctest`): `agent-tools` checks MCP schemas and transfer validation; `agent-transfer-io` exercises binary transfers, overwrite protection and unsafe-file rejection in temporary directories, including the generated guest-side Python commands. `mcp-stdio` starts the actual MCP executable with a fresh runtime directory, checking protocol responses without connecting to a running OmaWare app. These tests do not contact or change any VM and need Python 3.
 - **VM test suites** (`omaware-integration`, `omaware-management-tests`): create, start, pause, snapshot and power off real VMs in your libvirt session, and render the interface offscreen. **Run them only on a disposable machine or VM.** The management tests' pause-on-close test pauses every running OmaWare VM in the session. They refuse to start without an explicit opt-in:
 
   ```sh

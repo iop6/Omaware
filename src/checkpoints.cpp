@@ -78,7 +78,7 @@ QVariantMap jobStats(virDomainPtr domain, unsigned flags, QString &error) {
 }
 bool ownBackup(virDomainPtr domain, QString directory) {
     char *raw = virDomainBackupGetXMLDesc(domain, 0); if (!raw) return false;
-    QDomDocument doc; bool valid = doc.setContent(QString::fromUtf8(raw)); free(raw);
+    QDomDocument doc; bool valid = bool(doc.setContent(QString::fromUtf8(raw))); free(raw);
     bool found = false;
     for (auto d = doc.documentElement().firstChildElement("disks").firstChildElement("disk"); valid && !d.isNull(); d = d.nextSiblingElement("disk")) {
         if (d.attribute("backup") == "no") continue;
@@ -917,7 +917,7 @@ bool volumeReferences(virConnectPtr connection, QString path, QSet<QString> &pat
     seen.insert(path); paths.insert(QDir::cleanPath(path));
     auto volume = virStorageVolLookupByPath(connection, path.toUtf8().constData()); if (!volume) return false;
     char *raw = virStorageVolGetXMLDesc(volume, 0); virStorageVolFree(volume); if (!raw) return false;
-    QDomDocument doc; const bool valid = doc.setContent(QString::fromUtf8(raw)); free(raw); if (!valid) return false;
+    QDomDocument doc; const bool valid = bool(doc.setContent(QString::fromUtf8(raw))); free(raw); if (!valid) return false;
     auto target = doc.documentElement().firstChildElement("target");
     const auto stamp = target.firstChildElement("timestamps").firstChildElement("mtime").text();
     const auto seconds = stamp.section('.', 0, 0).toLongLong(), millis = stamp.section('.', 1, 1).leftJustified(3, '0').left(3).toLongLong();

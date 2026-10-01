@@ -7,6 +7,7 @@
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QLocalSocket>
+#include <cmath>
 #include <cstdio>
 #include <iostream>
 #include <string>
@@ -68,6 +69,14 @@ QJsonArray toolList() {
         {"keys", prop("string", "key: a key or combination such as enter, esc, tab, ctrl+alt+t, ctrl+alt+delete, win+r, f2.")},
         {"seconds", prop("number", "wait: up to 10 seconds.")}}}, {"required", QJsonArray{"type"}}};
     return {
+        tool("vm_details", "VM details", "Saved and live configuration, revision, actual capabilities, transports and restrictions. No raw XML or credentials.", schema({{"vm", vm}}, {"vm"}), true),
+        tool("diagnose_vm", "Diagnose VM", "Safe configuration diagnostics only; no guest logs, repairs or shell probes.", schema({{"vm", vm}}, {"vm"}), true),
+        tool("wait_for_vm", "Wait for VM", "Bounded readiness observation; returns ready and timed_out. SSH requires a lab VM; cloud-init requires a Linux guest. Does not start the VM.", schema({{"vm", vm}, {"condition", QJsonObject{{"type", "string"}, {"enum", QJsonArray{"running", "guest_agent", "ssh", "cloud_init"}}}}, {"timeout_seconds", prop("integer", "0–120; default 60. Response deadline, not cancellation of an in-flight probe.")}}, {"vm"}), true),
+        tool("transfer_file", "Transfer file", "Upload/download a file (max 32 KiB) between a Linux guest with python3 and OmaWare's private transfers directory. Requires UI approval. No arbitrary host paths, symlinks, hardlinks or credential filenames; contents are not returned or logged.", schema({{"vm", vm}, {"direction", QJsonObject{{"type", "string"}, {"enum", QJsonArray{"upload", "download"}}}}, {"file", prop("string", "Plain filename in the transfers directory reported by vm_details; upload files must be placed there by the user.")}, {"guest_path", prop("string", "Absolute non-secret guest file path; symlink components refused.")}, {"overwrite", prop("boolean", "Default false. Replacement must also be approved in OmaWare.")}}, {"vm", "direction", "file", "guest_path"}), false, true),
+        tool("update_vm_resources", "Update resources", "Validate CPU/RAM and preview or approve saved settings. Changes apply on next full start, never hotplug. Host capacity and advanced configuration checks apply; revision is checked again after approval.", schema({{"vm", vm}, {"cpus", prop("integer", "1–256, within host capacity.")}, {"memory_mib", prop("integer", "256–1048576, within host capacity.")}, {"revision", prop("string", "Optional expected revision from vm_details.")}, {"dry_run", prop("boolean", "Validate and return changes without prompting or saving.")}}, {"vm"}), false, true),
+        tool("clone_vm", "Clone VM", "Independent full clone of an existing checkpoint using OmaWare's clone backend, after approval. New VM stays stopped with new MACs and cables down. Guest identities/credentials remain copied. No linked cloning or automatic start.", schema({{"vm", vm}, {"snapshot", prop("string", "Checkpoint id from list_snapshots, not a legacy internal snapshot.")}, {"name", prop("string", "New VM name; 1–48 letters, digits, dots or dashes.")}, {"mode", QJsonObject{{"type", "string"}, {"enum", QJsonArray{"full"}}}}}, {"vm", "snapshot", "name"})),
+        tool("manage_iso", "Manage ISO", "List local ISO library or attach/eject the first optical drive using saved hardware settings and approval. No downloads or arbitrary paths. Effective on next full start.", schema({{"vm", vm}, {"action", QJsonObject{{"type", "string"}, {"enum", QJsonArray{"list", "attach", "eject"}}}}, {"iso", prop("string", "Exact filename from list, for attach.")}, {"revision", prop("string", "Expected configuration revision.")}, {"dry_run", prop("boolean", "Validate attach/eject without saving or approval.")}}, {"vm", "action"}), false, true),
+        tool("manage_network_adapter", "Manage adapter", "List adapters and available network IDs; add, remove or update through the existing revision-protected network backend after UI approval. May apply live, with pending changes when hotplug is unavailable.", schema({{"vm", vm}, {"action", QJsonObject{{"type", "string"}, {"enum", QJsonArray{"list", "add", "remove", "update"}}}}, {"mac", prop("string", "Existing adapter MAC for update/remove; omit for add.")}, {"network_id", prop("string", "Available ID from list; required for add.")}, {"model", prop("string", "Supported adapter model, default virtio for add.")}, {"plugged", prop("boolean", "Cable state; default true for add.")}, {"revision", prop("string", "Expected configuration revision.")}}, {"vm", "action"}), false, true),
         tool("omaware_overview", "Overview", "OmaWare's VMs (state, adapters, IP addresses, lab), networks, labs and cloud images. Start here.", schema({}), true),
         tool("propose_lab", "Propose a lab", "Shows a lab plan (networks and VMs) to the user in OmaWare. Nothing is built until the user approves it there and sets the VMs' password. Returns a lab_id for lab_status, or the problems to fix in the plan.",
             schema({{"plan", plan}}, {"plan"})),
@@ -99,7 +108,7 @@ QVariantMap forwardToApp(const QString &name, const QVariantMap &args) {
     QLocalSocket socket;
     socket.connectToServer(AgentBridge::socketPath());
     if (!socket.waitForConnected(3000))
-        return {{"ok", false}, {"error", "OmaWare isn't open, or AI agent access is off. Ask the user to open OmaWare and turn on Settings → AI agents."}};
+        return {{"ok", false}, {"error", "OmaWare isn't open, or AI agent access is off. Ask the user to open OmaWare and turn on Settings → AI agents."}, {"result", QVariantMap{{"code", "app_unavailable"}}}};
     socket.write(QJsonDocument(QJsonObject{{"tool", name}, {"args", QJsonObject::fromVariantMap(args)}}).toJson(QJsonDocument::Compact) + "\n");
     socket.flush();
     QByteArray answer;
@@ -115,6 +124,24 @@ QVariantMap forwardToApp(const QString &name, const QVariantMap &args) {
 }
 
 QVariantList Mcp::tools() { return toolList().toVariantList(); }
+
+bool Mcp::validateManagementArguments(const QString &name, const QVariantMap &args, QString &error) {
+    if (!QStringList{"vm_details", "diagnose_vm", "wait_for_vm", "transfer_file", "update_vm_resources", "clone_vm", "manage_iso", "manage_network_adapter"}.contains(name)) return true;
+    QJsonObject input;
+    for (const auto &t : toolList()) if (t.toObject()["name"] == name) input = t.toObject()["inputSchema"].toObject();
+    const auto properties = input["properties"].toObject();
+    for (const auto &v : input["required"].toArray()) if (!args.contains(v.toString())) { error = "Missing required argument: " + v.toString(); return false; }
+    const auto json = QJsonObject::fromVariantMap(args);
+    for (auto it = json.begin(); it != json.end(); ++it) {
+        if (!properties.contains(it.key())) { error = "Unknown argument: " + it.key(); return false; }
+        const auto p = properties[it.key()].toObject(); const auto type = p["type"].toString(); const auto v = it.value();
+        bool valid = (type == "string" && v.isString()) || (type == "boolean" && v.isBool()) || (type == "integer" && v.isDouble() && std::isfinite(v.toDouble()) && std::floor(v.toDouble()) == v.toDouble());
+        if (valid && p.contains("enum")) valid = p["enum"].toArray().contains(v);
+        if (!valid) { error = "Invalid type or value for argument: " + it.key(); return false; }
+    }
+    return true;
+}
+
 
 QByteArray Mcp::respond(const QByteArray &message, const std::function<QVariantMap(const QString &, const QVariantMap &)> &forward) {
     const auto request = QJsonDocument::fromJson(message).object();
@@ -145,7 +172,9 @@ QByteArray Mcp::respond(const QByteArray &message, const std::function<QVariantM
         if (!result.isEmpty()) text += (text.isEmpty() ? "" : "\n") + QString::fromUtf8(QJsonDocument(result).toJson(QJsonDocument::Indented));
         content.append(QJsonObject{{"type", "text"}, {"text", text}});
         if (reply.contains("image")) content.append(QJsonObject{{"type", "image"}, {"mimeType", "image/png"}, {"data", reply["image"].toString()}});
-        return answer({{"content", content}, {"isError", !ok}});
+        auto structured = result;
+        if (!ok) { structured["error"] = reply.value("error", "The tool failed.").toString(); if (!structured.contains("code")) structured["code"] = "operation_failed"; }
+        return answer({{"content", content}, {"isError", !ok}, {"structuredContent", structured}});
     }
     return error(-32601, "Method not found: " + method);
 }

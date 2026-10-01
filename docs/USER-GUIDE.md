@@ -213,6 +213,41 @@ claude mcp add omaware -- ~/.local/bin/omaware mcp
 
 `omaware mcp` is a small helper the agent starts: it speaks the Model Context Protocol (MCP) that agents use, and passes each request to the open OmaWare window. Other MCP-capable agents work the same way. OmaWare has to be open for the agent to use it. Turning the setting off disconnects agents at once.
 
+### Agent tools
+
+The MCP interface exposes focused VM-management tools rather than unrestricted commands on your host computer. Ask your agent to start with `omaware_overview` and use `vm_details` to check a VM's configuration and supported operations.
+
+| Tool | What it does |
+| --- | --- |
+| `omaware_overview` | Lists OmaWare VMs, networks, labs and cloud images. |
+| `vm_details` | Inspects a VM's configuration and agent capabilities. |
+| `diagnose_vm` | Collects structured diagnostics for a VM. |
+| `wait_for_vm` | Waits for a requested readiness condition with a timeout. |
+| `vm_power` | Starts, shuts down, pauses, resumes or restarts a VM, or forces it off. |
+| `screenshot`, `vm_input` | Captures and operates a VM's screen. |
+| `type_login` | Enters a saved login without returning its password to the agent. |
+| `run_command` | Runs a command inside the guest, not on the host. |
+| `transfer_file` | Transfers files between the guest and a dedicated host transfer folder. |
+| `update_vm_resources` | Previews or changes a VM's CPU and RAM allocation. |
+| `clone_vm` | Creates a separate working copy of a VM. |
+| `manage_iso` | Lists local installation media and attaches or ejects it. |
+| `manage_network_adapter` | Inspects and changes a VM's network adapters. |
+| `set_cable` | Plugs or pulls an existing adapter's virtual cable. |
+| `list_snapshots`, `snapshot_vm`, `restore_snapshot` | Lists, saves and restores snapshots. |
+| `propose_lab`, `lab_status`, `delete_lab` | Proposes, tracks and removes labs. |
+
+The agent should use the server's `tools/list` response for exact arguments and limits. A successful MCP connection is not proof that OmaWare is reachable: the app must be open and agent access enabled before VM tools can work. A powered-on VM may still be booting; use readiness checks before sending commands.
+
+#### Transfer and cloning limits
+
+File transfers use `${XDG_DATA_HOME:-~/.local/share}/omaware/transfers/` on the host. The folder must be owned by you and accessible only to you (mode `0700`); OmaWare creates it with those permissions on the first transfer attempt. Put upload files there yourself, and look there for downloads. The agent supplies a plain file name, never an arbitrary host path. Files are limited to 32 KiB each; existing destinations are protected unless replacement is explicitly requested and approved. Symlinks, hardlinks, special files and obvious credential-file names are refused. These checks do not identify every secret: only place files you intend to share in the transfer folder.
+
+The initial transfer implementation requires a Linux guest with `python3`, reachable through the QEMU guest agent or lab SSH. It is intended for small scripts and reports, not disk images or large archives.
+
+`clone_vm` creates an independent full copy from an existing checkpoint ID (see `list_snapshots`). The new VM is stopped, with new identifiers and MAC addresses and disconnected network cables. Guest files, identities and credentials are copied: change those inside the clone before connecting it to a network. Linked clones are not supported.
+
+`wait_for_vm` can wait for running state, the guest-agent connection, lab SSH, or completed cloud-init, for up to 120 seconds per call. A timeout reports `ready: false`; it does not power off the VM or undo boot work.
+
 ### Labs
 
 A lab is a set of networks and VMs built together. The agent writes a plan and OmaWare shows it to you in **Build “…”?** before anything is created:

@@ -67,6 +67,8 @@ QVariantList NetworkCatalog::discover(virConnectPtr session, QString &status) {
             char *raw = virNetworkGetXMLDesc(networks[i], 0);
             const QString networkXml = raw ? QString::fromUtf8(raw) : QString{};
             auto data = describe(networkXml);
+            QDomDocument marker; marker.setContent(networkXml, true);
+            if (!data.isEmpty()) data["managed"] = data["name"].toString().startsWith("omaware-") && marker.elementsByTagNameNS("https://omaware.org/xmlns/network/1", "managed").count() == 1;
             free(raw);
             if (data["category"] == "Isolated") data["isolation"] = Containment::verifyNetwork(networkXml, virNetworkIsActive(networks[i]) == 1);
             if (!data.isEmpty()) {
