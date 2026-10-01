@@ -1,8 +1,8 @@
 cmake_minimum_required(VERSION 3.22)
 # The one place the version is set; see CHANGELOG.md and "Versions" in README.md.
-project(OmaWare VERSION 1.0.0 LANGUAGES C CXX)
+project(OmaWare VERSION 1.1.0 LANGUAGES C CXX)
 # Development builds end in "-dev"; set this to "" for a release.
-set(OMAWARE_VERSION_SUFFIX "")
+set(OMAWARE_VERSION_SUFFIX "-dev")
 include(GNUInstallDirs)
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
