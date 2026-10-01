@@ -3,6 +3,7 @@
 #include "paths.h"
 #include <QCoreApplication>
 #include <QDate>
+#include <QDateTime>
 #include <QDir>
 #include <QFileInfo>
 #include <QJsonArray>
@@ -14,6 +15,7 @@
 #include <QStorageInfo>
 #include <QThread>
 #include <QTimer>
+#include <QUuid>
 #include <sys/stat.h>
 #include <unistd.h>
 
@@ -25,6 +27,10 @@ QString fill(QString text, const QHash<QString, QString> &values) {
 }
 QString majorOf(const QString &version) { return version.section('.', 0, 0); }
 const QString offline = "Couldn't reach the publisher. Check your internet connection and try again.";
+// How long a download may receive nothing before it is treated as a dropped connection (tests shorten it).
+qint64 stallLimit() { const int seconds = qEnvironmentVariableIntValue("OMAWARE_STALL_SECONDS"); return seconds > 0 ? seconds * 1000LL : 60000; }
+// Microsoft's download service expects the requests its website makes in a browser.
+const QByteArray browserAgent = "Mozilla/5.0 (X11; Linux x86_64; rv:128.0) Gecko/20100101 Firefox/128.0";
 }
 
 IsoLibrary::IsoLibrary(QObject *parent) : QObject(parent) {
@@ -33,7 +39,8 @@ IsoLibrary::IsoLibrary(QObject *parent) : QObject(parent) {
         Source source;
         source.id = id; source.name = name; source.description = description; source.category = category; source.color = color;
         source.pattern = pattern; source.preset = preset; source.lookup = lookup;
-        if (lookup.value("type") == "page") { source.kind = "page"; source.page = lookup.value("page").toString(); source.note = lookup.value("note").toString(); }
+        if (lookup.value("type") == "page") source.kind = "page";
+        source.page = lookup.value("page").toString(); source.note = lookup.value("note").toString();
         sources_.append(source);
     };
     const QString ubuntu = "https://releases.ubuntu.com/{codename}/";
@@ -94,9 +101,12 @@ IsoLibrary::IsoLibrary(QObject *parent) : QObject(parent) {
         R"(^(?:pfSense-CE|netgate-installer)[-_]([0-9][0-9.]*).*\.iso$)", "",
         {{"type", "page"}, {"page", "https://www.pfsense.org/download/"}, {"note", "Netgate's installer downloads pfSense while installing, so the VM needs internet access during setup."}});
     // Windows
-    add("windows-11", "Windows 11", "Microsoft only offers Windows on its website: download it there and save the ISO in your ISO folder.", "windows", "#0078D4",
-        R"(^Win11_([0-9A-Za-z]+)_.*\.iso$)", "win11",
-        {{"type", "page"}, {"page", "https://www.microsoft.com/software-download/windows11"}, {"note", "Windows 11 needs a TPM, which OmaWare doesn't provide yet, so its installer will refuse to continue."}});
+    // Straight from Microsoft's own download service, the way its website (and tools like Fido and Mido) get
+    // the 24-hour link, and checked against the SHA-256 Microsoft publishes for each language.
+    add("windows-11", "Windows 11", "The official multi-edition ISO from Microsoft, in your language. You need a Windows license to activate it.", "windows", "#0078D4",
+        R"(^Win(?:dows)?11_(?:Client_x64_[A-Za-z-]+_)?([0-9][0-9A-Za-z_]*?)(?:_[A-Z][A-Za-z]*_x64)?(?:v[0-9])?\.iso$)", "win11",
+        {{"type", "microsoft"}, {"page", "https://www.microsoft.com/en-us/software-download/windows11"},
+         {"note", "Microsoft sometimes refuses automated downloads from some networks. If that happens, download it on Microsoft's website and save it in your ISO folder."}});
     setFolder(Paths::isos());
 }
 IsoLibrary::~IsoLibrary() {
@@ -141,7 +151,7 @@ QVariantMap IsoLibrary::identify(const QString &name) const {
     for (const auto &source : sources_) {
         const auto match = QRegularExpression(source.pattern, QRegularExpression::CaseInsensitiveOption).match(name);
         if (!match.hasMatch()) continue;
-        const auto version = match.captured(1);
+        const auto version = match.captured(1).replace('_', '.');
         const auto parts = version.split('.');
         const auto preset = fill(source.preset, {{"v", version}, {"m", parts.value(0)}, {"mm", parts.mid(0, 2).join('.')}});
         return {{"source", source.id}, {"sourceName", source.name}, {"version", version}, {"preset", preset}};
@@ -187,6 +197,7 @@ QVariantList IsoLibrary::sources() const {
             {"upToDate", !have.isEmpty() && !source.latest.version.isEmpty() && !newer(source.latest.version, have)},
             {"updateAvailable", !have.isEmpty() && !source.latest.version.isEmpty() && newer(source.latest.version, have)}};
         if (job) { row["received"] = double(job->received); row["total"] = double(job->total); row["rate"] = double(job->rate); }
+        if (!source.languages.isEmpty()) { row["languages"] = source.languages; row["language"] = source.language; }
         result.append(row);
     }
     return result;
@@ -263,18 +274,19 @@ QString IsoLibrary::newestFolder(const QByteArray &listing, const QString &patte
     return best;
 }
 
-void IsoLibrary::get(const QUrl &url, Done done, int attempt) {
+void IsoLibrary::get(const QUrl &url, Done done, int attempt, const QList<QPair<QByteArray, QByteArray>> &headers) {
     QNetworkRequest request(url);
     request.setHeader(QNetworkRequest::UserAgentHeader, "OmaWare/" + QCoreApplication::applicationVersion());
+    for (const auto &header : headers) request.setRawHeader(header.first, header.second);
     request.setAttribute(QNetworkRequest::RedirectPolicyAttribute, QNetworkRequest::NoLessSafeRedirectPolicy);
     request.setTransferTimeout(20000);
     auto reply = network_.get(request);
-    connect(reply, &QNetworkReply::finished, this, [this, reply, url, done, attempt] {
+    connect(reply, &QNetworkReply::finished, this, [this, reply, url, done, attempt, headers] {
         reply->deleteLater();
         const bool ok = reply->error() == QNetworkReply::NoError;
         // Publishers' servers occasionally fail a request; try once more before giving up.
         if (!ok && attempt == 0 && reply->error() != QNetworkReply::ContentNotFoundError) {
-            QTimer::singleShot(1500, this, [this, url, done] { get(url, done, 1); });
+            QTimer::singleShot(1500, this, [this, url, done, headers] { get(url, done, 1, headers); });
             return;
         }
         done(ok, reply->readAll(), reply->url());
@@ -365,13 +377,140 @@ void IsoLibrary::resolve(Source &source) {
             });
         };
         (*attempt)(0);
+    } else if (type == "microsoft") {
+        get(QUrl(source.lookup.value("page").toString()), [this, id](bool ok, const QByteArray &data, const QUrl &) {
+            const auto page = ok ? windowsPage(data) : QVariantMap{};
+            auto s = find(id);
+            if (!s || page.isEmpty()) { settle(id, {}, ok ? "Microsoft's download page couldn't be read." : offline); return; }
+            s->version = page["version"].toString(); s->edition = page["edition"].toString(); s->languages = page["languages"].toStringList();
+            s->hashes.clear();
+            const auto hashes = page["hashes"].toMap();
+            for (auto it = hashes.cbegin(); it != hashes.cend(); ++it) s->hashes[it.key()] = it.value().toString();
+            if (!s->languages.contains(s->language)) s->language = windowsLanguage(QLocale::system(), s->languages);
+            settle(id, windowsRelease(*s), {});
+        }, 0, {{"User-Agent", browserAgent}});
     } else settle(id, {}, "");
+}
+
+// ---- Windows from Microsoft --------------------------------------------------------------------
+QVariantMap IsoLibrary::windowsPage(const QByteArray &html) {
+    const auto text = QString::fromUtf8(html);
+    const auto version = QRegularExpression(R"(Version ([0-9]{2}H[12]))").match(text).captured(1);
+    const auto edition = QRegularExpression(R"re(<option value="([0-9]{1,8})">Windows)re").match(text).captured(1);
+    QStringList languages; QVariantMap hashes;
+    auto rows = QRegularExpression(R"(<td>([^<]{2,60}?) 64-bit</td>\s*<td>([0-9A-Fa-f]{64})</td>)").globalMatch(text);
+    while (rows.hasNext()) {
+        const auto row = rows.next();
+        const auto language = row.captured(1).trimmed();
+        if (!hashes.contains(language)) languages << language;
+        hashes[language] = row.captured(2).toLower();
+    }
+    if (version.isEmpty() || edition.isEmpty() || languages.isEmpty()) return {};
+    return {{"version", version}, {"edition", edition}, {"languages", languages}, {"hashes", hashes}};
+}
+QString IsoLibrary::windowsSku(const QByteArray &skusJson, const QString &language) {
+    for (const auto &value : QJsonDocument::fromJson(skusJson).object()["Skus"].toArray()) {
+        const auto sku = value.toObject();
+        if (sku["Language"].toString() == language || sku["LocalizedLanguage"].toString() == language) {
+            const auto id = sku["Id"].toVariant().toString();
+            if (QRegularExpression("^[0-9]{1,12}$").match(id).hasMatch()) return id;
+        }
+    }
+    return {};
+}
+QString IsoLibrary::windowsLink(const QByteArray &linksJson, QString &error) {
+    const auto o = QJsonDocument::fromJson(linksJson).object();
+    for (const auto &value : o["Errors"].toArray()) {
+        const auto text = value.toObject()["Value"].toString();
+        error = text.contains("Sentinel") || value.toObject()["Key"].toString().contains("Sentinel")
+            ? "Microsoft refused the automated download from your network (this happens with some VPNs and providers). Download it on Microsoft's website instead and save it in your ISO folder."
+            : "Microsoft didn't give a download link: " + text;
+        return {};
+    }
+    for (const auto &value : o["ProductDownloadOptions"].toArray()) {
+        const auto link = value.toObject()["Uri"].toString();
+        if (link.startsWith("https://") && QUrl(link).fileName().contains("x64", Qt::CaseInsensitive)) return link;
+    }
+    error = "Microsoft didn't give a download link for 64-bit Windows.";
+    return {};
+}
+QString IsoLibrary::windowsLanguage(const QLocale &locale, const QStringList &available) {
+    QString wanted;
+    switch (locale.language()) {
+    case QLocale::English: wanted = locale.territory() == QLocale::UnitedStates ? "English" : "English International"; break;
+    case QLocale::Chinese: wanted = locale.script() == QLocale::TraditionalChineseScript || locale.territory() == QLocale::Taiwan || locale.territory() == QLocale::HongKong ? "Chinese Traditional" : "Chinese Simplified"; break;
+    case QLocale::Portuguese: wanted = locale.territory() == QLocale::Brazil ? "Brazilian Portuguese" : "Portuguese"; break;
+    case QLocale::Spanish: wanted = locale.territory() == QLocale::Mexico ? "Spanish (Mexico)" : "Spanish"; break;
+    case QLocale::French: wanted = locale.territory() == QLocale::Canada ? "French Canadian" : "French"; break;
+    case QLocale::Serbian: wanted = "Serbian Latin"; break;
+    case QLocale::NorwegianBokmal: case QLocale::NorwegianNynorsk: wanted = "Norwegian"; break;
+    default: wanted = QLocale::languageToString(locale.language());
+    }
+    if (available.contains(wanted)) return wanted;
+    return available.contains("English") ? QString("English") : available.value(0);
+}
+IsoLibrary::Release IsoLibrary::windowsRelease(const Source &source) const {
+    if (source.version.isEmpty() || !source.hashes.contains(source.language)) return {};
+    // Named like the ISOs from Microsoft's website, so either kind is recognized.
+    const auto language = QString(source.language).remove(QRegularExpression("[^A-Za-z]"));
+    return {source.version, "Win11_" + source.version + "_" + language + "_x64.iso", {}, source.hashes.value(source.language), 0};
+}
+void IsoLibrary::setLanguage(const QString &id, const QString &language) {
+    auto s = find(id);
+    if (!s || jobs_.contains(id) || (!s->languages.isEmpty() && !s->languages.contains(language))) return;
+    s->language = language;
+    if (!s->version.isEmpty()) s->latest = windowsRelease(*s);
+    emit changed();
+}
+// Microsoft hands out a download link only to a "session" that has been through the same checks its
+// website runs in a browser: register the session, answer the ov-df challenge, then ask for the
+// language's SKU and its link (which works for 24 hours).
+void IsoLibrary::downloadWindows(const QString &id) {
+    auto s = find(id);
+    if (!s) return;
+    const auto session = QUuid::createUuid().toString(QUuid::WithoutBraces), edition = s->edition, language = s->language, page = s->lookup.value("page").toString();
+    const auto release = s->latest;
+    const QString profile = "606624d44113", instance = "560dc9f3-1aa5-4a2f-b63c-9e18f8d0e175";
+    const QList<QPair<QByteArray, QByteArray>> browser{{"User-Agent", browserAgent}};
+    s->status = "starting"; s->error.clear(); emit changed();
+    auto failed = [this, id](bool ok, const QString &why) { if (auto s = find(id)) s->status = "ready"; fail(id, ok ? why : offline); };
+    get(QUrl("https://vlscppe.microsoft.com/tags?org_id=y6jn8c31&session_id=" + session), [=, this](bool ok, const QByteArray &, const QUrl &) {
+        if (!ok) { failed(false, {}); return; }
+        get(QUrl("https://ov-df.microsoft.com/mdt.js?instanceId=" + instance + "&PageId=si&session_id=" + session), [=, this](bool ok, const QByteArray &script, const QUrl &) {
+            const auto text = QString::fromUtf8(script);
+            const auto w = QRegularExpression("[?&]w=([A-F0-9]+)").match(text).captured(1), ticks = QRegularExpression(R"(rticks=\"\+?([0-9]+))").match(text).captured(1);
+            if (!ok || w.isEmpty() || ticks.isEmpty()) { failed(ok, "Microsoft's download check has changed, so OmaWare can't download Windows right now. Use Microsoft's website instead."); return; }
+            const auto reply = "https://ov-df.microsoft.com/?session_id=" + session + "&CustomerId=" + instance + "&PageId=si&w=" + w + "&mdt=" + QString::number(QDateTime::currentMSecsSinceEpoch()) + "&rticks=" + ticks;
+            get(QUrl(reply), [=, this](bool ok, const QByteArray &, const QUrl &) {
+                if (!ok) { failed(false, {}); return; }
+                const auto skus = "https://www.microsoft.com/software-download-connector/api/getskuinformationbyproductedition?profile=" + profile + "&ProductEditionId=" + edition + "&SKU=undefined&friendlyFileName=undefined&Locale=en-US&sessionID=" + session;
+                get(QUrl(skus), [=, this](bool ok, const QByteArray &data, const QUrl &) {
+                    const auto sku = ok ? windowsSku(data, language) : QString{};
+                    if (sku.isEmpty()) { failed(ok, "Microsoft didn't offer Windows 11 in " + language + "."); return; }
+                    const auto links = "https://www.microsoft.com/software-download-connector/api/GetProductDownloadLinksBySku?profile=" + profile + "&productEditionId=undefined&SKU=" + sku + "&friendlyFileName=undefined&Locale=en-US&sessionID=" + session;
+                    get(QUrl(links), [=, this](bool ok, const QByteArray &data, const QUrl &) {
+                        QString why;
+                        const auto link = ok ? windowsLink(data, why) : QString{};
+                        if (link.isEmpty()) { failed(ok, why); return; }
+                        if (auto s = find(id)) s->status = "ready";
+                        fetch(id, QUrl(link), release.sha256, release.file, release.size);
+                    }, 0, {{"User-Agent", browserAgent}, {"Referer", page.toUtf8()}});
+                }, 0, browser);
+            }, 0, browser);
+        }, 0, browser);
+    }, 0, browser);
 }
 
 // ---- Downloads --------------------------------------------------------------------------------
 bool IsoLibrary::download(const QString &id) {
     auto source = find(id);
-    if (!source || source->kind != "download" || source->latest.url.isEmpty()) return false;
+    if (!source || source->kind != "download" || jobs_.contains(id) || source->status == "starting") return false;
+    if (source->lookup.value("type") == "microsoft") {
+        if (source->edition.isEmpty() || source->latest.sha256.isEmpty()) return false;
+        downloadWindows(id);
+        return true;
+    }
+    if (source->latest.url.isEmpty()) return false;
     return fetch(id, QUrl(source->latest.url), source->latest.sha256, source->latest.file, source->latest.size);
 }
 bool IsoLibrary::fetch(const QString &id, const QUrl &url, const QString &sha256, const QString &file, qint64 size) {
@@ -387,17 +526,52 @@ bool IsoLibrary::fetch(const QString &id, const QUrl &url, const QString &sha256
     job->sha256 = sha256.toLower(); job->file = file; job->total = size;
     job->out = std::make_unique<QFile>(folder_ + "/" + file + ".part");
     if (!job->out->open(QIODevice::WriteOnly | QIODevice::Truncate)) { delete job; fail(id, "Couldn't write to " + folder_ + "."); return false; }
-    QNetworkRequest request(url);
-    request.setHeader(QNetworkRequest::UserAgentHeader, "OmaWare/" + QCoreApplication::applicationVersion());
-    request.setAttribute(QNetworkRequest::RedirectPolicyAttribute, QNetworkRequest::NoLessSafeRedirectPolicy);
-    job->reply = network_.get(request);
+    job->url = url;
     job->sample.start();
     jobs_[id] = job;
     if (auto s = find(id)) s->error.clear();
+    request(id);
+    emit changed();
+    return true;
+}
+// Starts (or, after a dropped connection, continues) a download. A resumed request asks for the rest of
+// the file; a server that sends the whole file again starts it over, so the checksum still covers every byte.
+void IsoLibrary::request(const QString &id) {
+    auto job = jobs_.value(id);
+    if (!job) return;
+    job->waiting = false;
+    QNetworkRequest http(job->url);
+    http.setHeader(QNetworkRequest::UserAgentHeader, "OmaWare/" + QCoreApplication::applicationVersion());
+    http.setAttribute(QNetworkRequest::RedirectPolicyAttribute, QNetworkRequest::NoLessSafeRedirectPolicy);
+    job->offset = job->received;
+    job->checkResume = job->received > 0;
+    job->stalled = false; job->quiet.start();
+    // A server can stop sending without closing the connection; a minute of silence counts as a dropped one.
+    if (!stallWatch_) {
+        stallWatch_ = new QTimer(this);
+        stallWatch_->setInterval(5000);
+        connect(stallWatch_, &QTimer::timeout, this, [this] {
+            for (auto it = jobs_.begin(); it != jobs_.end(); ++it) {
+                auto job = it.value();
+                if (job->unpacking || job->waiting || !job->reply) continue;
+                if (job->received != job->lastSeen) { job->lastSeen = job->received; job->quiet.restart(); continue; }
+                if (job->quiet.elapsed() >= stallLimit()) { job->stalled = true; job->reply->abort(); }
+            }
+        });
+    }
+    stallWatch_->start();
+    if (job->checkResume) http.setRawHeader("Range", "bytes=" + QByteArray::number(job->received) + "-");
+    job->reply = network_.get(http);
     auto reply = job->reply.data();
-    connect(reply, &QNetworkReply::readyRead, this, [this, id] {
-        auto job = jobs_.value(id); if (!job || !job->reply) return;
-        const auto data = job->reply->readAll();
+    connect(reply, &QNetworkReply::readyRead, this, [this, id, reply] {
+        auto job = jobs_.value(id); if (!job || job->reply != reply) return;
+        if (job->checkResume) {
+            job->checkResume = false;
+            if (reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt() != 206) {
+                job->out->resize(0); job->out->seek(0); job->hash.reset(); job->received = job->offset = job->lastBytes = 0;
+            }
+        }
+        const auto data = reply->readAll();
         job->hash.addData(data);
         if (job->out->write(data) != data.size()) { cancel(id); fail(id, "Writing the download failed. Is the disk full?"); return; }
         job->received += data.size();
@@ -407,39 +581,57 @@ bool IsoLibrary::fetch(const QString &id, const QUrl &url, const QString &sha256
             emit changed();
         }
     });
-    connect(reply, &QNetworkReply::downloadProgress, this, [this, id](qint64, qint64 total) {
-        if (auto job = jobs_.value(id); job && total > 0) job->total = total;
+    connect(reply, &QNetworkReply::downloadProgress, this, [this, id, reply](qint64, qint64 total) {
+        if (auto job = jobs_.value(id); job && job->reply == reply && total > 0) job->total = job->offset + total;
     });
-    connect(reply, &QNetworkReply::finished, this, [this, id] {
+    connect(reply, &QNetworkReply::finished, this, [this, id, reply] {
         auto job = jobs_.value(id);
-        if (!job || job->unpacking) return;
-        job->reply->deleteLater();
-        const auto rest = job->reply->readAll();
-        job->hash.addData(rest); job->out->write(rest); job->out->close();
-        const auto part = job->out->fileName(), final = folder_ + "/" + job->file;
-        auto drop = [&] { jobs_.remove(id); delete job; };
-        if (job->reply->error() != QNetworkReply::NoError) {
-            const bool cancelled = job->reply->error() == QNetworkReply::OperationCanceledError;
-            const auto why = job->reply->errorString();
-            QFile::remove(part); drop();
-            if (!cancelled) fail(id, "The download failed: " + why); else emit changed();
+        reply->deleteLater();
+        if (!job || job->reply != reply || job->unpacking) return;
+        const auto error = reply->error();
+        if (error == QNetworkReply::NoError) {
+            if (job->checkResume) { job->checkResume = false; if (reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt() != 206) { job->out->resize(0); job->out->seek(0); job->hash.reset(); job->received = 0; } }
+            const auto rest = reply->readAll(); job->hash.addData(rest); job->out->write(rest); job->received += rest.size();
+            complete(id);
             return;
         }
-        if (QString::fromLatin1(job->hash.result().toHex()) != job->sha256) {
-            QFile::remove(part); drop();
-            fail(id, "The downloaded file doesn't match its published checksum, so it was deleted. Try again.");
+        const auto part = job->out->fileName();
+        // A dropped connection (common on slow mirrors) is picked up again where it stopped.
+        // Retries only run out when a server sends nothing at all; a slow one that keeps moving can finish.
+        if (job->received > job->offset) job->retries = 0;
+        const bool retry = (job->stalled || (error != QNetworkReply::OperationCanceledError && error != QNetworkReply::ContentNotFoundError && error != QNetworkReply::ContentAccessDenied)) && job->retries < 5;
+        if (retry) {
+            if (!job->checkResume) { const auto rest = reply->readAll(); job->hash.addData(rest); job->out->write(rest); job->received += rest.size(); }
+            ++job->retries; job->waiting = true; job->reply = nullptr;
+            emit changed();
+            QTimer::singleShot(2000 * job->retries, this, [this, id] { if (auto job = jobs_.value(id); job && job->waiting) request(id); });
             return;
         }
-        QFile::remove(final);
-        if (!QFile::rename(part, final)) { QFile::remove(part); drop(); fail(id, "The finished download couldn't be saved."); return; }
-        if (final.endsWith(".bz2", Qt::CaseInsensitive)) { unpack(id, job, final); return; }
-        const auto name = find(id) ? find(id)->name : job->file, file = job->file;
-        drop();
-        rescan();
-        emit finished(id, true, name + " is ready: " + file);
+        const bool cancelled = error == QNetworkReply::OperationCanceledError && !job->stalled;
+        const auto why = job->stalled ? QString("the server stopped sending data") : reply->errorString();
+        job->out->close(); QFile::remove(part);
+        jobs_.remove(id); delete job;
+        if (!cancelled) fail(id, "The download failed: " + why); else emit changed();
     });
-    emit changed();
-    return true;
+}
+void IsoLibrary::complete(const QString &id) {
+    auto job = jobs_.value(id);
+    if (!job) return;
+    job->out->close();
+    const auto part = job->out->fileName(), final = folder_ + "/" + job->file;
+    auto drop = [&] { jobs_.remove(id); delete job; };
+    if (QString::fromLatin1(job->hash.result().toHex()) != job->sha256) {
+        QFile::remove(part); drop();
+        fail(id, "The downloaded file doesn't match its published checksum, so it was deleted. Try again.");
+        return;
+    }
+    QFile::remove(final);
+    if (!QFile::rename(part, final)) { QFile::remove(part); drop(); fail(id, "The finished download couldn't be saved."); return; }
+    if (final.endsWith(".bz2", Qt::CaseInsensitive)) { unpack(id, job, final); return; }
+    const auto name = find(id) ? find(id)->name : job->file, file = job->file;
+    drop();
+    rescan();
+    emit finished(id, true, name + " is ready: " + file);
 }
 // Verified compressed images are unpacked next to themselves; the compressed copy is then removed.
 void IsoLibrary::unpack(const QString &id, Job *job, const QString &packed) {
@@ -469,7 +661,11 @@ void IsoLibrary::cancel(const QString &id) {
     auto job = jobs_.value(id);
     if (!job) return;
     if (job->unpacking) { if (auto p = qobject_cast<QProcess *>(job->unpacker)) p->kill(); return; }
-    if (job->reply) job->reply->abort();
+    if (job->reply) { job->reply->abort(); return; }
+    // Waiting to reconnect after a dropped connection: nothing is in flight, so stop here.
+    job->out->close(); QFile::remove(job->out->fileName());
+    jobs_.remove(id); delete job;
+    emit changed();
 }
 void IsoLibrary::fail(const QString &id, const QString &message) {
     if (auto s = find(id)) s->error = message;

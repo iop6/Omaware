@@ -15,6 +15,8 @@ ColumnLayout {
     property string failure: ""
     property bool observedActive: false
     property bool listPending: false
+    // Asked for while a list was on its way (it may predate the change) or while busy: fetch again when possible.
+    property bool listAgain: false
     property string failedListUuid: ""
     property string vmId: info.uuid || ""
     property string selectedKey: "__working__"
@@ -88,14 +90,16 @@ ColumnLayout {
     spacing: compact ? 10 : 14
     function key(item) { return item.id || "internal:" + item.name }
     function refresh() {
-        if (!info.uuid || listPending) return false
+        if (listPending) { listAgain = true; return false }
+        if (!info.uuid) return false
         listPending = true; failedListUuid = ""
         const requested = backend.request("snapshots.list", {uuid: info.uuid})
         if (requested) observedActive = !!info.active
-        else listPending = false
+        else { listPending = false; listAgain = true }
         return requested
     }
     function ensureCurrent() {
+        if (listPending) return   // the list on its way is checked again when it arrives
         if (info.uuid && failedListUuid !== info.uuid && (response.uuid !== info.uuid || observedActive !== !!info.active)) refresh()
     }
     function sizeLabel(bytes) { return bytes >= 1073741824 ? (bytes / 1073741824).toFixed(1) + " GiB" : (bytes / 1048576).toFixed(1) + " MiB" }
@@ -135,9 +139,14 @@ ColumnLayout {
     onVmIdChanged: { if (editor.visible && !editor.applying) editor.reject(); requestedCaptureHost = null; snapshotMenu.close(); pageMenu.close(); snapshotDetails.close(); selectedKey = "__working__"; failure = ""; failedListUuid = ""; selectCreatedName = ""; requestedCaptureUuid = ""; timeline.renamingId = "" }
     onVisibleChanged: { if (visible) { selectedKey = "__working__"; refresh(); Qt.callLater(timeline.focusSelection) } else { snapshotMenu.close(); pageMenu.close() } }
     onInfoChanged: ensureCurrent()
-    Connections { target: backend; function onChanged() { if (!backend.busy) page.ensureCurrent() } function onCommandFinished(op, ok, result) {
+    Connections { target: backend; function onChanged() {
+        if (backend.busy) return
+        if (page.listAgain && !page.listPending) { page.listAgain = false; page.refresh() }
+        page.ensureCurrent()
+    } function onCommandFinished(op, ok, result) {
         if (op === "snapshots.list") {
             page.listPending = false
+            if (page.listAgain) { page.listAgain = false; Qt.callLater(page.refresh) }
             if (!ok) { page.failure = result.message; page.failedListUuid = result.uuid || page.info.uuid }
             else page.failure = ""
             Qt.callLater(page.ensureCurrent)

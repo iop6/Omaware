@@ -47,6 +47,8 @@ QString networkXml(virNetworkPtr n) {
     char *raw = virNetworkGetXMLDesc(n, virNetworkIsPersistent(n) == 1 ? VIR_NETWORK_XML_INACTIVE : 0);
     QString value = raw ? QString::fromUtf8(raw) : QString{}; free(raw); return value;
 }
+// libvirt emulates a TPM with swtpm, which has to be installed on this computer.
+bool tpmAvailable() { return !QStandardPaths::findExecutable("swtpm").isEmpty(); }
 QString lastError(QString context) { auto e = virGetLastError(); return context + ": " + (e && e->message ? QString::fromUtf8(e->message) : "libvirt did not provide details"); }
 bool run(QString program, QStringList args, QByteArray &output, QString &error, int timeout = 120000) {
     QProcess process; process.start(program, args);
@@ -101,7 +103,9 @@ QString snapshotBlocker(const QString &xml, bool active) {
     if (!info["shares"].toList().isEmpty()) return "Shared folders are not captured by checkpoints. Remove them before using this checkpoint workflow.";
     QDomDocument doc; doc.setContent(xml);
     if (active && doc.documentElement().firstChildElement("os").firstChildElement("nvram").attribute("format", "raw") != "raw") return "Live UEFI checkpoints require a raw firmware variable store. This VM can be checkpointed while stopped.";
-    if (!doc.elementsByTagName("hostdev").isEmpty() || !doc.elementsByTagName("tpm").isEmpty() || !doc.elementsByTagName("shareable").isEmpty()) return "Passthrough, TPM state and shared writable disks are not supported by this checkpoint workflow.";
+    if (!doc.elementsByTagName("hostdev").isEmpty() || !doc.elementsByTagName("shareable").isEmpty()) return "Passthrough devices and shared writable disks are not supported by this checkpoint workflow.";
+    const auto tpms = doc.elementsByTagName("tpm");
+    for (int i = 0; i < tpms.size(); ++i) if (tpms.at(i).toElement().firstChildElement("backend").attribute("type") != "emulator") return "Only emulated TPMs can be captured in snapshots.";
     return disk ? QString{} : "Attach a local disk before creating a checkpoint.";
 }
 // Flattens libvirt typed parameters (bulk domain or node statistics) into numbers and strings.
@@ -241,7 +245,7 @@ void VmWorker::manage(QString op, QVariantMap in) {
         osinfo.removeDuplicates();
         done(true, "Host capabilities loaded", {{"cpus", host.cpus}, {"memoryMiB", qulonglong(host.memory / 1024)},
             {"storage", Paths::vms()}, {"isos", Paths::isos()},
-            {"virtInstall", creatorReady}, {"presets", presets}, {"osinfo", osinfo}, {"networks", NetworkCatalog::discover(conn_, status)}});
+            {"virtInstall", creatorReady}, {"presets", presets}, {"osinfo", osinfo}, {"tpm", tpmAvailable()}, {"networks", NetworkCatalog::discover(conn_, status)}});
         return;
     }
     if (op.startsWith("networks.")) {
@@ -450,15 +454,22 @@ void VmWorker::manage(QString op, QVariantMap in) {
         if (!diskOk) { cleanup(); done(false, failure); return; }
         QFile::setPermissions(disk, QFile::ReadOwner | QFile::WriteOwner);
         emit progress("Preparing and validating the VM definition…");
+        // Windows installs without extra drivers on SATA disks, e1000e network cards and a standard VGA display.
+        // A TPM (which Windows 11 requires) and Secure Boot make it look like a current PC.
+        const bool windows = preset.startsWith("win");
+        const bool tpm = in.value("tpm", false).toBool();
+        if (tpm && !tpmAvailable()) { cleanup(); done(false, "This computer can't give VMs a TPM yet: install the swtpm package, then try again."); return; }
         QStringList args{"--connect", uri_, "--name", name, "--uuid", identity, "--memory", QString::number(memory), "--vcpus", QString::number(cpus), "--osinfo", preset,
-            "--disk", "path=" + disk + ",format=qcow2,bus=" + (preset == "win10" ? "sata" : "virtio"),
-            "--graphics", "vnc,listen=none", "--video", preset == "win10" ? "vga" : "virtio", "--network", "none", "--tpm", "none",
+            "--disk", "path=" + disk + ",format=qcow2,bus=" + (windows ? "sata" : "virtio"),
+            "--graphics", "vnc,listen=none", "--video", windows ? "vga" : "virtio", "--network", "none", "--tpm", tpm ? "emulator,model=tpm-crb,version=2.0" : "none",
             "--channel", "unix,target.type=virtio,target.name=org.qemu.guest_agent.0", "--noautoconsole", "--dry-run", "--print-xml", "1"};
-        if (firmware == "uefi") args << "--boot" << "uefi";
-        else args << "--boot" << (importing ? "hd" : "cdrom,hd");
         if (importing) args << "--import"; else args << "--cdrom" << source;
         if (disk.contains(',') || source.contains(',')) { cleanup(); done(false, "Choose paths without commas for the virt-install workflow."); return; }
-        if (!run("virt-install", args, output, failure)) { cleanup(); done(false, failure); return; }
+        const auto boot = firmware == "uefi" ? QString("uefi") : importing ? QString("hd") : QString("cdrom,hd");
+        const QString secureBoot = "uefi,firmware.feature0.name=secure-boot,firmware.feature0.enabled=yes,firmware.feature1.name=enrolled-keys,firmware.feature1.enabled=yes";
+        // Secure Boot when the host has firmware for it; otherwise plain UEFI.
+        bool defined = windows && firmware == "uefi" && run("virt-install", args + QStringList{"--boot", secureBoot}, output, failure);
+        if (!defined && !run("virt-install", args + QStringList{"--boot", boot}, output, failure)) { cleanup(); done(false, failure); return; }
         QDomDocument doc;
         if (!doc.setContent(output)) { cleanup(); done(false, "virt-install did not return a valid domain definition."); return; }
         auto root = doc.documentElement(), devices = root.firstChildElement("devices");
@@ -475,7 +486,7 @@ void VmWorker::manage(QString op, QVariantMap in) {
         for (auto v : choices) if (v.toMap()["id"] == in.value("networkId", "user")) choice = v.toMap();
         if (in["networkId"] != "none") {
             if (choice.isEmpty() || !choice["available"].toBool()) { cleanup(); done(false, "The selected network is unavailable. Refresh its configuration before creating the VM."); return; }
-            QString nic; DomainConfig::networkDevice(doc.toString(-1), {}, choice["kind"].toString(), choice["source"].toString(), preset == "win10" ? "e1000e" : "virtio", true, false, nic, failure);
+            QString nic; DomainConfig::networkDevice(doc.toString(-1), {}, choice["kind"].toString(), choice["source"].toString(), windows ? "e1000e" : "virtio", true, false, nic, failure);
             QDomDocument device; device.setContent(nic); devices.appendChild(doc.importNode(device.documentElement(), true));
         }
         auto balloon = devices.firstChildElement("memballoon"); if (!balloon.isNull() && balloon.attribute("model") == "virtio") child(doc, balloon, "stats").setAttribute("period", "5");

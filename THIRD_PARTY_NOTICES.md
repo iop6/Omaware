@@ -25,12 +25,15 @@ The modified file, `src/libvncclient/rfbclient.c`, credits Constantin Kaplinsky 
 | [QEMU](https://www.qemu.org) and `qemu-img` | GPL-2.0 (some files under other compatible licenses) | Runs the VMs (through libvirt) and converts and creates disk images. Run as separate programs, unmodified. |
 | [virt-install](https://github.com/virt-manager/virt-manager) with [libosinfo](https://libosinfo.org) | GPL-2.0-or-later / LGPL-2.1-or-later | Produces a VM definition with sensible defaults for the chosen OS (`virt-install --print-xml`). Run as a separate program, unmodified. |
 | UEFI firmware (OVMF / EDK II) | BSD-2-Clause-Patent | Firmware for UEFI VMs, loaded by QEMU. |
+| [swtpm](https://github.com/stefanberger/swtpm) (optional) | BSD-3-Clause | Emulates the TPM 2.0 that Windows 11 VMs need, started by libvirt. |
 
 When distributing OmaWare together with any of these, include their license notices as shipped by your distribution.
 
 ## Studied, not used
 
 These projects were read for ideas or compared as alternatives; none of their code is in OmaWare: virt-manager's interface, Quickemu, Cockpit Machines, spice-gtk, virt-viewer, CXX-Qt, KDE's KCommandBar and Omarchy's theme scripts.
+
+The ISO Shop's Windows download follows the sequence of requests that [Fido](https://github.com/pbatard/Fido) (GPL-3.0) and [Mido](https://github.com/ElliotKillick/Mido) / Quickemu's quickget (MIT) send to Microsoft's download service; OmaWare implements it independently in C++.
 
 ## toml++ license
 

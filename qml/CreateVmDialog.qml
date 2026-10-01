@@ -50,6 +50,9 @@ EditorDialog {
         })
     }
     property string selectedPreset: "generic"
+    // Windows: a TPM, which Windows 11 requires.
+    readonly property bool windowsPreset: selectedPreset.indexOf("win") === 0
+    readonly property bool needsTpm: selectedPreset === "win11"
     onPresetsChanged: Qt.callLater(function() { preset.currentIndex = Math.max(0, dialog.presets.findIndex(function(p) { return p.id === dialog.selectedPreset })) })
     onNetworksChanged: Qt.callLater(function() { network.currentIndex = Math.max(0, dialog.networks.findIndex(function(n) { return n.id === dialog.selectedNetwork })) })
     heading: reviewing ? "Review your new VM" : "Create a virtual machine"
@@ -77,6 +80,9 @@ EditorDialog {
         selectedPreset = (presets[preset.currentIndex] || {}).id || "generic"
         const windows = String((presets[preset.currentIndex] || {}).id).indexOf("win") === 0
         cpus.text = windows ? "4" : "2"; memory.text = windows ? "8192" : "4096"; disk.text = windows ? "64" : "32"
+        // Windows 11 only installs on UEFI firmware with a TPM.
+        if (selectedPreset === "win11") firmware.currentIndex = 1
+        tpm.checked = selectedPreset === "win11" && !!caps.tpm
     }
     function recoverFailure(action) {
         reviewing = false
@@ -90,7 +96,8 @@ EditorDialog {
         if (!reviewing) { reviewing = true; return }
         execute("vm.create", {name: name.text, sourceMode: sourceMode.currentIndex === 0 ? "iso" : "disk", source: source.text,
             preset: (presets[preset.currentIndex] || {}).id || "generic", cpus: Number(cpus.text), memoryMiB: Number(memory.text), diskGiB: Number(disk.text),
-            location: location.text || caps.storage, firmware: firmware.currentIndex === 0 ? "bios" : "uefi", networkId: networks[network.currentIndex].id})
+            location: location.text || caps.storage, firmware: firmware.currentIndex === 0 ? "bios" : "uefi", networkId: networks[network.currentIndex].id,
+            tpm: windowsPreset && tpm.checked && !!caps.tpm})
     }
     ColumnLayout {
         visible: !dialog.reviewing; Layout.fillWidth: true; spacing: 10
@@ -120,6 +127,19 @@ EditorDialog {
         AppField { id: source; objectName: "newVmSource"; Accessible.name: sourceMode.currentIndex === 0 ? "ISO path" : "Disk image path"; placeholderText: sourceMode.currentIndex === 0 ? "Choose an ISO above, or paste its path" : "Choose a raw or qcow2 image, or paste its path"; Layout.fillWidth: true }
         Label { text: "Operating system" }
         AppSelect { id: preset; objectName: "newVmPreset"; Accessible.name: "Operating system"; Layout.fillWidth: true; model: dialog.presets; textRole: "label"; onActivated: dialog.applyPreset() }
+        ColumnLayout {
+            objectName: "windowsOptions"
+            visible: dialog.windowsPreset
+            Layout.fillWidth: true; spacing: 6
+            AppCheckBox { id: tpm; objectName: "newVmTpm"; text: "Add a TPM 2.0 chip"; enabled: !!dialog.caps.tpm; Layout.fillWidth: true }
+            Label {
+                objectName: "tpmNote"
+                Layout.fillWidth: true; wrapMode: Text.WordWrap; font.pixelSize: Math.round(11 * theme.textScale)
+                color: dialog.needsTpm && !dialog.caps.tpm ? theme.colors.warning : theme.colors.muted
+                text: !dialog.caps.tpm ? (dialog.needsTpm ? "Windows 11 needs a TPM, and this computer can't provide one yet: install the swtpm package, then reopen this window." : "Install the swtpm package to give VMs a TPM.")
+                    : dialog.needsTpm ? "Windows 11 needs it. Snapshots keep its contents too." : "Optional for this version of Windows."
+            }
+        }
         Label { text: cpus.text + " processors · " + Number(Number(memory.text) / 1024).toFixed(1) + " GiB memory · " + (sourceMode.currentIndex === 0 ? disk.text + " GiB disk" : "Source disk capacity"); color: theme.colors.muted; Layout.fillWidth: true; wrapMode: Text.WordWrap; font.pixelSize: Math.round((12) * theme.textScale)}
         AppDisclosure {
             id: createAdvanced; objectName: "createAdvanced"; title: "Advanced setup"
@@ -149,7 +169,8 @@ EditorDialog {
         DetailRow { label: "Operating system"; value: preset.currentText; Layout.fillWidth: true }
         DetailRow { label: "Compute"; value: cpus.text + " CPUs · " + memory.text + " MiB RAM"; Layout.fillWidth: true }
         DetailRow { label: "Storage"; value: sourceMode.currentIndex === 0 ? "New " + disk.text + " GiB qcow2 disk" : "Independent copy of the source disk"; Layout.fillWidth: true }
-        DetailRow { label: "Firmware"; value: firmware.currentText; Layout.fillWidth: true }
+        DetailRow { label: "Firmware"; value: firmware.currentText + (dialog.windowsPreset && firmware.currentIndex === 1 ? " · Secure Boot" : ""); Layout.fillWidth: true }
+        DetailRow { visible: dialog.windowsPreset; label: "Windows extras"; value: tpm.checked && dialog.caps.tpm ? "TPM 2.0" : "No TPM"; Layout.fillWidth: true }
         DetailRow { label: "Network"; value: network.currentText; Layout.fillWidth: true }
         AppDisclosure { id: createPaths; objectName: "createPaths"; title: "File locations"
             DetailRow { label: "Source"; value: source.text; Layout.fillWidth: true }

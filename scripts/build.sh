@@ -37,21 +37,21 @@ case $family in
             qt6-base-dev qt6-declarative-dev qt6-wayland qml6-module-qtqml qml6-module-qtquick
             qml6-module-qtquick-controls qml6-module-qtquick-layouts qml6-module-qtquick-window
             qml6-module-qtquick-dialogs qml6-module-qtqml-workerscript qml6-module-qtquick-templates
-            libvirt-dev libvirt-daemon-system libvirt-clients qemu-system-x86 qemu-utils ovmf virtinst
+            libvirt-dev libvirt-daemon-system libvirt-clients qemu-system-x86 qemu-utils ovmf swtpm virtinst
             libtomlplusplus-dev zlib1g-dev libjpeg-dev libpng-dev policykit-1) ;;
     fedora|rhel|centos|rocky|almalinux)
         installer=(sudo dnf install -y)
         packages=(gcc-c++ cmake ninja-build pkgconf-pkg-config git python3 qt6-qtbase-devel
             qt6-qtdeclarative-devel qt6-qtwayland libvirt-devel libvirt-daemon-kvm qemu-kvm qemu-img
-            edk2-ovmf virt-install tomlplusplus-devel zlib-devel libjpeg-turbo-devel libpng-devel polkit) ;;
+            edk2-ovmf swtpm virt-install tomlplusplus-devel zlib-devel libjpeg-turbo-devel libpng-devel polkit) ;;
     arch|endeavouros|manjaro|omarchy)
         installer=(sudo pacman -S --needed --noconfirm)
         packages=(base-devel cmake ninja pkgconf git python qt6-base qt6-declarative qt6-wayland libvirt
-            qemu-desktop edk2-ovmf virt-install tomlplusplus zlib libjpeg-turbo libpng polkit) ;;
+            qemu-desktop edk2-ovmf swtpm virt-install tomlplusplus zlib libjpeg-turbo libpng polkit) ;;
     opensuse*|suse|sles)
         installer=(sudo zypper install -y)
         packages=(gcc-c++ cmake ninja pkgconf git python3 qt6-base-devel qt6-declarative-devel
-            qt6-wayland libvirt-devel libvirt-daemon-qemu qemu-x86 qemu-tools qemu-ovmf-x86_64 virt-install
+            qt6-wayland libvirt-devel libvirt-daemon-qemu qemu-x86 qemu-tools qemu-ovmf-x86_64 swtpm virt-install
             tomlplusplus-devel zlib-devel libjpeg8-devel libpng16-devel polkit) ;;
     *) installer=(); packages=() ;;
 esac

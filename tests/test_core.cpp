@@ -21,6 +21,8 @@
 #include <QProcess>
 #include <QNetworkAccessManager>
 #include <QNetworkReply>
+#include <QTcpServer>
+#include <QTcpSocket>
 #include <QTemporaryDir>
 #include <QSaveFile>
 #include <QLockFile>
@@ -68,6 +70,48 @@ private slots:
         QCOMPARE(library.identify("OPNsense-26.7-dvd-amd64.iso")["source"].toString(), QString("opnsense"));
         QVERIFY(library.identify("random.iso").isEmpty());
     }
+    void windowsDownloads() {
+        // Microsoft's page: the current version, its product edition and a checksum per language.
+        const QByteArray page = "<p>(Current release: Windows 11 2026 Update l Version 26H2)</p>\n"
+            "            <select><option value=\"\" selected>Select Download</option><option value=\"3813\">Windows 11 (multi-edition ISO for x64 devices)</option></select>\n"
+            "            <table><tr><td>Arabic 64-bit</td><td>A75AE3F36CB9FFFFEDCB2D7DED9CEF83FFB710EB1376610D2220684D987CB9A5</td></tr>\n"
+            "            <tr><td>English International 64-bit</td><td>1111111111111111111111111111111111111111111111111111111111111111</td></tr>\n"
+            "            <tr><td>English 64-bit</td> <td>2222222222222222222222222222222222222222222222222222222222222222</td></tr>\n"
+            "            <tr><td>Chinese Simplified 64-bit</td><td>3333333333333333333333333333333333333333333333333333333333333333</td></tr></table>";
+        const auto windows = IsoLibrary::windowsPage(page);
+        QCOMPARE(windows["version"].toString(), QString("26H2")); QCOMPARE(windows["edition"].toString(), QString("3813"));
+        QCOMPARE(windows["languages"].toStringList(), QStringList({"Arabic", "English International", "English", "Chinese Simplified"}));
+        QCOMPARE(windows["hashes"].toMap()["English"].toString(), QString(64, '2'));
+        QVERIFY(IsoLibrary::windowsPage("<html>no download here</html>").isEmpty());
+        // SKUs match by language name or display name.
+        const QByteArray skus = "{\"Skus\":[{\"Id\":\"27160\",\"Language\":\"English\",\"LocalizedLanguage\":\"English (United States)\"},\n"
+            "            {\"Id\":\"27161\",\"Language\":\"English (United Kingdom)\",\"LocalizedLanguage\":\"English International\"},\n"
+            "            {\"Id\":\"27170\",\"Language\":\"Chinese (Simplified)\",\"LocalizedLanguage\":\"Chinese Simplified\"}]}";
+        QCOMPARE(IsoLibrary::windowsSku(skus, "English"), QString("27160"));
+        QCOMPARE(IsoLibrary::windowsSku(skus, "English International"), QString("27161"));
+        QCOMPARE(IsoLibrary::windowsSku(skus, "Chinese Simplified"), QString("27170"));
+        QVERIFY(IsoLibrary::windowsSku(skus, "Klingon").isEmpty());
+        // The 64-bit link, or a plain explanation when Microsoft refuses.
+        QString error;
+        QCOMPARE(IsoLibrary::windowsLink("{\"ProductDownloadOptions\":[{\"Uri\":\"https://software.download.prss.microsoft.com/dbazure/Win11_26H2_English_x64.iso?t=abc\",\"DownloadType\":1}]}", error),
+                 QString("https://software.download.prss.microsoft.com/dbazure/Win11_26H2_English_x64.iso?t=abc"));
+        QVERIFY(IsoLibrary::windowsLink("{\"Errors\":[{\"Key\":\"ErrorSettings.SentinelReject\",\"Value\":\"Sentinel marked this request as rejected.\",\"Type\":8}]}", error).isEmpty());
+        QVERIFY(error.contains("refused"));
+        // The language that fits the computer's locale.
+        const QStringList languages{"English", "English International", "German", "Brazilian Portuguese", "Portuguese", "Chinese Traditional", "Chinese Simplified"};
+        QCOMPARE(IsoLibrary::windowsLanguage(QLocale("en_US"), languages), QString("English"));
+        QCOMPARE(IsoLibrary::windowsLanguage(QLocale("en_GB"), languages), QString("English International"));
+        QCOMPARE(IsoLibrary::windowsLanguage(QLocale("de_DE"), languages), QString("German"));
+        QCOMPARE(IsoLibrary::windowsLanguage(QLocale("pt_BR"), languages), QString("Brazilian Portuguese"));
+        QCOMPARE(IsoLibrary::windowsLanguage(QLocale("zh_TW"), languages), QString("Chinese Traditional"));
+        QCOMPARE(IsoLibrary::windowsLanguage(QLocale("fi_FI"), languages), QString("English"));
+        // Windows ISOs from OmaWare or Microsoft's website are recognized.
+        IsoLibrary library;
+        QCOMPARE(library.identify("Win11_26H2_English_x64.iso")["version"].toString(), QString("26H2"));
+        QCOMPARE(library.identify("Win11_26H2_EnglishInternational_x64.iso")["preset"].toString(), QString("win11"));
+        QCOMPARE(library.identify("Win11_24H2_English_x64v2.iso")["version"].toString(), QString("24H2"));
+        QCOMPARE(library.identify("Windows11_Client_x64_en-us_26300_9457.iso")["version"].toString(), QString("26300.9457"));
+    }
     void isoLatestOnline() {
         // Contacts the real publishers; opt in with OMAWARE_ONLINE_TEST=1. Nothing large is downloaded.
         if (qEnvironmentVariable("OMAWARE_ONLINE_TEST") != "1") QSKIP("Online release check: set OMAWARE_ONLINE_TEST=1 to contact the publishers.");
@@ -80,8 +124,23 @@ private slots:
             if (source["kind"] != "download") continue;
             QVERIFY2(source["status"] == "ready", qPrintable(source["id"].toString() + ": " + source["error"].toString()));
             qInfo().noquote() << source["id"].toString() << source["version"].toString() << source["url"].toString();
+            if (source["id"] == "windows-11") {
+                // The full exchange with Microsoft, up to the start of the (7 GB) download, which is then cancelled.
+                QVERIFY(!source["languages"].toStringList().isEmpty());
+                QSignalSpy failed(&library, &IsoLibrary::finished);
+                QVERIFY(library.download("windows-11"));
+                QTRY_VERIFY_WITH_TIMEOUT(library.downloading() || !failed.isEmpty(), 60000);
+                // Microsoft refuses some networks (and repeated requests) outright; that's its decision, not a bug here.
+                if (!failed.isEmpty() && failed.last()[2].toString().contains("refused")) { qWarning().noquote() << "windows-11:" << failed.last()[2].toString(); continue; }
+                QVERIFY2(failed.isEmpty(), qPrintable(failed.isEmpty() ? QString() : failed.last()[2].toString()));
+                QTRY_VERIFY_WITH_TIMEOUT([&] { for (const auto &v : library.sources()) if (v.toMap()["id"] == "windows-11") return v.toMap()["received"].toDouble() > 1048576; return false; }(), 60000);
+                library.cancel("windows-11");
+                QTRY_VERIFY(!library.downloading());
+                continue;
+            }
             // The published ISO really exists: ask for its headers only.
             QNetworkRequest request(QUrl(source["url"].toString()));
+            request.setHeader(QNetworkRequest::UserAgentHeader, "OmaWare/test");   // as OmaWare's downloads do (some servers challenge browsers)
             request.setAttribute(QNetworkRequest::RedirectPolicyAttribute, QNetworkRequest::NoLessSafeRedirectPolicy);
             auto reply = network.head(request);
             QTRY_VERIFY_WITH_TIMEOUT(reply->isFinished(), 30000);
@@ -152,6 +211,46 @@ private slots:
         QTRY_COMPARE(imported.size(), 1); result = imported.takeFirst();
         QVERIFY(!result[1].toBool()); QVERIFY(result[2].toString().contains("cancelled"));
         QVERIFY(!QFile::exists(dir.filePath("isos/huge.iso"))); QVERIFY(!QFile::exists(dir.filePath("isos/huge.iso.part")));
+    }
+    void isoDownloadResumes() {
+        qputenv("OMAWARE_STALL_SECONDS", "1");
+        // A server that drops the connection halfway; the download continues from there and is still verified.
+        const QByteArray body = QByteArray(3 * 1024 * 1024, 'r') + "end";
+        const auto sha = QString::fromLatin1(QCryptographicHash::hash(body, QCryptographicHash::Sha256).toHex());
+        QTcpServer server; QVERIFY(server.listen(QHostAddress::LocalHost));
+        QList<QByteArray> ranges; bool stall = false; QList<QTcpSocket *> quiet;
+        connect(&server, &QTcpServer::newConnection, this, [&] {
+            auto socket = server.nextPendingConnection();
+            connect(socket, &QTcpSocket::readyRead, socket, [&, socket] {
+                const auto head = socket->readAll();
+                const auto range = QRegularExpression("Range: bytes=([0-9]+)-").match(QString::fromLatin1(head));
+                ranges << (range.hasMatch() ? range.captured(1).toLatin1() : QByteArray("full"));
+                if (!range.hasMatch()) {
+                    // First request: promise the whole file, send half of it, then hang up.
+                    socket->write("HTTP/1.1 200 OK\r\nContent-Length: " + QByteArray::number(body.size()) + "\r\nAccept-Ranges: bytes\r\nConnection: close\r\n\r\n" + body.left(body.size() / 2));
+                    socket->flush(); socket->waitForBytesWritten(2000);
+                    if (stall) quiet << socket; else socket->abort();
+                    return;
+                }
+                const qint64 from = range.captured(1).toLongLong();
+                socket->write("HTTP/1.1 206 Partial Content\r\nContent-Length: " + QByteArray::number(body.size() - from) + "\r\nContent-Range: bytes " + QByteArray::number(from) + "-" + QByteArray::number(body.size() - 1) + "/" + QByteArray::number(body.size()) + "\r\nConnection: close\r\n\r\n" + body.mid(from));
+                socket->disconnectFromHost();
+            });
+        });
+        QTemporaryDir dir; IsoLibrary library; library.setFolder(dir.path());
+        QSignalSpy finished(&library, &IsoLibrary::finished);
+        QVERIFY(library.fetch("debian", QUrl(QString("http://127.0.0.1:%1/debian-13.1.0-amd64-netinst.iso").arg(server.serverPort())), sha, "debian-13.1.0-amd64-netinst.iso", body.size()));
+        QTRY_VERIFY_WITH_TIMEOUT(!finished.isEmpty(), 20000);
+        QVERIFY2(finished.last()[1].toBool(), qPrintable(finished.last()[2].toString()));
+        QCOMPARE(ranges.size(), 2); QCOMPARE(ranges.first(), QByteArray("full")); QVERIFY(ranges.last().toLongLong() > 0);
+        QFile result(dir.filePath("debian-13.1.0-amd64-netinst.iso")); QVERIFY(result.open(QIODevice::ReadOnly)); QCOMPARE(result.readAll(), body);
+        // A server that goes quiet without hanging up is noticed (here after a second) and resumed the same way.
+        stall = true; ranges.clear(); finished.clear(); QFile::remove(result.fileName());
+        QVERIFY(library.fetch("debian", QUrl(QString("http://127.0.0.1:%1/debian-13.1.0-amd64-netinst.iso").arg(server.serverPort())), sha, "debian-13.1.0-amd64-netinst.iso", body.size()));
+        QTRY_VERIFY_WITH_TIMEOUT(!finished.isEmpty(), 30000);
+        QVERIFY2(finished.last()[1].toBool(), qPrintable(finished.last()[2].toString()));
+        QCOMPARE(ranges.size(), 2); QVERIFY(ranges.last().toLongLong() > 0);
+        QFile again(result.fileName()); QVERIFY(again.open(QIODevice::ReadOnly)); QCOMPARE(again.readAll(), body);
     }
     void isoDownloads() {
         QTemporaryDir dir; QVERIFY(dir.isValid());

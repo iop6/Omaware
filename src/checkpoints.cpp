@@ -128,6 +128,44 @@ bool copyDisk(QString source, QString format, QString destination, QString &erro
 }
 bool validManifest(QVariantMap manifest, QString uuid, QString id) { return !QUuid(id).isNull() && manifest["uuid"] == uuid && manifest["id"] == id && manifest["kind"] == "copy"; }
 QString vmRoot(QString uuid) { return Paths::vmDir(uuid); }
+// An emulated TPM (Windows 11 needs one) keeps its state outside the VM definition: libvirt's session
+// daemon stores it per VM UUID in the user's config folder and keeps it when the VM is redefined.
+QString tpmState(const QString &uuid) {
+    return qEnvironmentVariable("XDG_CONFIG_HOME", QDir::homePath() + "/.config") + "/libvirt/qemu/swtpm/" + uuid + "/tpm2/tpm2-00.permall";
+}
+bool hasTpm(const QString &xml) {
+    QDomDocument doc; doc.setContent(xml);
+    const auto tpms = doc.elementsByTagName("tpm");
+    for (int i = 0; i < tpms.size(); ++i) if (tpms.at(i).toElement().firstChildElement("backend").attribute("type") == "emulator") return true;
+    return false;
+}
+// Records the TPM state in a checkpoint ("tpm" is empty when the TPM has never been started).
+bool captureTpm(const QString &uuid, const QString &xml, const QString &directory, QVariantMap &manifest, QString &error) {
+    if (!hasTpm(xml)) return true;
+    manifest["tpm"] = QString();
+    if (!QFile::exists(tpmState(uuid))) return true;
+    if (!QFile::copy(tpmState(uuid), directory + "/tpm-state")) { error = "Could not copy the VM's TPM state."; return false; }
+    QFile::setPermissions(directory + "/tpm-state", QFile::ReadOwner | QFile::WriteOwner);
+    manifest["tpm"] = "tpm-state";
+    return true;
+}
+// Puts a saved TPM state in place (none: a TPM that hadn't started yet), keeping the current one in backup.
+bool installTpm(const QString &uuid, const QString &from, const QString &backup, QString &error) {
+    const auto target = tpmState(uuid);
+    QFile::remove(backup);
+    if (QFile::exists(target) && !QFile::copy(target, backup)) { error = "Could not keep the VM's current TPM state."; return false; }
+    QDir().mkpath(QFileInfo(target).absolutePath());
+    QFile::remove(target);
+    if (from.isEmpty()) return true;
+    if (!QFile::copy(from, target)) { error = "Could not restore the VM's TPM state."; return false; }
+    QFile::setPermissions(target, QFile::ReadOwner | QFile::WriteOwner);
+    return true;
+}
+void putBackTpm(const QString &uuid, const QString &backup) {
+    if (backup.isEmpty()) return;
+    QFile::remove(tpmState(uuid));
+    if (QFile::exists(backup)) QFile::copy(backup, tpmState(uuid));
+}
 bool safeFile(QString directory, QString file) { return !file.isEmpty() && QFileInfo(file).fileName() == file && !QFileInfo(directory + "/" + file).isSymLink() && QFileInfo(directory + "/" + file).isFile(); }
 // Save images retain the live CPU/device ABI. Only relocate storage in that XML;
 // an inactive definition can omit runtime details needed to load saved devices.
@@ -192,6 +230,7 @@ bool chain(QString uuid, QString id, QString &error, QSet<QString> *seen = nullp
     }
     QDomDocument doc; doc.setContent(manifest["xml"].toString());
     if (!doc.documentElement().firstChildElement("os").firstChildElement("nvram").text().isEmpty() && !safeFile(directory, manifest["nvram"].toString())) { error = "Missing firmware variables."; return false; }
+    if (!manifest.value("tpm").toString().isEmpty() && !safeFile(directory, manifest.value("tpm").toString())) { error = "Missing TPM state."; return false; }
     auto base = manifest["baseId"].toString(); return base.isEmpty() || chain(uuid, base, error, seen, verifying);
 }
 bool diskChain(QString uuid, QString id, const std::atomic_bool *cancel, QString &error) {
@@ -299,9 +338,12 @@ bool Checkpoints::create(virDomainPtr domain, QString xml, QString name, QString
         if (!copied) { rollback(); error = "Could not copy the UEFI variable store. The checkpoint was not created. " + error; return false; }
         QFile::setPermissions(directory + "/" + nvram, QFile::ReadOwner | QFile::WriteOwner);
     }
+    QVariantMap tpm;
+    if (!captureTpm(uuid, xml, directory, tpm, error)) { rollback(); return false; }
     if (!unchanged(domain, xml)) { rollback(); error = "The VM started or its configuration changed during the copy. The checkpoint was discarded."; return false; }
     const auto current = read(root + "/current.json");
     QVariantMap manifest{{"uuid", uuid}, {"id", id}, {"name", name}, {"notes", notes}, {"kind", "copy"}, {"time", QDateTime::currentSecsSinceEpoch()}, {"xml", xml}, {"disks", disks}, {"nvram", nvram}, {"capacity", capacity}, {"parentId", current["id"]}, {"parent", current["name"]}};
+    manifest.insert(tpm);
     if (!finishManifest(directory, manifest, options, error)) { rollback(); return false; }
     return true;
 }
@@ -423,7 +465,7 @@ bool Checkpoints::createLive(virDomainPtr domain, QString xml, QString name, QSt
     progress("Preparing live checkpoint", 0, 0);
     // Hold CPUs between saving device/RAM state and the atomic disk backup start.
     // The guest then resumes while libvirt copies the captured disks in background.
-    if (memory || !info["nvram"].toString().isEmpty()) {
+    if (memory || !info["nvram"].toString().isEmpty() || hasTpm(xml)) {
         if (state == VIR_DOMAIN_RUNNING) {
             captureJournal["paused"] = true;
             if (!saveCaptureJournal()) { rollback(); return false; }
@@ -457,6 +499,7 @@ bool Checkpoints::createLive(virDomainPtr domain, QString xml, QString name, QSt
         QFile::setPermissions(directory + "/firmware-vars", QFile::ReadOwner | QFile::WriteOwner);
         manifest["nvram"] = "firmware-vars";
     }
+    if (!captureTpm(uuid, xml, directory, manifest, error)) { resume(); rollback(); return false; }
     if (cancel || DomainConfig::revision(xmlOf(domain, VIR_DOMAIN_XML_INACTIVE)) != DomainConfig::revision(xml) || !Configuration::changes(xml, xmlOf(domain, 0)).isEmpty()) {
         error = cancel ? "Checkpoint cancelled." : "VM configuration changed while preparing the checkpoint. Try again."; resume(); rollback(); return false;
     }
@@ -656,6 +699,7 @@ bool Checkpoints::restore(virConnectPtr connection, virDomainPtr domain, QString
         auto previous = virDomainDefineXMLFlags(connection, xml.toUtf8().constData(), VIR_DOMAIN_DEFINE_VALIDATE);
         if (!previous) { error += " " + lastError("Restore previous VM configuration") + ". Previous files and prepared files were retained at " + destination + "."; return; }
         virDomainFree(previous);
+        putBackTpm(uuid, journal["tpmBackup"].toString());
         rollback();
         QString markerError;
         if (write(root + "/current.json", beforeMarker, markerError)) QFile::remove(root + "/restore.json");
@@ -678,6 +722,13 @@ bool Checkpoints::restore(virConnectPtr connection, virDomainPtr domain, QString
         }
     }
     if (!unchanged(domain, xml)) { rollback(); error = "The VM started or changed before the checkpoint switch. Its configuration was kept; check its power state."; return false; }
+    // The TPM's state goes back too (the current one is kept until the restore has finished).
+    if (manifest.contains("tpm")) {
+        journal["tpmBackup"] = destination + "/tpm-before";
+        if (!write(root + "/restore.json", journal, error)) { recover(xml); return false; }
+        const auto saved = manifest.value("tpm").toString();
+        if ((!saved.isEmpty() && !safeFile(directory, saved)) || !installTpm(uuid, saved.isEmpty() ? QString() : directory + "/" + saved, journal["tpmBackup"].toString(), error)) { recover(xml); return false; }
+    }
     auto saved = virDomainDefineXMLFlags(connection, doc.toString(-1).toUtf8().constData(), VIR_DOMAIN_DEFINE_VALIDATE);
     if (!saved) { error = lastError("Restore checkpoint configuration"); recover(xml); return false; }
     virDomainFree(saved);
@@ -692,6 +743,7 @@ bool Checkpoints::restore(virConnectPtr connection, virDomainPtr domain, QString
     if (!safetyId.isEmpty() && !write(root + "/undo.json", {{"id", safetyId}, {"restoredId", id}}, error)) return false;
     if (!safety) QFile::remove(root + "/undo.json");
     QFile::remove(root + "/restore.json");
+    QFile::remove(destination + "/tpm-before");
     return true;
 }
 namespace {
@@ -827,6 +879,7 @@ bool Checkpoints::verify(QString uuid, QString id, const std::atomic_bool &cance
             if (!process({"check", "-f", "qcow2", "--output=json", directory + "/" + file}, &cancel, {}, error)) { if (!cancel) { manifest["verificationError"] = error; QString ignored; write(directory + "/manifest.json", manifest, ignored); } return false; }
         }
         if (!manifest["nvram"].toString().isEmpty()) files << manifest["nvram"].toString();
+        if (!manifest.value("tpm").toString().isEmpty()) files << manifest.value("tpm").toString();
         if (!manifest["memory"].toString().isEmpty()) files << manifest["memory"].toString();
         for (auto name : files) {
             QFile file(directory + "/" + name); if (!file.open(QIODevice::ReadOnly)) { error = "Could not read checkpoint data."; return false; }
@@ -1031,6 +1084,7 @@ bool Checkpoints::recover(virConnectPtr connection, virDomainPtr domain, QString
     } else {
         auto previous = virDomainDefineXMLFlags(connection, before.toUtf8().constData(), VIR_DOMAIN_DEFINE_VALIDATE);
         if (!previous) { error = lastError("Recover previous configuration"); return false; }
+        putBackTpm(uuid, record["tpmBackup"].toString());
         int state = record["beforeState"].toInt();
         bool ok = true;
         if (!record["memoryRollback"].toString().isEmpty()) {
@@ -1084,6 +1138,11 @@ QString Checkpoints::clone(virConnectPtr connection, QString uuid, QString id, Q
         if (!QFile::copy(source + "/" + manifest["nvram"].toString(), destination + "/firmware-vars")) { error = "Could not copy firmware variables."; return {}; }
         text(root.firstChildElement("os").firstChildElement("nvram"), destination + "/firmware-vars");
     }
+    // The new VM gets its own copy of the TPM, so whatever Windows stored in it (BitLocker, sign-in keys) still works.
+    if (!manifest.value("tpm").toString().isEmpty()) {
+        QDir().mkpath(QFileInfo(tpmState(newUuid)).absolutePath());
+        if (!safeFile(source, manifest.value("tpm").toString()) || !QFile::copy(source + "/" + manifest.value("tpm").toString(), tpmState(newUuid))) { error = "Could not copy the TPM state."; return {}; }
+    }
     for (auto nic = devices.firstChildElement("interface"); !nic.isNull(); nic = nic.nextSiblingElement("interface")) {
         nic.firstChildElement("mac").setAttribute("address", "52:54:00:" + QString::fromLatin1(QUuid::createUuid().toRfc4122().right(3).toHex(':')));
         auto link = nic.firstChildElement("link"); if (link.isNull()) { link = doc.createElement("link"); nic.appendChild(link); } link.setAttribute("state", "down");
@@ -1099,6 +1158,6 @@ QString Checkpoints::clone(virConnectPtr connection, QString uuid, QString id, Q
     }
     if (progress) progress("Registering the new VM", 0, 0);
     auto domain = virDomainDefineXMLFlags(connection, doc.toString(-1).toUtf8().constData(), VIR_DOMAIN_DEFINE_VALIDATE);
-    if (!domain) { error = lastError("Create VM from checkpoint"); return {}; }
+    if (!domain) { error = lastError("Create VM from checkpoint"); QDir(QFileInfo(tpmState(newUuid)).absolutePath() + "/..").removeRecursively(); return {}; }
     virDomainFree(domain); rollback.dismiss(); QFile::remove(destination + "/building.json"); return newUuid;
 }

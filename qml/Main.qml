@@ -1025,6 +1025,7 @@ ApplicationWindow {
                 Layout.fillWidth: true; Layout.fillHeight: true; Layout.margins: 26
                 library: isoLibrary
                 onUseIso: function(path) { createDialog.beginWith(path) }
+                onLanguageChosen: function(id, language) { preferences.set("isoLanguage:" + id, language) }
             }
         }
         Rectangle { visible: !root.mainConsoleFullscreen; Layout.fillWidth: true; height: 1; color: theme.colors.border }
@@ -1122,7 +1123,10 @@ ApplicationWindow {
     }
     CheckpointJobs { id: jobsPanel }
     NetworkDialog { id: networkDialog }
-    IsoLibrary { id: isoLibrary; objectName: "isoLibrary" }
+    IsoLibrary {
+        id: isoLibrary; objectName: "isoLibrary"
+        Component.onCompleted: { const language = String(preferences.get("isoLanguage:windows-11", "")); if (language) setLanguage("windows-11", language) }
+    }
     Updater { id: updater; objectName: "updater" }
     // Updating restarts OmaWare: running VMs are paused first (see applyUpdate), and the new copy reopens on the same page.
     Connections {

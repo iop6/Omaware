@@ -249,6 +249,18 @@ private slots:
         QCOMPARE(isos->files().size(), 3);
         QVERIFY(QMetaObject::invokeMethod(creator, "close")); QTRY_VERIFY(!creator->property("visible").toBool());
         dropZone->setProperty("message", "");
+        // Windows: UEFI and a TPM (when this computer can provide one) are chosen for you.
+        { QFile w(files.filePath("iso-library/Win11_26H2_English_x64.iso")); QVERIFY(w.open(QIODevice::WriteOnly)); w.write("windows"); }
+        isos->rescan();
+        QVERIFY(QMetaObject::invokeMethod(creator, "beginWith", Q_ARG(QVariant, files.filePath("iso-library/Win11_26H2_English_x64.iso"))));
+        QTRY_VERIFY(creator->property("opened").toBool());
+        QTRY_COMPARE(creator->property("selectedPreset").toString(), QString("win11"));
+        QTRY_VERIFY(creator->findChild<QQuickItem *>("windowsOptions")->isVisible());
+        QCOMPARE(creator->findChild<QObject *>("newVmFirmware")->property("currentIndex").toInt(), 1);
+        if (backend->management()["capabilities"].toMap()["tpm"].toBool()) QTRY_VERIFY(creator->findChild<QObject *>("newVmTpm")->property("checked").toBool());
+        QVERIFY(capture("create-windows"));
+        QVERIFY(QMetaObject::invokeMethod(creator, "close")); QTRY_VERIFY(!creator->property("visible").toBool());
+        QFile::remove(files.filePath("iso-library/Win11_26H2_English_x64.iso")); isos->rescan();
         shop->setProperty("category", "all"); window->setProperty("navigation", "library");
         auto wizard = window->findChild<QObject *>("createVmDialog"); QVERIFY(wizard);
         QVERIFY(QMetaObject::invokeMethod(wizard, "begin"));
@@ -645,17 +657,25 @@ private slots:
         QTRY_COMPARE(snapshotPage->property("selectedSnapshot").toMap()["parentId"].toString(), forkId);
         const auto newestId = snapshotPage->property("selectedSnapshot").toMap()["id"].toString();
         QVERIFY(click(vmDetails, "locateWorkingState")); QTRY_VERIFY(snapshotPage->property("workingSelected").toBool());
+        const auto parentBeforeRevert = graphNode("__working__")["parentId"].toString();
         QVERIFY(click(vmDetails, "revertSnapshot")); QCOMPARE(checkpointEditor->property("checkpointId").toString(), newestId);
+        // Click Cancel only once the dialog is fully open and laid out (as a person would), then make sure nothing happened.
+        QTRY_VERIFY(checkpointEditor->property("opened").toBool()); QTest::qWait(250);
         QVERIFY(click(checkpointEditor, "editorCancel"));
         QTRY_VERIFY(!checkpointEditor->property("visible").toBool());
+        QTest::qWait(500); QVERIFY(!backend->busy()); QCOMPARE(graphNode("__working__")["parentId"].toString(), parentBeforeRevert);
         QVERIFY(click(vmDetails, qPrintable("snapshotNode_" + quickSnapshot["id"].toString())));
         QTRY_COMPARE(snapshotPage->property("selectedKey").toString(), quickSnapshot["id"].toString());
         QVERIFY(click(vmDetails, "restoreCheckpoint"));
-        QTRY_VERIFY(checkpointEditor->property("opened").toBool());
+        QTRY_VERIFY(checkpointEditor->property("opened").toBool()); QTest::qWait(250);
         QCOMPARE(checkpointEditor->property("checkpointId").toString(), quickSnapshot["id"].toString());
         QVERIFY(click(checkpointEditor, "editorSave"));
         QTRY_VERIFY_WITH_TIMEOUT(!checkpointEditor->property("visible").toBool(), 30000);
-        QTRY_COMPARE(graphNode("__working__")["parentId"].toString(), quickSnapshot["id"].toString());
+        QTRY_VERIFY2(graphNode("__working__")["parentId"].toString() == quickSnapshot["id"].toString(),
+            qPrintable("restore: " + window->property("operationError").toString() + " | log: " + backend->activity().value(0).toMap()["message"].toString() + " / " + backend->activity().value(1).toMap()["message"].toString() + " / " + backend->activity().value(2).toMap()["message"].toString()
+                + " | on disk: " + [&] { const auto want = Checkpoints::history(uuid)["currentId"].toString(); for (auto v : Checkpoints::list(uuid)) if (v.toMap()["id"] == want) return v.toMap()["name"].toString(); return want; }()
+                + " | quick: " + quickSnapshot["name"].toString()
+                + " | working parent: " + [&] { const auto want = graphNode("__working__")["parentId"].toString(); for (auto v : Checkpoints::list(uuid)) if (v.toMap()["id"] == want) return v.toMap()["name"].toString() + " (" + v.toMap()["tags"].toString() + ")"; return want; }()));
         // Console Revert follows the working parent, not the newest recovery or
         // the most recently created node on the other branch.
         QVERIFY(click(window, "consoleTab")); QTRY_VERIFY(!window->property("detailsOpen").toBool());
@@ -976,7 +996,10 @@ private slots:
         result = command("snapshots.list", {{"uuid", uuid}}); QCOMPARE(result["items"].toList().size(), 1); const auto checkpoint = result["items"].toList().first().toMap(); QCOMPARE(checkpoint["kind"].toString(), "copy");
         QVERIFY(process("qemu-io", {"-f", "qcow2", "-c", "write -P 0x52 0 4096", oldDisk}));
         QVERIFY(nvram.open(QIODevice::ReadWrite)); QVERIFY(nvram.seek(nvram.size() - 1)); QVERIFY(nvram.write("X") == 1); nvram.close();
+        result = command("snapshots.verify", {{"uuid", uuid}, {"name", checkpoint["name"]}, {"id", checkpoint["id"]}}); QVERIFY2(resultOk, qPrintable(result["message"].toString()));
         result = command("snapshots.restore", {{"uuid", uuid}, {"name", checkpoint["name"]}, {"id", checkpoint["id"]}}); QVERIFY2(resultOk, qPrintable(result["message"].toString()));
+        // A VM without a TPM never gets TPM state, even after its snapshot was verified and restored.
+        QVERIFY(!QDir(qEnvironmentVariable("XDG_CONFIG_HOME", QDir::homePath() + "/.config") + "/libvirt/qemu/swtpm/" + uuid).exists());
         auto restored = details(uuid);
         auto newDisk = restored["disks"].toList().first().toMap()["source"].toString(); QVERIFY(newDisk != oldDisk);
         QVERIFY(process("qemu-io", {"-f", "qcow2", "-c", "read -P 0x31 0 4096", newDisk}));
@@ -987,6 +1010,52 @@ private slots:
         result = command("snapshots.remove", {{"uuid", uuid}, {"name", checkpoint["name"]}, {"id", checkpoint["id"]}}); QVERIFY2(resultOk, qPrintable(result["message"].toString()));
         // Restore intentionally retains the old firmware file; this file belongs only to our fixture.
         QVERIFY(QFile::remove(oldNvram));
+    }
+    void windowsTpmVms() {
+        if (QStandardPaths::findExecutable("swtpm").isEmpty()) QSKIP("swtpm isn't installed here, so VMs can't have a TPM.");
+        // A Windows 11 VM: SATA disk, TPM 2.0 and UEFI (with Secure Boot when the host has it).
+        QFile installer(files.filePath("Win11_26H2_English_x64.iso")); QVERIFY(installer.open(QIODevice::WriteOnly)); installer.write(QByteArray(1 << 20, 'w')); installer.close();
+        auto result = command("vm.create", {{"name", "win-" + QUuid::createUuid().toString(QUuid::Id128).left(8)}, {"sourceMode", "iso"}, {"source", installer.fileName()},
+            {"preset", "win11"}, {"firmware", "uefi"}, {"cpus", 1}, {"memoryMiB", 512}, {"diskGiB", 1}, {"networkId", "none"}, {"location", files.path()},
+            {"tpm", true}});
+        QVERIFY2(resultOk, qPrintable(result["message"].toString())); const auto uuid = result["uuid"].toString();
+        QDomDocument doc; QVERIFY(doc.setContent(xml(uuid)));
+        auto tpm = doc.documentElement().firstChildElement("devices").firstChildElement("tpm"); QVERIFY(!tpm.isNull());
+        QCOMPARE(tpm.firstChildElement("backend").attribute("type"), QString("emulator")); QCOMPARE(tpm.firstChildElement("backend").attribute("version"), QString("2.0"));
+        QStringList cds; QString systemBus;
+        for (auto d = doc.documentElement().firstChildElement("devices").firstChildElement("disk"); !d.isNull(); d = d.nextSiblingElement("disk")) {
+            if (d.attribute("device") == "cdrom") cds << d.firstChildElement("source").attribute("file");
+            else systemBus = d.firstChildElement("target").attribute("bus");
+        }
+        QCOMPARE(systemBus, QString("sata")); QCOMPARE(cds, QStringList({installer.fileName()}));
+        qInfo() << "Secure Boot firmware:" << xml(uuid).contains("secure-boot") << doc.documentElement().firstChildElement("os").firstChildElement("loader").text();
+        // The TPM's state appears once the VM has run, and snapshots keep it.
+        const auto state = qEnvironmentVariable("XDG_CONFIG_HOME", QDir::homePath() + "/.config") + "/libvirt/qemu/swtpm/" + uuid + "/tpm2/tpm2-00.permall";
+        auto contents = [&] { QFile f(state); return f.open(QIODevice::ReadOnly) ? f.readAll() : QByteArray(); };
+        backend->action(uuid, "start"); QTRY_VERIFY_WITH_TIMEOUT(active(uuid), 15000); QTRY_VERIFY(!backend->busy());
+        QTRY_VERIFY(!contents().isEmpty());
+        // A live snapshot (the VM keeps running) and a memory snapshot both work with a TPM.
+        result = command("snapshots.create", {{"uuid", uuid}, {"name", "Live"}}); QVERIFY2(resultOk, qPrintable(result["message"].toString()));
+        result = command("snapshots.create", {{"uuid", uuid}, {"name", "With memory"}, {"memory", true}}); QVERIFY2(resultOk, qPrintable(result["message"].toString()));
+        auto point = [&](QString name) { for (auto value : Checkpoints::list(uuid)) if (value.toMap()["name"] == name) return value.toMap(); return QVariantMap{}; };
+        QCOMPARE(point("Live")["tpm"].toString(), QString("tpm-state")); QCOMPARE(point("With memory")["tpm"].toString(), QString("tpm-state"));
+        backend->action(uuid, "force-off"); QTRY_VERIFY(!active(uuid)); QTRY_VERIFY(!backend->busy());
+        const auto saved = contents(); QVERIFY(!saved.isEmpty());
+        result = command("snapshots.create", {{"uuid", uuid}, {"name", "Stopped"}}); QVERIFY2(resultOk, qPrintable(result["message"].toString()));
+        QCOMPARE(point("Stopped")["tpm"].toString(), QString("tpm-state"));
+        // Something changes the TPM; restoring the snapshot brings back its contents.
+        { QFile f(state); QVERIFY(f.open(QIODevice::WriteOnly | QIODevice::Truncate)); f.write("changed"); }
+        result = command("snapshots.restore", {{"uuid", uuid}, {"name", "Stopped"}, {"id", point("Stopped")["id"]}}); QVERIFY2(resultOk, qPrintable(result["message"].toString()));
+        QCOMPARE(contents(), saved);
+        // Restoring the memory snapshot resumes the VM with its TPM.
+        result = command("snapshots.restore", {{"uuid", uuid}, {"name", "With memory"}, {"id", point("With memory")["id"]}}); QVERIFY2(resultOk, qPrintable(result["message"].toString()));
+        QTRY_VERIFY_WITH_TIMEOUT(active(uuid), 15000); QTRY_VERIFY(!backend->busy());
+        backend->action(uuid, "force-off"); QTRY_VERIFY(!active(uuid)); QTRY_VERIFY(!backend->busy());
+        // A VM made from a snapshot gets its own copy of the TPM.
+        result = command("snapshots.clone", {{"uuid", uuid}, {"id", point("Stopped")["id"]}, {"name", "win-copy-" + QUuid::createUuid().toString(QUuid::Id128).left(6)}});
+        QVERIFY2(resultOk, qPrintable(result["message"].toString())); const auto copy = result["uuid"].toString(); created << copy;
+        QFile copied(qEnvironmentVariable("XDG_CONFIG_HOME", QDir::homePath() + "/.config") + "/libvirt/qemu/swtpm/" + copy + "/tpm2/tpm2-00.permall");
+        QVERIFY(copied.open(QIODevice::ReadOnly)); QCOMPARE(copied.readAll(), saved);
     }
     void liveCheckpoints_data() {
         QTest::addColumn<QString>("firmware");

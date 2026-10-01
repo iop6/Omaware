@@ -50,6 +50,9 @@ ColumnLayout {
         for (const f of (library ? library.files : [])) if (names.indexOf(f.name) >= 0) total += Number(f.size) || 0
         return total
     }
+    // Remembered, so the shop offers the same Windows language next time.
+    signal languageChosen(string id, string language)
+    function chooseLanguage(id, language) { library.setLanguage(id, language); languageChosen(id, language) }
     function togglePick(name) { let next = Object.assign({}, picked); if (next[name]) delete next[name]; else next[name] = true; picked = next }
     function deleteNames(names) {
         library.removeAll(names)
@@ -125,7 +128,10 @@ ColumnLayout {
                         id: card
                         required property string modelData
                         readonly property var info: page.infoFor(modelData)
-                        readonly property bool busy: info.status === "downloading" || info.status === "unpacking"
+                        readonly property bool busy: info.status === "downloading" || info.status === "unpacking" || info.status === "starting"
+                        // Languages change rarely; keep the list steady while progress updates arrive.
+                        property var languages: []
+                        onInfoChanged: if (JSON.stringify(info.languages || []) !== JSON.stringify(languages)) languages = info.languages || []
                         readonly property color brand: info.color || theme.colors.accent
                         property bool removing: false
                         objectName: "isoSource_" + modelData
@@ -155,6 +161,7 @@ ColumnLayout {
                                         color: card.info.error ? theme.colors.danger : card.info.updateAvailable ? theme.colors.warning : card.info.upToDate ? theme.colors.success : theme.colors.muted
                                         text: card.info.error ? "Couldn't check"
                                             : card.info.status === "unpacking" ? "Unpacking…"
+                                            : card.info.status === "starting" ? "Asking " + (card.modelData === "windows-11" ? "Microsoft" : "the publisher") + " for a download link…"
                                             : card.busy ? "Downloading…"
                                             : card.info.kind === "page" ? (card.info.have ? "In your library: " + card.info.have : "From the publisher's website")
                                             : card.info.status === "checking" ? "Checking…"
@@ -171,14 +178,29 @@ ColumnLayout {
                                 Layout.fillWidth: true; wrapMode: Text.WordWrap; maximumLineCount: 3; elide: Text.ElideRight
                                 Layout.preferredHeight: Math.ceil(3 * (font.pixelSize * 1.35))
                             }
+                            RowLayout {
+                                visible: card.languages.length > 0
+                                Layout.fillWidth: true; spacing: 8
+                                Label { text: "Language"; color: theme.colors.muted; font.pixelSize: Math.round(12 * theme.textScale) }
+                                AppSelect {
+                                    objectName: "isoLanguage_" + card.modelData
+                                    Accessible.name: "Language"
+                                    Layout.fillWidth: true; implicitHeight: 32
+                                    enabled: !card.busy
+                                    model: card.languages
+                                    currentIndex: Math.max(0, card.languages.indexOf(card.info.language))
+                                    onActivated: function(index) { page.chooseLanguage(card.modelData, card.languages[index]) }
+                                }
+                            }
                             Label { visible: !!card.info.note; text: card.info.note || ""; color: theme.colors.warning; font.pixelSize: Math.round(11 * theme.textScale); Layout.fillWidth: true; wrapMode: Text.WordWrap }
                             Label { visible: !!card.info.error; text: card.info.error || ""; color: theme.colors.danger; font.pixelSize: Math.round(11 * theme.textScale); Layout.fillWidth: true; wrapMode: Text.WordWrap }
                             ColumnLayout {
                                 visible: card.busy
                                 Layout.fillWidth: true; spacing: 4
-                                AppProgressBar { Layout.fillWidth: true; from: 0; to: Math.max(1, card.info.total || card.info.size || 1); value: card.info.received || 0; indeterminate: card.info.status === "unpacking" || !(card.info.total || card.info.size) }
+                                AppProgressBar { Layout.fillWidth: true; from: 0; to: Math.max(1, card.info.total || card.info.size || 1); value: card.info.received || 0; indeterminate: card.info.status === "unpacking" || card.info.status === "starting" || !(card.info.total || card.info.size) }
                                 Label {
-                                    text: card.info.status === "unpacking" ? "Download verified, unpacking the image…"
+                                    text: card.info.status === "starting" ? "This takes a few seconds."
+                                        : card.info.status === "unpacking" ? "Download verified, unpacking the image…"
                                         : page.size(card.info.received) + (card.info.total ? " of " + page.size(card.info.total) : "") + (card.info.rate ? " · " + page.size(card.info.rate) + "/s" : "")
                                           + (card.info.rate && card.info.total ? " · about " + Math.max(1, Math.round((card.info.total - card.info.received) / card.info.rate / 60)) + " min left" : "")
                                     color: theme.colors.muted; font.pixelSize: Math.round(11 * theme.textScale)
@@ -208,12 +230,18 @@ ColumnLayout {
                                 }
                                 Item { Layout.fillWidth: true }
                                 AppButton {
-                                    visible: card.info.upToDate || (card.info.kind === "page" && !!card.info.have)
+                                    visible: (card.info.upToDate || (card.info.kind === "page" && !!card.info.have))
                                     text: "New VM"; tone: "quiet"; iconName: "plus"
                                     hint: "Create a VM from this ISO"
                                     onClicked: { for (const f of page.library.files) if (f.source === card.modelData && f.newest) { page.useIso(f.path); break } }
                                 }
-                                AppButton { visible: card.busy; text: "Cancel"; tone: "quiet"; onClicked: page.library.cancel(card.modelData) }
+                                AppButton {
+                                    // When a publisher refuses an automated download, its website still works.
+                                    visible: !card.busy && card.info.kind !== "page" && !!card.info.page && !!card.info.error
+                                    text: "Website"; iconName: "globe"; tone: "quiet"; hint: card.info.page
+                                    onClicked: Qt.openUrlExternally(card.info.page)
+                                }
+                                AppButton { visible: card.busy && card.info.status !== "starting"; text: "Cancel"; tone: "quiet"; onClicked: page.library.cancel(card.modelData) }
                                 AppButton {
                                     objectName: "isoGet_" + card.modelData
                                     visible: !card.busy && !card.info.upToDate

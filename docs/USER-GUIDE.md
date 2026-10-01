@@ -40,7 +40,9 @@ After installing from an ISO, shut the VM down and use **Details â†’ Hardware â†
 
 The small arrow next to Create VM also offers a **diskless test VM**: a tiny VM with no disk or network, handy for trying things out. It shows "No bootable device", which is expected.
 
-OmaWare doesn't install operating systems unattended and doesn't set up TPM (needed for Windows 11).
+**Windows:** pick a Windows ISO and OmaWare sets the VM up the way Windows expects: UEFI firmware with Secure Boot (when your computer has that firmware), a SATA disk and network card that Windows recognizes without extra drivers, and **Add a TPM 2.0 chip**, which Windows 11 requires. The TPM needs the `swtpm` package on your computer; snapshots keep the TPM's contents along with the disks. You need your own Windows license to activate it.
+
+OmaWare doesn't install operating systems unattended.
 
 ## The VM list
 
@@ -157,7 +159,8 @@ Snapshots are not backups: they live on the same disk as the VM.
 - **Desktop:** Ubuntu, Kubuntu, Xubuntu, Linux Mint, Fedora Workstation, Fedora KDE Plasma, Debian, Arch Linux, openSUSE Tumbleweed, Pop!_OS and NixOS.
 - **Server:** Ubuntu Server, Rocky Linux, AlmaLinux, Alpine Linux, Proxmox VE and FreeBSD.
 - **Security & networking:** Kali Linux and OPNsense.
-- **From the publisher's website:** pfSense (through Netgate's free store) and Windows 11 (Microsoft only offers it on its website). Save the ISO into your ISO folder and the shop recognizes it. Windows 11 needs a TPM, which OmaWare can't provide yet.
+- **Windows:** Windows 11 straight from Microsoft, in the language you choose on its card (OmaWare picks your computer's language at first), checked against the SHA-256 checksum Microsoft publishes for that language. Microsoft sometimes refuses automated downloads from some networks or after many attempts; the card then says so and offers **Website**, and a Windows ISO you download there is recognized too.
+- **From the publisher's website:** pfSense (through Netgate's free store). Save the ISO into your ISO folder and the shop recognizes it.
 
 Filter by category or search by name. **Download** saves the ISO into `~/.local/share/omaware/isos/`. Every download is checked against the publisher's own SHA-256 checksum and thrown away if it doesn't match; compressed images (OPNsense) are unpacked after they're verified. Downloads keep going in the background (the sidebar shows their progress) and can be cancelled.
 

@@ -4,6 +4,7 @@
 #include <QElapsedTimer>
 #include <QFile>
 #include <QHash>
+#include <QLocale>
 #include <QNetworkAccessManager>
 #include <QObject>
 #include <QPointer>
@@ -66,6 +67,8 @@ public:
     // The source an ISO file belongs to: {source, sourceName, version, preset}. The preset is the
     // libosinfo id that best matches, for example "ubuntu24.04" or "rocky10".
     Q_INVOKABLE QVariantMap identify(const QString &name) const;
+    // Sources offered in several languages (Windows): which one to download.
+    Q_INVOKABLE void setLanguage(const QString &id, const QString &language);
     // Adds ISO files (paths or file:// URLs) to the folder. A file on the same disk is linked, which is
     // instant and takes no extra space; anything else is copied in the background. Other kinds of
     // files are skipped. imported() reports the result; returns false if nothing could be added.
@@ -84,6 +87,15 @@ public:
     static Release alpine(const QByteArray &latestReleasesYaml, const QString &flavor, const QString &base);
     // The newest numeric folder in a web server's directory listing, e.g. "10.2" or "26.7".
     static QString newestFolder(const QByteArray &listing, const QString &pattern = R"(^[0-9]+(\.[0-9]+)*$)");
+    // Microsoft's Windows download page: {version ("26H2"), edition (product edition id), languages
+    // (in page order), hashes (language -> SHA-256)}. Empty if the page couldn't be read.
+    static QVariantMap windowsPage(const QByteArray &html);
+    // The SKU id for a language in Microsoft's SKU list (matches its name or display name).
+    static QString windowsSku(const QByteArray &skusJson, const QString &language);
+    // The 64-bit ISO link from Microsoft's download-link reply; sets error if Microsoft refused.
+    static QString windowsLink(const QByteArray &linksJson, QString &error);
+    // The Windows language that matches a locale, e.g. "English" for en_US, "English International" for en_GB.
+    static QString windowsLanguage(const QLocale &locale, const QStringList &available);
     // Sorts version strings numerically ("24.04.10" after "24.04.9").
     static bool newer(const QString &a, const QString &b);
 
@@ -100,6 +112,10 @@ private:
         QVariantMap lookup = {};   // how to find the newest release
         QString status = "unknown", error = {};
         Release latest = {};
+        // Windows: the edition on Microsoft's page, its languages and their checksums.
+        QString edition = {}, version = {}, language = {};
+        QStringList languages = {};
+        QHash<QString, QString> hashes = {};
     };
     struct Job {
         QPointer<QNetworkReply> reply;
@@ -110,6 +126,13 @@ private:
         QElapsedTimer sample;
         bool unpacking = false;
         QPointer<QObject> unpacker;
+        // Resuming after a dropped connection: where the current request started, and how many retries.
+        QUrl url;
+        qint64 offset = 0;
+        int retries = 0;
+        bool checkResume = false, waiting = false, stalled = false;
+        qint64 lastSeen = 0;
+        QElapsedTimer quiet;   // time since data last arrived
     };
     struct Import {
         QStringList from, to, names;        // the copies still to make
@@ -126,10 +149,14 @@ private:
     using Done = std::function<void(bool ok, const QByteArray &data, const QUrl &finalUrl)>;
     Source *find(const QString &id);
     const Source *find(const QString &id) const;
-    void get(const QUrl &url, Done done, int attempt = 0);
+    void get(const QUrl &url, Done done, int attempt = 0, const QList<QPair<QByteArray, QByteArray>> &headers = {});
+    Release windowsRelease(const Source &source) const;
+    void downloadWindows(const QString &id);
     void resolve(Source &source);
     void settle(const QString &id, const Release &release, const QString &failure);
     void unpack(const QString &id, Job *job, const QString &packed);
+    void request(const QString &id);
+    void complete(const QString &id);
     void fail(const QString &id, const QString &message);
     QString folder_;
     QList<Source> sources_;
@@ -140,5 +167,6 @@ private:
     std::shared_ptr<Import> import_;
     QThread *importThread_ = nullptr;
     QTimer *importTicker_ = nullptr;
+    QTimer *stallWatch_ = nullptr;
     QNetworkAccessManager network_;
 };

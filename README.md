@@ -17,17 +17,15 @@ OmaWare is a virtual machine manager for Linux desktops. It runs QEMU/KVM virtua
 
 ## Install
 
-You need a 64-bit Linux with KVM, plus QEMU, libvirt, `qemu-img` and `virt-install`. Most distributions have these as packages (Arch/Omarchy: `qemu-desktop libvirt virt-install`).
-
-**The easy way:** download `omaware-<version>-linux-x86_64.tar.gz` from the [Releases page](https://github.com/iop6/Omaware/releases/latest), then:
+Open a terminal and run:
 
 ```sh
-tar -xzf omaware-*-linux-x86_64.tar.gz
-omaware-*-linux-x86_64/install.sh
-omaware                     # or open "OmaWare" from your app menu
+curl -fsSL https://github.com/iop6/Omaware/releases/latest/download/install.sh | bash
 ```
 
-This installs into your home folder only: the app goes in `~/.local/share/omaware/app` (next to your `vms/` and `isos/`), plus an `omaware` command and a menu entry. The package uses the Qt 6.4+, libvirt and toml++ libraries already on your system.
+That's it. It installs what OmaWare needs from your distribution (asking first; Ubuntu/Debian, Fedora, Arch/Omarchy and openSUSE), turns on libvirt, downloads the newest release, checks it against its published checksums and installs it in your home folder: the app in `~/.local/share/omaware/app` (next to your `vms/` and `isos/`), an `omaware` command and an app-menu entry. If it added you to the `libvirt` and `kvm` groups, log out and back in once. Run the same command again to reinstall; updates normally come through OmaWare itself.
+
+**By hand:** download `omaware-<version>-linux-x86_64.tar.gz` from the [Releases page](https://github.com/iop6/Omaware/releases/latest), unpack it and run its `install.sh`. You need QEMU/KVM, libvirt, `virt-install`, the OVMF UEFI firmware, Qt 6.4+ and toml++ from your distribution, plus `swtpm` for Windows 11.
 
 **From source** (Ubuntu/Debian, Fedora, Arch/Omarchy and openSUSE):
 
@@ -59,7 +57,7 @@ The **download button** at the bottom of the sidebar checks GitHub for a new ver
 - OmaWare manages VMs in your own libvirt session (`qemu:///session`), which needs no root. It only changes VMs it created itself; other VMs are shown read-only.
 - Removing a VM never deletes its disk files.
 - Snapshots are stored on the same disk as the VM, so they don't replace backups.
-- Not supported yet: unattended OS installation, Windows 11 (TPM), creating LAN bridges, port forwarding, device hotplug, backups, system-wide VMs, shared folders, audio and 3D graphics.
+- Not supported yet: unattended OS installation, creating LAN bridges, port forwarding, device hotplug, backups, system-wide VMs, shared folders, audio and 3D graphics.
 
 ## Documentation
 
