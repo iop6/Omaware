@@ -10,6 +10,7 @@
 - [Snapshots](#snapshots)
 - [The ISO Shop](#the-iso-shop)
 - [Monitor, log and command prompt](#monitor-log-and-command-prompt)
+- [AI agents and labs](#ai-agents-and-labs)
 - [Updating OmaWare](#updating-omaware)
 - [Settings and themes](#settings-and-themes)
 - [Closing OmaWare](#closing-omaware)
@@ -197,6 +198,43 @@ Deleting ISOs is quick, and always asks once in place before anything is removed
 - **Tick several files** (or **Select all**) and use **Delete selected**. Each file also has its own trash button.
 
 **New VM** on a card or file opens the create dialog with that ISO chosen, the matching operating system selected (when your computer knows it) and a name suggested. OmaWare only contacts the publishers when you open the shop or press **Check for updates**.
+
+## AI agents and labs
+
+OmaWare can be used by an AI agent, such as [Claude Code](https://claude.com/claude-code). You describe what you want ("two networks with a firewall VM between them, three Ubuntu clients on one side and a web server on the other, no internet") and the agent builds it and works with it: it can see your OmaWare VMs and networks, build **labs**, look at and use a VM's screen, run commands inside lab VMs, take and restore snapshots, and plug or pull virtual network cables.
+
+### Turning it on
+
+Agent access is off until you turn it on: **Settings → AI agents → Let AI agents use OmaWare**. Settings then shows the command that connects Claude Code, with a **Copy** button:
+
+```sh
+claude mcp add omaware -- ~/.local/bin/omaware mcp
+```
+
+`omaware mcp` is a small helper the agent starts: it speaks the Model Context Protocol (MCP) that agents use, and passes each request to the open OmaWare window. Other MCP-capable agents work the same way. OmaWare has to be open for the agent to use it. Turning the setting off disconnects agents at once.
+
+### Labs
+
+A lab is a set of networks and VMs built together. The agent writes a plan and OmaWare shows it to you in **Build “…”?** before anything is created:
+
+- **Networks** and what they reach: **Internet** (each other, this computer and the internet), **Private** (each other and this computer) or **Isolated** (only each other).
+- **VMs**: the operating system (Ubuntu Server LTS, Debian or Fedora Cloud), size, networks and addresses, packages to install, and every command that will run inside the VM on its first boot, in full.
+- **Login for these VMs**: a user name (the agent suggests one; ask it to use the one you want) and a password you type or **Generate** here. The password goes into your system's password store (GNOME Keyring, KWallet or another Secret Service; without one, a private file only you can read). The agent never sees it. You can also **Use a saved login** from an earlier lab.
+
+**Build** then downloads the cloud images it needs (once, checked against the publisher's checksums, into `~/.local/share/omaware/images/`), creates the networks (asking for your computer's password once, to let VMs join them), creates the VMs, saves a **Lab built** snapshot of each, and starts them. The dialog and a banner show the progress. VMs are set up on their first boot by cloud-init, which takes one to three minutes: the user with administrator rights (sudo), the password, the network addresses and any packages.
+
+A lab VM's **Details → Overview** shows its **Lab login**, with the password hidden until you choose **Show**. **Decline** throws a plan away.
+
+### What agents can and can't do
+
+- They only see and use VMs and networks OmaWare created. Your other VMs aren't shown to them, and **contained** VMs (for untrusted software) are off limits, since what's on their screens could try to steer the agent.
+- They use a VM's screen by taking screenshots and sending mouse clicks and keys, like a person at the console. A banner says which VM's screen an agent is using, with **Watch** (opens its console) and **Stop agent** (turns agent access off). Text is typed as on a US keyboard layout.
+- When a login prompt asks for the password, the agent asks OmaWare to type it (**type login**); the agent doesn't receive it. It could still read it if it had it typed somewhere it's shown, so keep lab passwords separate from your others (**Generate** makes a fresh one).
+- They run commands in lab VMs over SSH as the lab user, with a key OmaWare made for that lab, checked against each VM's own host key; or through the QEMU guest agent where one runs. VMs only on **Isolated** networks can only be used through their screens.
+- **Restoring a snapshot** and **deleting a lab** always ask you first, in OmaWare. If you say no, the agent is told so.
+- Everything an agent does is listed in the activity log (Ctrl+`), marked "Agent:". What it types is never logged.
+
+Deleting a lab removes its VMs with their disks and snapshots, and its networks. Its saved login is kept.
 
 ## Updating OmaWare
 

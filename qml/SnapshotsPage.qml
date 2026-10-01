@@ -335,7 +335,7 @@ ColumnLayout {
         Label { text: wholeBranch.checked ? "All snapshots listed below will be permanently removed. Other branches stay available." : deletion.branch.length > 1 ? "Child snapshots are kept and reconnect to this snapshot’s parent." : "This saved point will be permanently removed."; Layout.fillWidth: true; color: theme.colors.muted; wrapMode: Text.WordWrap }
         Label { text: "Snapshots to delete"; font.weight: Font.DemiBold }
         Repeater { model: deletion.affected
-            Label { required property var modelData; text: "• " + modelData.name + (modelData.pinned ? " · Pinned" : ""); Layout.fillWidth: true; wrapMode: Text.WordWrap; font.pixelSize: Math.round((12) * theme.textScale)}
+            Label { textFormat: Text.PlainText; required property var modelData; text: "• " + modelData.name + (modelData.pinned ? " · Pinned" : ""); Layout.fillWidth: true; wrapMode: Text.WordWrap; font.pixelSize: Math.round((12) * theme.textScale)}
         }
         AppCheckBox { id: unpin; objectName: "deletePinnedSnapshots"; visible: deletion.pinnedCount > 0; text: deletion.pinnedCount === 1 ? "Also remove the pinned snapshot" : "Also remove " + deletion.pinnedCount + " pinned snapshots" }
         Label { visible: deletion.removesUndo; text: "This includes the recovery point used by Undo. That Undo action will no longer be available."; color: theme.colors.warning; Layout.fillWidth: true; wrapMode: Text.WordWrap }
@@ -413,8 +413,8 @@ ColumnLayout {
                 AppButton { text: page.storage.guestFrozen ? "Recover interrupted capture" : "Recover interrupted restore"; visible: !!page.storage.restoreRecovery || !!page.storage.guestFrozen; enabled: !backend.busy; onClicked: recovery.open() }
                 Repeater { model: page.storage.candidates || []
                     ColumnLayout { required property var modelData; Layout.fillWidth: true
-                        Label { text: modelData.name + " · " + page.sizeLabel(modelData.bytes); Layout.fillWidth: true; wrapMode: Text.WordWrap }
-                        Label { text: modelData.reason; color: theme.colors.muted; Layout.fillWidth: true; wrapMode: Text.WordWrap; font.pixelSize: Math.round((11) * theme.textScale)}
+                        Label { textFormat: Text.PlainText; text: modelData.name + " · " + page.sizeLabel(modelData.bytes); Layout.fillWidth: true; wrapMode: Text.WordWrap }
+                        Label { textFormat: Text.PlainText; text: modelData.reason; color: theme.colors.muted; Layout.fillWidth: true; wrapMode: Text.WordWrap; font.pixelSize: Math.round((11) * theme.textScale)}
                         AppButton { text: "Remove unused files…"; enabled: modelData.available && !backend.busy; onClicked: { cleanup.key = modelData.key; cleanup.label = modelData.name; cleanup.uuid = page.info.uuid; cleanup.open() } }
                         Rectangle { Layout.fillWidth: true; height: 1; color: theme.colors.border }
                     }
@@ -424,7 +424,7 @@ ColumnLayout {
         footer: Item { implicitHeight: 64; Rectangle { width: parent.width; height: 1; color: theme.colors.border } AppButton { text: "Close"; anchors.right: parent.right; anchors.verticalCenter: parent.verticalCenter; anchors.rightMargin: 22; onClicked: storageDialog.close() } }
     }
     EditorDialog { id: cleanup; property string key: ""; property string label: ""; property string uuid: ""; heading: "Remove unused files?"; actionText: "Remove files"; actionTone: "danger"; height: Math.min(360, parent.height - 40)
-        Label { text: cleanup.label + " will be permanently removed. References will be checked again before deleting."; Layout.fillWidth: true; wrapMode: Text.WordWrap }
+        Label { textFormat: Text.PlainText; text: cleanup.label + " will be permanently removed. References will be checked again before deleting."; Layout.fillWidth: true; wrapMode: Text.WordWrap }
         onSubmitted: execute("snapshots.cleanup", {uuid: uuid, key: key})
     }
     EditorDialog { id: recovery; heading: "Recover interrupted snapshot work"; actionText: "Recover"; height: Math.min(400, parent.height - 40)

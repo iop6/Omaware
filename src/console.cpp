@@ -188,6 +188,8 @@ void Console::attachForVm(GraphicsHandle socket, QString uuid) {
     if (socket && socket->uuid == uuid) attach(std::move(socket));
 }
 void Console::attach(GraphicsHandle socket) {
+    // Clipboard sharing is chosen per VM: it never carries over to another VM's console.
+    if (socket && socket->uuid != clipboardVm_) { clipboardVm_ = socket->uuid; setClipboardMode("off"); }
     releaseInput(); image_ = {}; update(); emit frameChanged();
     connected_ = false;
     auto generation = ++generation_;

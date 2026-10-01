@@ -33,7 +33,7 @@ EditorDialog {
         return result
     }
     onSubmitted: { if (!reviewing) reviewing = true; else execute("hardware.save", values()) }
-    Label { text: dialog.info.name || ""; font.weight: Font.DemiBold; Layout.fillWidth: true; wrapMode: Text.WordWrap }
+    Label { textFormat: Text.PlainText; text: dialog.info.name || ""; font.weight: Font.DemiBold; Layout.fillWidth: true; wrapMode: Text.WordWrap }
     RowLayout {
         visible: !dialog.reviewing; Layout.fillWidth: true; spacing: 4
         Repeater {

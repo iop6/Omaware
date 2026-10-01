@@ -2,6 +2,7 @@
 #include "instance.h"
 #include <QCoreApplication>
 #include <QDir>
+#include <QFile>
 #include <QFileInfo>
 #include <QStandardPaths>
 
@@ -24,7 +25,11 @@ QList<qint64> InstanceGuard::otherProcesses(const QString &name) {
         if (!numeric || pid == self) continue;
         auto target = QFileInfo("/proc/" + entry + "/exe").symLinkTarget();
         if (target.endsWith(" (deleted)")) target.chop(10);
-        if (!target.isEmpty() && QFileInfo(target).fileName() == name) result << pid;
+        if (target.isEmpty() || QFileInfo(target).fileName() != name) continue;
+        // `omaware mcp` (started by an AI agent) is a helper without a window, not another OmaWare.
+        QFile cmdline("/proc/" + entry + "/cmdline");
+        if (cmdline.open(QIODevice::ReadOnly) && cmdline.read(4096).split('\0').value(1) == "mcp") continue;
+        result << pid;
     }
     return result;
 }

@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.3.0 (2026-10-01)
+
+- AI agents (such as Claude Code) can use OmaWare when you turn it on in Settings: build labs of networks and VMs from a description, use VM screens, run commands in lab VMs, take and restore snapshots, and plug or pull network cables.
+- Labs are built from official cloud images (Ubuntu Server LTS, Debian, Fedora Cloud), set up on first boot with a login you choose. You approve every lab and set its password in OmaWare; the agent never sees it.
+- Logins are kept in your system's password store, and shown on a lab VM's Details page.
+- Letting VMs join several new networks asks for your password once.
+- Security review (see SECURITY.md): clipboard sharing no longer carries over to another VM's console; containment also blocks vsock and TPM passthrough; names are always shown as plain text.
+
 ## 1.2.1 (2026-10-01)
 
 - Simpler install: the one command asks at most once, skips anything already set up, and no longer needs you to log out and back in.

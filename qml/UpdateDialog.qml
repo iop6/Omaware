@@ -62,7 +62,8 @@ AppDialog {
                 wrapMode: Text.WordWrap; textFormat: Text.MarkdownText; color: theme.colors.muted
                 text: dialog.updater && dialog.updater.notes ? dialog.updater.notes : "See the release page for details."
                 font.pixelSize: Math.round(12 * theme.textScale)
-                onLinkActivated: function(link) { Qt.openUrlExternally(link) }
+                // Only web links; release notes come from GitHub and never need anything else.
+                onLinkActivated: function(link) { if (/^https:\/\//.test(link)) Qt.openUrlExternally(link) }
             }
         }
         Rectangle {

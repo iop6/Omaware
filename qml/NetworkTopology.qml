@@ -859,7 +859,7 @@ Item {
         property string vmId: ""
         property string targetId: ""
         readonly property var vmNode: vmId ? topo.graph.byId[vmId] : null
-        MenuItem { enabled: false; contentItem: Label { text: "Connect to " + (dropMenu.targetId === "host" ? "a private internet connection" : dropMenu.targetId && topo.graph.byId[dropMenu.targetId] ? topo.graph.byId[dropMenu.targetId].label : ""); color: theme.colors.muted; font.pixelSize: Math.round(11 * theme.textScale) } background: Item {} }
+        MenuItem { enabled: false; contentItem: Label { textFormat: Text.PlainText; text: "Connect to " + (dropMenu.targetId === "host" ? "a private internet connection" : dropMenu.targetId && topo.graph.byId[dropMenu.targetId] ? topo.graph.byId[dropMenu.targetId].label : ""); color: theme.colors.muted; font.pixelSize: Math.round(11 * theme.textScale) } background: Item {} }
         AppMenuItem { objectName: "dropNewAdapter"; text: "Add a new connection"; onTriggered: topo.cableTo(dropMenu.vmId, dropMenu.targetId, "") }
         Instantiator {
             model: dropMenu.vmNode ? dropMenu.vmNode.interfaces : []

@@ -10,6 +10,7 @@ OmaWare is a virtual machine manager for Linux desktops. It runs QEMU/KVM virtua
 - **Snapshots** in a branching tree. Snapshots of a running VM include its memory, so going back resumes it exactly where it was, without rebooting.
 - **Networks made simple:** a live map of how your VMs connect, with their IP addresses. Drag a VM onto a network to connect it, pull a virtual cable to disconnect it, see at a glance which VMs can reach the internet, and cut them all off with one click. Changes apply to running VMs straight away.
 - **Containment** for VMs running untrusted software: isolated networks only, no shared folders, clipboard or USB passthrough.
+- **AI agents:** let an agent such as Claude Code build labs (networks and VMs set up from cloud images) from a description, use VM screens, run commands in lab VMs and take snapshots. You approve every lab and set its password in OmaWare; the agent never sees it. Off until you turn it on.
 - **Monitor:** live CPU, memory, disk and network use for your computer and every VM.
 - **Organized workspace:** favorites, folders, tags, search, a command prompt, keyboard shortcuts, and actions on several VMs at once.
 - **Pause on close:** running VMs are always paused when OmaWare closes (updates included) and can be resumed next time.
@@ -38,10 +39,11 @@ The **download button** at the bottom of the sidebar checks GitHub for a new ver
 
 ## Documentation
 
-- [User guide](docs/USER-GUIDE.md): everything in the interface, step by step.
+- [User guide](docs/USER-GUIDE.md): everything in the interface, step by step, including [AI agents and labs](docs/USER-GUIDE.md#ai-agents-and-labs).
 - [Networks](docs/NETWORKS.md): connection types, switches, the network map and containment.
 - [Development](docs/DEVELOPMENT.md): project layout, building, tests and how the code fits together.
 - [VNC compatibility](docs/VNC-COMPATIBILITY.md): why OmaWare ships a patched LibVNCClient.
+- [Security](SECURITY.md): how OmaWare protects you, the October 2026 review, and how to report a problem.
 - [Changelog](CHANGELOG.md) and [third-party software](THIRD_PARTY_NOTICES.md).
 
 ## Versions

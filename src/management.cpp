@@ -7,6 +7,16 @@
 #include "checkpoints.h"
 #include "containment.h"
 #include "workspace.h"
+#include "cloudimages.h"
+#include "cloudseed.h"
+#include "guestinput.h"
+#include "labs.h"
+#include <QBuffer>
+#include <QImage>
+#include <QJsonArray>
+#include <QJsonObject>
+#include <QThread>
+#include <libvirt/libvirt-qemu.h>
 #include <QSet>
 #include <QDateTime>
 #include <QCoreApplication>
@@ -184,6 +194,7 @@ void VmWorker::manage(QString op, QVariantMap in) {
     const bool query = op.endsWith(".list") || op.startsWith("stats") || op == "capabilities";
     auto done = [&](bool ok, QString message, QVariantMap result = {}) {
         result["message"] = message;
+        if (in.contains("requestTag")) result["requestTag"] = in["requestTag"];
         if (!query) { if (!storageOnly_) refresh(); emit finished(message, ok); }
         emit managed(requestedOp, ok, result);
     };
@@ -315,6 +326,26 @@ void VmWorker::manage(QString op, QVariantMap in) {
             free(domains);
             done(true, status, {{"items", networks}, {"topology", topology}, {"choices", choices}}); return;
         }
+        if (op == "networks.authorizeMany") {
+            // One administrator prompt for several networks (a lab's), with the helper that accepts several.
+            QStringList ids;
+            for (const auto &v : in["uuids"].toList()) {
+                Network each(virNetworkLookupByUUIDString(system.get(), v.toString().toUtf8().constData()), virNetworkFree);
+                if (!each || !managedNetwork(networkXml(each.get()))) { done(false, "Only OmaWare-created host networks can be authorized."); return; }
+                if (virNetworkIsActive(each.get()) != 1) { done(false, "Start the networks before allowing VMs to join them."); return; }
+                ids << v.toString();
+            }
+            if (ids.isEmpty() || ids.size() > 16) { done(false, "Choose one to sixteen networks."); return; }
+            const auto helper = trustedHelper();
+            if (helper.isEmpty()) { done(false, "Letting your VMs join networks needs OmaWare's small administrator helper. Run OmaWare's install command again to add it."); return; }
+            QByteArray output; QString failure;
+            if (!run("pkexec", QStringList{helper} + ids, output, failure)) {
+                // Helpers from before 1.3 take one network at a time.
+                if (!failure.contains("one network UUID")) { done(false, failure); return; }
+                for (const auto &id : ids) if (!run("pkexec", {helper, id}, output, failure)) { done(false, failure); return; }
+            }
+            done(true, ids.size() == 1 ? "Your VMs can now join this network." : "Your VMs can now join these networks."); return;
+        }
         const auto uuid = in["uuid"].toString();
         Network net(uuid.isEmpty() ? nullptr : virNetworkLookupByUUIDString(system.get(), uuid.toUtf8().constData()), virNetworkFree);
         QString original = net ? networkXml(net.get()) : QString{};
@@ -412,7 +443,9 @@ void VmWorker::manage(QString op, QVariantMap in) {
         int cpus = in.value("cpus", 2).toInt(), memory = in.value("memoryMiB", 4096).toInt(), size = in.value("diskGiB", 32).toInt();
         virNodeInfo host{}; virNodeGetInfo(conn_, &host);
         if (cpus < 1 || unsigned(cpus) > std::min(256u, std::max(1u, host.cpus)) || memory < 256 || qulonglong(memory) > host.memory / 1024 || size < 1 || size > 2048) { done(false, "Choose CPU and memory within the host limits and a 1–2048 GiB disk."); return; }
-        const auto preset = in.value("preset", "generic").toString(), firmware = in.value("firmware", "bios").toString();
+        const bool cloud = in["sourceMode"] == "cloud";
+        auto preset = in.value("preset", "generic").toString();
+        const auto firmware = in.value("firmware", "bios").toString();
         bool knownPreset = std::any_of(supportedPresets().begin(), supportedPresets().end(), [&](const auto &p) { return p.first == preset; });
         if (!knownPreset && QRegularExpression("^[a-z][a-z0-9.+-]{1,40}$").match(preset).hasMatch()) {
             // Any other libosinfo id this host knows is fine too (checked, never passed through unvalidated).
@@ -420,10 +453,16 @@ void VmWorker::manage(QString op, QVariantMap in) {
             if (run("virt-install", {"--osinfo", "list"}, list, ignored, 15000))
                 knownPreset = QString::fromUtf8(list).split(QRegularExpression("[,\\s]+"), Qt::SkipEmptyParts).contains(preset);
         }
+        // A cloud image newer than this host's OS list still boots fine as a generic Linux.
+        if (!knownPreset && cloud) { preset = "generic"; knownPreset = true; }
         if (!knownPreset || !QStringList{"bios", "uefi"}.contains(firmware)) { done(false, "Choose a supported OS preset and firmware."); return; }
-        const bool importing = in["sourceMode"] == "disk";
+        const bool importing = in["sourceMode"] == "disk" || cloud;
         auto source = in["source"].toString();
         if (!QFileInfo(source).isAbsolute() || !QFileInfo(source).isFile() || !QFileInfo(source).isReadable()) { done(false, "Choose a readable local ISO or disk image."); return; }
+        // Cloud images only come from OmaWare's own image folder, where they were checked against their publisher's checksum.
+        if (cloud && QFileInfo(source).canonicalPath() != QFileInfo(CloudImages::folder()).canonicalFilePath()) { done(false, "Cloud images must be in OmaWare's image folder."); return; }
+        const auto seed = in["seed"].toMap();
+        if (cloud && (seed["userData"].toByteArray().size() > 262144 || seed["metaData"].toByteArray().isEmpty() || seed["networkConfig"].toByteArray().size() > 65536)) { done(false, "The first-boot setup is missing or too large."); return; }
         auto parent = in.value("location").toString().isEmpty() ? Paths::vms() : in.value("location").toString();
         if (!QFileInfo(parent).isAbsolute() || (!QDir().mkpath(parent)) || !QFileInfo(parent).isWritable()) { done(false, "The storage directory is not writable."); return; }
         auto identity = QUuid::createUuid().toString(QUuid::WithoutBraces), directory = parent + "/" + name + "-" + identity.left(8), disk = directory + "/system.qcow2";
@@ -439,7 +478,7 @@ void VmWorker::manage(QString op, QVariantMap in) {
             if (!run("qemu-img", {"info", "--output=json", "-f", format, source}, output, failure)) { done(false, failure); return; }
             const auto info = QJsonDocument::fromJson(output).toVariant().toMap();
             if (info.isEmpty()) { done(false, "The disk image information could not be read."); return; }
-            required = info["virtual-size"].toULongLong();
+            required = std::max<quint64>(info["virtual-size"].toULongLong(), cloud ? qulonglong(size) * 1073741824 : 0);
             const auto specific = info["format-specific"].toMap()["data"].toMap();
             if (info.contains("backing-filename") || info.contains("full-backing-filename") || specific.contains("data-file"))
                 { done(false, "This image depends on another file (a backing or external data file). Import a standalone image; flatten it first with qemu-img convert if you trust its source."); return; }
@@ -450,7 +489,15 @@ void VmWorker::manage(QString op, QVariantMap in) {
         QFile::setPermissions(directory, QFile::ReadOwner | QFile::WriteOwner | QFile::ExeOwner);
         emit progress(importing ? "Copying the source disk into a new independent image…" : "Creating the VM's new disk…");
         bool diskOk = importing ? run("qemu-img", {"convert", "-f", format, "-O", "qcow2", source, disk}, output, failure, 600000) : run("qemu-img", {"create", "-f", "qcow2", disk, QString::number(size) + "G"}, output, failure);
-        auto cleanup = [&] { QFile::remove(disk); QDir().rmdir(directory); };
+        auto seedPath = directory + "/seed.iso";
+        auto cleanup = [&] { QFile::remove(disk); QFile::remove(seedPath); QDir().rmdir(directory); };
+        if (diskOk && cloud) {
+            // The image's own size is just big enough for its system; grow it to the size asked for.
+            diskOk = run("qemu-img", {"resize", "-f", "qcow2", disk, QString::number(size) + "G"}, output, failure);
+            QString seedError;
+            if (diskOk && !CloudSeed::writeIso(seedPath, "cidata", {{"user-data", seed["userData"].toByteArray()}, {"meta-data", seed["metaData"].toByteArray()}, {"network-config", seed["networkConfig"].toByteArray()}}, seedError))
+                { diskOk = false; failure = seedError; }
+        }
         if (!diskOk) { cleanup(); done(false, failure); return; }
         QFile::setPermissions(disk, QFile::ReadOwner | QFile::WriteOwner);
         emit progress("Preparing and validating the VM definition…");
@@ -464,6 +511,7 @@ void VmWorker::manage(QString op, QVariantMap in) {
             "--graphics", "vnc,listen=none", "--video", windows ? "vga" : "virtio", "--network", "none", "--tpm", tpm ? "emulator,model=tpm-crb,version=2.0" : "none",
             "--channel", "unix,target.type=virtio,target.name=org.qemu.guest_agent.0", "--noautoconsole", "--dry-run", "--print-xml", "1"};
         if (importing) args << "--import"; else args << "--cdrom" << source;
+        if (cloud) args << "--disk" << "path=" + seedPath + ",device=cdrom";
         if (disk.contains(',') || source.contains(',')) { cleanup(); done(false, "Choose paths without commas for the virt-install workflow."); return; }
         const auto boot = firmware == "uefi" ? QString("uefi") : importing ? QString("hd") : QString("cdrom,hd");
         const QString secureBoot = "uefi,firmware.feature0.name=secure-boot,firmware.feature0.enabled=yes,firmware.feature1.name=enrolled-keys,firmware.feature1.enabled=yes";
@@ -482,9 +530,32 @@ void VmWorker::manage(QString op, QVariantMap in) {
         }
         auto metadata = root.firstChildElement("metadata"); if (metadata.isNull()) metadata = child(doc, root, "metadata");
         metadata.appendChild(doc.createElementNS("https://omaware.org/xmlns/prototype/1", "omaware:managed"));
+        if (const auto lab = in["lab"].toMap(); !lab.isEmpty()) {
+            // Which lab built this VM and the login it was set up with (the name of a saved login, never a password).
+            auto tag = doc.createElementNS(Labs::ns, "omalab:lab");
+            for (const QString key : {"name", "slug", "login", "user"}) tag.setAttribute(key, lab[key].toString().left(64));
+            metadata.appendChild(tag);
+        }
         QString status; const auto choices = NetworkCatalog::discover(conn_, status); QVariantMap choice;
         for (auto v : choices) if (v.toMap()["id"] == in.value("networkId", "user")) choice = v.toMap();
-        if (in["networkId"] != "none") {
+        if (in.contains("networks")) {
+            // Several adapters, each with the MAC address its first-boot network settings expect.
+            QSet<QString> macs;
+            for (const auto &entry : in["networks"].toList()) {
+                const auto want = entry.toMap(); QVariantMap found;
+                for (auto v : choices) if (v.toMap()["id"] == want["id"]) found = v.toMap();
+                const auto mac = want["mac"].toString().toLower();
+                if (found.isEmpty() || !found["available"].toBool()) { cleanup(); done(false, "A network for this VM is unavailable: " + (found.isEmpty() ? want["id"].toString() : found["reason"].toString())); return; }
+                if (!QRegularExpression("^52:54:00(:[0-9a-f]{2}){3}$").match(mac).hasMatch() || macs.contains(mac)) { cleanup(); done(false, "Each adapter needs its own MAC address."); return; }
+                macs.insert(mac);
+                QString nic; DomainConfig::networkDevice(doc.toString(-1), {}, found["kind"].toString(), found["source"].toString(), windows ? "e1000e" : "virtio", true, false, nic, failure);
+                QDomDocument device; device.setContent(nic);
+                auto macElement = device.documentElement().firstChildElement("mac");
+                if (macElement.isNull()) { macElement = device.createElement("mac"); device.documentElement().insertBefore(macElement, device.documentElement().firstChild()); }
+                macElement.setAttribute("address", mac);
+                devices.appendChild(doc.importNode(device.documentElement(), true));
+            }
+        } else if (in["networkId"] != "none") {
             if (choice.isEmpty() || !choice["available"].toBool()) { cleanup(); done(false, "The selected network is unavailable. Refresh its configuration before creating the VM."); return; }
             QString nic; DomainConfig::networkDevice(doc.toString(-1), {}, choice["kind"].toString(), choice["source"].toString(), windows ? "e1000e" : "virtio", true, false, nic, failure);
             QDomDocument device; device.setContent(nic); devices.appendChild(doc.importNode(device.documentElement(), true));
@@ -574,6 +645,192 @@ void VmWorker::manage(QString op, QVariantMap in) {
         done(true, "Checkpoints loaded", {{"uuid", uuid}, {"items", rows}, {"currentId", history["currentId"]}, {"storage", Checkpoints::storage(conn_, uuid)}, {"blocker", createBlocker}, {"restoreBlocker", restoreBlocker}}); return;
     }
     if (!owned(domain.get()) || virDomainIsPersistent(domain.get()) != 1) { done(false, "This operation requires an OmaWare-managed persistent VM."); return; }
+    if (op == "vm.power") {
+        const auto action = in["action"].toString();
+        if (!QStringList{"start", "shutdown", "force-off", "pause", "resume", "remove"}.contains(action)) { done(false, "Unknown power action."); return; }
+        const auto message = power(domain.get(), action);
+        static const QMap<QString, QString> verbs{{"start", "VM started."}, {"shutdown", "Shutdown requested; the guest decides when it stops."}, {"force-off", "VM powered off."},
+            {"pause", "VM paused."}, {"resume", "VM resumed."}, {"remove", "VM removed. Its disk files were kept."}};
+        done(message.isEmpty(), message.isEmpty() ? verbs.value(action) : message, {{"uuid", uuid}}); return;
+    }
+    if (op == "vm.screenshot") {
+        if (!active) { done(false, "Start the VM to see its screen."); return; }
+        std::unique_ptr<virStream, decltype(&virStreamFree)> stream(virStreamNew(conn_, 0), virStreamFree);
+        char *mime = stream ? virDomainScreenshot(domain.get(), stream.get(), 0, 0) : nullptr;
+        if (!mime) { done(false, lastError("Capture the screen")); return; }
+        free(mime);
+        QByteArray data; char buffer[65536];
+        for (;;) {
+            const int n = virStreamRecv(stream.get(), buffer, sizeof buffer);
+            if (n > 0) data.append(buffer, n);
+            if (n == 0) break;
+            if (n < 0 || data.size() > 128 * 1024 * 1024) { virStreamAbort(stream.get()); done(false, lastError("Read the screen")); return; }
+        }
+        virStreamFinish(stream.get());
+        QImage image;
+        if (!image.loadFromData(data)) { done(false, "The screen image couldn't be read."); return; }
+        const QSize screen = image.size();
+        // Large screens are scaled down so they stay readable for an AI model; clicks use the scaled size.
+        const int maxWidth = std::clamp(in.value("maxWidth", 1280).toInt(), 320, 3840);
+        if (image.width() > maxWidth) image = image.scaledToWidth(maxWidth, Qt::SmoothTransformation);
+        QByteArray png; QBuffer buffer2(&png); buffer2.open(QIODevice::WriteOnly); image.save(&buffer2, "PNG");
+        done(true, "Screen captured", {{"uuid", uuid}, {"png", QString::fromLatin1(png.toBase64())}, {"width", image.width()}, {"height", image.height()},
+            {"screenWidth", screen.width()}, {"screenHeight", screen.height()}}); return;
+    }
+    if (op == "vm.input") {
+        if (!active) { done(false, "Start the VM before using its screen."); return; }
+        const double width = in["width"].toDouble(), height = in["height"].toDouble();
+        QDomDocument live; live.setContent(xmlOf(domain.get(), true));
+        bool tablet = false;
+        for (auto e = live.documentElement().firstChildElement("devices").firstChildElement("input"); !e.isNull(); e = e.nextSiblingElement("input")) tablet |= e.attribute("type") == "tablet";
+        auto monitor = [&](const QJsonArray &events, QString &why) {
+            const auto command = QJsonDocument(QJsonObject{{"execute", "input-send-event"}, {"arguments", QJsonObject{{"events", events}}}}).toJson(QJsonDocument::Compact);
+            char *reply = nullptr;
+            const bool ok = virDomainQemuMonitorCommand(domain.get(), command.constData(), &reply, 0) == 0 && reply && !QByteArray(reply).contains("\"error\"");
+            if (!ok) why = reply ? QString::fromUtf8(reply).left(300) : lastError("Send pointer input");
+            free(reply);
+            return ok;
+        };
+        auto at = [&](double x, double y, QString &why) {
+            if (!tablet) { why = "This VM has no tablet pointer, so OmaWare can't click at a position. Use keys instead."; return QJsonArray{}; }
+            if (width < 2 || height < 2 || x < 0 || y < 0 || x > width || y > height) { why = "The position is outside the screen. Take a screenshot and use its coordinates."; return QJsonArray{}; }
+            auto axis = [](const char *name, double value, double size) { return QJsonObject{{"type", "abs"}, {"data", QJsonObject{{"axis", name}, {"value", int(std::lround(value * 32767.0 / (size - 1)))}}}}; };
+            return QJsonArray{axis("x", std::min(x, width - 1), width), axis("y", std::min(y, height - 1), height)};
+        };
+        auto button = [](const QString &name, bool down) { return QJsonObject{{"type", "btn"}, {"data", QJsonObject{{"down", down}, {"button", name}}}}; };
+        auto keys = [&](const QList<GuestInput::Chord> &chords, QString &why) {
+            for (const auto &chord : chords) {
+                std::vector<unsigned> codes(chord.begin(), chord.end());
+                if (virDomainSendKey(domain.get(), VIR_KEYCODE_SET_LINUX, 20, codes.data(), int(codes.size()), 0) < 0) { why = lastError("Type"); return false; }
+                // Lets the guest keep up with long text.
+                QThread::msleep(25);
+            }
+            return true;
+        };
+        QStringList doneSteps; QString why;
+        const auto actions = in["actions"].toList();
+        if (actions.isEmpty() || actions.size() > 50) { done(false, "Send one to fifty actions."); return; }
+        for (const auto &entry : actions) {
+            const auto a = entry.toMap();
+            const auto type = a["type"].toString();
+            const QString name = a.value("button", "left").toString();
+            if (type == "click" || type == "double_click" || type == "move" || type == "scroll") {
+                if (!QStringList{"left", "right", "middle"}.contains(name)) { why = "button must be left, right or middle"; break; }
+                auto events = at(a["x"].toDouble(), a["y"].toDouble(), why);
+                if (events.isEmpty()) break;
+                if (type == "move" && !monitor(events, why)) break;
+                if (type == "click" || type == "double_click") {
+                    for (int i = 0; i < (type == "double_click" ? 2 : 1); ++i) {
+                        auto all = events; all.append(button(name, true));
+                        if (!monitor(all, why) || !monitor({button(name, false)}, why)) break;
+                        QThread::msleep(60);
+                    }
+                    if (!why.isEmpty()) break;
+                }
+                if (type == "scroll") {
+                    const int amount = std::clamp(a.value("amount", 3).toInt(), -30, 30);
+                    if (!monitor(events, why)) break;
+                    for (int i = 0; i < std::abs(amount) && why.isEmpty(); ++i) {
+                        const QString wheel = amount > 0 ? "wheel-down" : "wheel-up";
+                        if (monitor({button(wheel, true)}, why)) monitor({button(wheel, false)}, why);
+                    }
+                    if (!why.isEmpty()) break;
+                }
+            } else if (type == "drag") {
+                auto from = at(a["x"].toDouble(), a["y"].toDouble(), why);
+                auto to = from.isEmpty() ? QJsonArray{} : at(a["to_x"].toDouble(), a["to_y"].toDouble(), why);
+                if (to.isEmpty()) break;
+                auto press = from; press.append(button("left", true));
+                if (!monitor(press, why)) break;
+                // A few steps in between, so the guest sees a real drag.
+                for (int i = 1; i <= 5 && why.isEmpty(); ++i) {
+                    const double t = i / 5.0;
+                    auto step = at(a["x"].toDouble() + (a["to_x"].toDouble() - a["x"].toDouble()) * t, a["y"].toDouble() + (a["to_y"].toDouble() - a["y"].toDouble()) * t, why);
+                    if (!step.isEmpty()) { monitor(step, why); QThread::msleep(30); }
+                }
+                if (!why.isEmpty() || !monitor({button("left", false)}, why)) break;
+            } else if (type == "type") {
+                const auto text = a["text"].toString();
+                QList<GuestInput::Chord> chords;
+                if (text.size() > 4000) { why = "Type at most 4000 characters at a time."; break; }
+                if (!GuestInput::chordsForText(text, chords, why) || !keys(chords, why)) break;
+            } else if (type == "key") {
+                GuestInput::Chord chord;
+                if (!GuestInput::chordForKeys(a["keys"].toString(), chord, why) || !keys({chord}, why)) break;
+            } else if (type == "wait") {
+                QThread::msleep(ulong(std::clamp(a.value("seconds", 1.0).toDouble(), 0.0, 10.0) * 1000));
+            } else { why = "Unknown action “" + type + "”. Use click, double_click, move, drag, scroll, type, key or wait."; break; }
+            doneSteps << type;
+        }
+        if (!why.isEmpty()) { done(false, QString("Stopped at action %1 (%2): %3").arg(doneSteps.size() + 1).arg(actions.value(doneSteps.size()).toMap()["type"].toString(), why), {{"completed", doneSteps.size()}}); return; }
+        done(true, QString("%1 action%2 sent.").arg(doneSteps.size()).arg(doneSteps.size() == 1 ? "" : "s"), {{"completed", doneSteps.size()}}); return;
+    }
+    if (op == "vm.agentExec") {
+        // A command run through the QEMU guest agent (as root), which works without any network.
+        if (!active) { done(false, "Start the VM first."); return; }
+        QString ignored; const auto live = DomainConfig::describe(xmlOf(domain.get(), true), ignored);
+        if (!live["agentConnected"].toBool()) { done(false, "The QEMU guest agent isn't running in this VM.", {{"noAgent", true}}); return; }
+        auto agent = [&](const QJsonObject &command, int timeout, QJsonObject &result, QString &why) {
+            char *reply = virDomainQemuAgentCommand(domain.get(), QJsonDocument(command).toJson(QJsonDocument::Compact).constData(), timeout, 0);
+            if (!reply) { why = lastError("Guest agent"); return false; }
+            result = QJsonDocument::fromJson(reply).object(); free(reply);
+            return true;
+        };
+        QJsonObject reply; QString why;
+        const bool windows = agent(QJsonObject{{"execute", "guest-get-osinfo"}}, 5, reply, why) && reply["return"].toObject()["id"].toString() == "mswindows";
+        const auto command = in["command"].toString();
+        const QJsonObject exec{{"execute", "guest-exec"}, {"arguments", windows
+            ? QJsonObject{{"path", "powershell.exe"}, {"arg", QJsonArray{"-NoProfile", "-NonInteractive", "-Command", command}}, {"capture-output", true}}
+            : QJsonObject{{"path", "/bin/sh"}, {"arg", QJsonArray{"-c", command}}, {"capture-output", true}}}};
+        if (!agent(exec, 10, reply, why)) { done(false, why); return; }
+        const int pid = reply["return"].toObject()["pid"].toInt(-1);
+        if (pid < 0) { done(false, "The guest agent didn't start the command."); return; }
+        QElapsedTimer clock; clock.start();
+        const qint64 limit = std::clamp(in.value("timeout", 60).toInt(), 1, 900) * 1000LL;
+        while (true) {
+            if (!agent(QJsonObject{{"execute", "guest-exec-status"}, {"arguments", QJsonObject{{"pid", pid}}}}, 10, reply, why)) { done(false, why); return; }
+            const auto status = reply["return"].toObject();
+            if (status["exited"].toBool()) {
+                auto decode = [&](const char *key) { const auto bytes = QByteArray::fromBase64(status[key].toString().toLatin1()); return QString::fromUtf8(bytes.right(65536)); };
+                done(true, "Command finished.", {{"exitCode", status["exitcode"].toInt(status.contains("signal") ? 128 + status["signal"].toInt() : -1)},
+                    {"stdout", decode("out-data")}, {"stderr", decode("err-data")}, {"via", "guest agent"}, {"truncated", status["out-truncated"].toBool() || status["err-truncated"].toBool()}}); return;
+            }
+            if (clock.elapsed() > limit) { done(false, QString("The command is still running after %1 seconds (process %2 in the guest).").arg(limit / 1000).arg(pid), {{"running", true}}); return; }
+            QThread::msleep(250);
+        }
+    }
+    if (op == "vm.addresses") {
+        // IPv4 addresses for each adapter: DHCP leases of host networks, the host's neighbour table and the guest agent.
+        QString ignored; const auto live = DomainConfig::describe(xmlOf(domain.get(), true), ignored);
+        QHash<QString, QStringList> found;
+        auto add = [&](const QString &mac, const QString &ip) { auto &list = found[mac.toLower()]; if (!list.contains(ip)) list << ip; };
+        if (active) {
+            Connection system(virConnectOpenReadOnly("qemu:///system"), virConnectClose);
+            virNetworkPtr *nets = nullptr; const int count = system ? virConnectListAllNetworks(system.get(), &nets, VIR_CONNECT_LIST_NETWORKS_ACTIVE) : 0;
+            for (int i = 0; i < count; ++i) {
+                virNetworkDHCPLeasePtr *leases = nullptr; const int n = virNetworkGetDHCPLeases(nets[i], nullptr, &leases, 0);
+                for (int j = 0; j < n; ++j) { if (leases[j]->mac && leases[j]->ipaddr && leases[j]->type == VIR_IP_ADDR_TYPE_IPV4) add(QString::fromUtf8(leases[j]->mac), QString::fromUtf8(leases[j]->ipaddr)); virNetworkDHCPLeaseFree(leases[j]); }
+                free(leases); virNetworkFree(nets[i]);
+            }
+            free(nets);
+            for (const unsigned source : {unsigned(VIR_DOMAIN_INTERFACE_ADDRESSES_SRC_ARP), unsigned(VIR_DOMAIN_INTERFACE_ADDRESSES_SRC_AGENT)}) {
+                if (source == VIR_DOMAIN_INTERFACE_ADDRESSES_SRC_AGENT && !live["agentConnected"].toBool()) continue;
+                virDomainInterfacePtr *ifaces = nullptr; const int n = virDomainInterfaceAddresses(domain.get(), &ifaces, source, 0);
+                for (int j = 0; j < n; ++j) {
+                    for (unsigned k = 0; k < ifaces[j]->naddrs; ++k)
+                        if (ifaces[j]->hwaddr && ifaces[j]->addrs[k].type == VIR_IP_ADDR_TYPE_IPV4 && !QString::fromUtf8(ifaces[j]->addrs[k].addr).startsWith("127.")) add(QString::fromUtf8(ifaces[j]->hwaddr), QString::fromUtf8(ifaces[j]->addrs[k].addr));
+                    virDomainInterfaceFree(ifaces[j]);
+                }
+                free(ifaces);
+            }
+        }
+        QVariantList nics;
+        for (const auto &v : live["interfaces"].toList()) {
+            auto nic = v.toMap();
+            nics.append(QVariantMap{{"mac", nic["mac"]}, {"type", nic["type"]}, {"source", nic["source"]}, {"linkUp", nic["linkUp"]}, {"ips", found.value(nic["mac"].toString().toLower())}});
+        }
+        done(true, "Addresses read.", {{"uuid", uuid}, {"active", active}, {"agent", live["agentConnected"]}, {"interfaces", nics}}); return;
+    }
     if (op == "vm.restart") {
         if (const auto blocked = Containment::blocker(domain.get(), false); !blocked.isEmpty()) { done(false, blocked); return; }
         if (!active) { int r = virDomainCreate(domain.get()); done(r == 0, r == 0 ? "VM started with its saved settings." : lastError("Start VM")); return; }
@@ -592,7 +849,7 @@ void VmWorker::manage(QString op, QVariantMap in) {
                 }
             });
         }
-        restartTimer_->start(); emit progress("Waiting for the guest to shut down before starting it with saved settings…"); emit managed(op, true, {{"waiting", true}}); return;
+        restartTimer_->start(); emit progress("Waiting for the guest to shut down before starting it with saved settings…"); emit managed(op, true, {{"waiting", true}, {"requestTag", in.value("requestTag")}}); return;
     }
     if (op == "containment.set") {
         const bool on = in["enabled"].toBool();

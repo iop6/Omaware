@@ -10,6 +10,13 @@
 #include "isolibrary.h"
 #include "updater.h"
 #include "paths.h"
+#include "agentbridge.h"
+#include "cloudimages.h"
+#include "labs.h"
+#include "logins.h"
+#include "labplan.h"
+#include <fcntl.h>
+#include <unistd.h>
 #include <QCryptographicHash>
 #include <QJsonArray>
 #include <QJsonDocument>
@@ -63,6 +70,54 @@ class ManagementTest : public QObject {
         if (!process("qemu-img", {"create", "-f", "raw", path, "64M"}) || !process("qemu-io", {"-f", "raw", "-c", "write -P 0x31 0 4096", path})) return {};
         return path;
     }
+    // Runs an agent tool and waits for its answer.
+    QVariantMap tool(AgentBridge &agent, const QString &name, const QVariantMap &args, int timeout = 120000) {
+        QVariantMap out; bool got = false;
+        agent.handle(name, args, [&](const QVariantMap &r) { out = r; got = true; });
+        QElapsedTimer timer; timer.start();
+        while (!got && timer.elapsed() < timeout) QTest::qWait(50);
+        return got ? out : QVariantMap{{"ok", false}, {"error", "No answer within the time limit: " + name}};
+    }
+    // Waits for a lab to be built (or to fail).
+    QVariantMap waitForLab(AgentBridge &agent, const QString &id, int minutes) {
+        QVariantMap status;
+        QElapsedTimer timer; timer.start();
+        while (timer.elapsed() < minutes * 60000LL) {
+            status = tool(agent, "lab_status", {{"lab_id", id}, {"wait_seconds", 30}}, 60000)["result"].toMap();
+            if (status["state"] != "building" && status["state"] != "waiting") break;
+        }
+        return status;
+    }
+    // The Ubuntu cloud image, put where OmaWare looks for it (downloading it in tests is slow and flaky).
+    bool placeCloudImage() {
+        const auto image = qEnvironmentVariable("OMAWARE_CLOUD_IMAGE");
+        if (image.isEmpty() || !QFile::exists(image)) return false;
+        QDir().mkpath(CloudImages::folder());
+        const auto target = CloudImages::folder() + "/ubuntu-24.04.qcow2";
+        if (QFile::exists(target)) return true;
+        return ::link(image.toUtf8().constData(), target.toUtf8().constData()) == 0 || QFile::copy(image, target);
+    }
+    // Waits for text on a running VM's serial console (cloud-init writes its final message there).
+    bool waitForConsole(const QString &uuid, const QByteArray &text, int seconds) {
+        QDomDocument doc; doc.setContent(xml(uuid, true));
+        QString pty;
+        for (auto e = doc.documentElement().firstChildElement("devices").firstChildElement("serial"); !e.isNull(); e = e.nextSiblingElement("serial"))
+            if (e.attribute("type") == "pty") pty = e.firstChildElement("source").attribute("path");
+        if (pty.isEmpty()) return false;
+        const int fd = ::open(pty.toUtf8().constData(), O_RDONLY | O_NONBLOCK | O_NOCTTY);
+        if (fd < 0) return false;
+        QByteArray seen; char buffer[4096];
+        QElapsedTimer timer; timer.start();
+        while (timer.elapsed() < seconds * 1000LL && !seen.contains(text)) {
+            const auto n = ::read(fd, buffer, sizeof buffer);
+            if (n > 0) seen.append(buffer, n); else QTest::qWait(200);
+            if (seen.size() > 1000000) seen = seen.right(10000);
+        }
+        ::close(fd);
+        return seen.contains(text);
+    }
+    void runAgentLabOnScreen();
+    void runAgentLabNetwork();
 private slots:
     void initTestCase() {
         QVERIFY2(qEnvironmentVariable("OMAWARE_VM_TEST") == "1" && qEnvironmentVariable("OMAWARE_VM_TEST_HOST") == QSysInfo::machineHostName(),
@@ -168,6 +223,8 @@ private slots:
     void wizardAndWorkspaceUi() {
         Theme theme("/nonexistent/palette"); QQmlApplicationEngine engine; QList<QQmlError> warnings;
         connect(&engine, &QQmlEngine::warnings, this, [&](QList<QQmlError> items) { warnings += items; });
+        // Owned by the engine, so it outlives the window.
+        engine.rootContext()->setContextProperty("agent", new AgentBridge(backend.get(), &engine));
         engine.rootContext()->setContextProperty("backend", backend.get()); engine.rootContext()->setContextProperty("theme", &theme);
         engine.load(QUrl("qrc:/qml/Main.qml")); QVERIFY(!engine.rootObjects().isEmpty());
         auto window = qobject_cast<QQuickWindow *>(engine.rootObjects().first()); QVERIFY(window); window->requestActivate();
@@ -1586,7 +1643,9 @@ private slots:
         QGuiApplication::setQuitOnLastWindowClosed(false);
         Theme theme("/nonexistent/palette");
         auto open = [&](QQmlApplicationEngine &engine) {
-            engine.rootContext()->setContextProperty("backend", backend.get()); engine.rootContext()->setContextProperty("theme", &theme);
+            // Owned by the engine, so it outlives the window.
+        engine.rootContext()->setContextProperty("agent", new AgentBridge(backend.get(), &engine));
+        engine.rootContext()->setContextProperty("backend", backend.get()); engine.rootContext()->setContextProperty("theme", &theme);
             engine.load(QUrl("qrc:/qml/Main.qml"));
             auto window = engine.rootObjects().isEmpty() ? nullptr : qobject_cast<QQuickWindow *>(engine.rootObjects().first());
             if (window) { window->resize(1280, 840); window->show(); }
@@ -1778,6 +1837,8 @@ private slots:
         QVERIFY(details(uuid)["interfaces"].toList().isEmpty());
         QVERIFY(!PendingChanges(uuid).items(xml(uuid)).isEmpty());
     }
+    void agentLabOnScreen() { runAgentLabOnScreen(); }
+    void agentLabNetwork() { runAgentLabNetwork(); }
     void hostNetworkManager() {
         if (qEnvironmentVariable("OMAWARE_NETWORK_ADMIN_TEST") != "1") QSKIP("Host-network tests are opt-in: set OMAWARE_NETWORK_ADMIN_TEST=1 on a disposable test machine.");
         auto name = "nettest-" + QUuid::createUuid().toString(QUuid::Id128).left(8);
@@ -1822,6 +1883,134 @@ private slots:
         result = command("networks.remove", {{"uuid", networkUuid}, {"revision", network["revision"]}}); QVERIFY2(resultOk, qPrintable(result["message"].toString())); networkUuid.clear();
     }
 };
+void ManagementTest::runAgentLabOnScreen() {
+    if (!placeCloudImage()) QSKIP("Set OMAWARE_CLOUD_IMAGE to an Ubuntu cloud image (qcow2) to test labs.");
+    QTemporaryDir loginFolder; QVERIFY(loginFolder.isValid()); Logins::setTestMode(loginFolder.path());
+    AgentBridge agent(backend.get());
+    const bool wasEnabled = agent.enabled();
+    agent.setEnabled(false);
+    QVERIFY(tool(agent, "omaware_overview", {})["error"].toString().contains("turned off"));
+    agent.setEnabled(true);
+    bool answerYes = false; int questions = 0;
+    connect(&agent, &AgentBridge::confirmationChanged, this, [&] {
+        const auto id = agent.confirmation().value("id").toString();
+        if (!id.isEmpty()) { ++questions; QTimer::singleShot(100, &agent, [&agent, id, &answerYes] { agent.answer(id, answerYes); }); }
+    });
+    const auto suffix = QUuid::createUuid().toString(QUuid::Id128).left(6);
+    const auto labName = "Agent " + suffix, vmName = "agentvm-" + suffix;
+    const QVariantMap plan{{"name", labName}, {"user", "tester"}, {"vms", QVariantList{QVariantMap{{"name", vmName}, {"os", "ubuntu"}, {"cpus", 1}, {"memory_mib", 1024}, {"disk_gib", 8}}}}};
+    auto bad = plan; bad["user"] = "root";
+    auto r = tool(agent, "propose_lab", {{"plan", bad}});
+    QVERIFY(!r["ok"].toBool()); QVERIFY(r["error"].toString().contains("user name")); QVERIFY(agent.proposal().isEmpty());
+    r = tool(agent, "propose_lab", {{"plan", plan}});
+    QVERIFY2(r["ok"].toBool(), qPrintable(r["error"].toString()));
+    const auto id = r["result"].toMap()["lab_id"].toString();
+    QCOMPARE(agent.proposal()["id"].toString(), id);
+    QCOMPARE(tool(agent, "lab_status", {{"lab_id", id}})["result"].toMap()["state"].toString(), QString("waiting"));
+    // Too short a password is refused and the plan stays open.
+    agent.approve(id, labName, "tester", "short", false);
+    QCOMPARE(agent.build()["state"].toString(), QString("error")); QCOMPARE(agent.proposal()["id"].toString(), id);
+    agent.approve(id, labName, "tester", "agent-test-pass", false);
+    const auto status = waitForLab(agent, id, 8);
+    QVERIFY2(status["state"] == "ready", qPrintable(QJsonDocument::fromVariant(status).toJson()));
+    const auto lab = Labs::load(LabPlan::slug(labName));
+    const auto uuid = lab["vms"].toList().value(0).toMap()["uuid"].toString();
+    QVERIFY(!uuid.isEmpty()); QVERIFY(created.contains(uuid)); QVERIFY(active(uuid));
+    QCOMPARE(agent.vmLab(uuid)["user"].toString(), QString("tester"));
+    QCOMPARE(agent.revealPassword(labName), QString("agent-test-pass"));
+    // The VM boots from its own copy of the image, with the setup disc and the lab's tag.
+    const auto definition = xml(uuid);
+    QVERIFY(definition.contains("seed.iso")); QVERIFY(definition.contains(Labs::ns));
+    QVERIFY(tool(agent, "list_snapshots", {{"vm", vmName}})["result"].toMap()["snapshots"].toList().value(0).toMap()["name"] == "Lab built");
+    auto shot = tool(agent, "screenshot", {{"vm", vmName}});
+    QVERIFY2(shot["ok"].toBool(), qPrintable(shot["error"].toString()));
+    QVERIFY(QImage::fromData(QByteArray::fromBase64(shot["image"].toByteArray()), "PNG").width() > 300);
+    QCOMPARE(agent.screen()["uuid"].toString(), uuid);
+    // Log in on the screen with the saved login, then shut down with sudo: proves the password, typing and setup.
+    QVERIFY2(waitForConsole(uuid, "OmaWare setup finished", 420), "cloud-init didn't finish first-boot setup");
+    QTest::qWait(3000);
+    r = tool(agent, "type_login", {{"vm", vmName}, {"field", "user"}}); QVERIFY2(r["ok"].toBool(), qPrintable(r["error"].toString()));
+    QVERIFY(!r["image"].toString().isEmpty()); QVERIFY(!QJsonDocument::fromVariant(r).toJson().contains("agent-test-pass"));
+    QTest::qWait(2000);
+    r = tool(agent, "type_login", {{"vm", vmName}, {"field", "password"}, {"screenshot", false}}); QVERIFY2(r["ok"].toBool(), qPrintable(r["error"].toString()));
+    QVERIFY(!QJsonDocument::fromVariant(r).toJson().contains("agent-test-pass"));
+    QTest::qWait(6000);
+    r = tool(agent, "vm_input", {{"vm", vmName}, {"actions", QVariantList{QVariantMap{{"type", "click"}, {"x", 10}, {"y", 10}}, QVariantMap{{"type", "type"}, {"text", "sudo poweroff\n"}}}}, {"screenshot", false}});
+    QVERIFY2(r["ok"].toBool(), qPrintable(r["error"].toString()));
+    QTRY_VERIFY_WITH_TIMEOUT(!active(uuid), 90000);
+    // Without a network or guest agent, commands explain what to do instead.
+    r = tool(agent, "run_command", {{"vm", vmName}, {"command", "true"}});
+    QVERIFY(!r["ok"].toBool()); QVERIFY(r["error"].toString().contains("isn't running") || r["error"].toString().contains("Start the VM"));
+    QVERIFY(!tool(agent, "vm_input", {{"vm", vmName}, {"actions", QVariantList{QVariantMap{{"type", "key"}, {"keys", "enter"}}}}})["ok"].toBool());
+    // Restoring and deleting ask the user; "no" is respected.
+    answerYes = false;
+    r = tool(agent, "restore_snapshot", {{"vm", vmName}, {"snapshot", "Lab built"}});
+    QVERIFY(!r["ok"].toBool()); QVERIFY(r["error"].toString().contains("said no")); QCOMPARE(questions, 1);
+    answerYes = true;
+    r = tool(agent, "restore_snapshot", {{"vm", vmName}, {"snapshot", "Lab built"}}); QVERIFY2(r["ok"].toBool(), qPrintable(r["error"].toString()));
+    QTRY_VERIFY(!backend->busy());
+    const auto folder = lab["vms"].toList().value(0).toMap()["dir"].toString();
+    QVERIFY(QDir(folder).exists());
+    r = tool(agent, "delete_lab", {{"lab", labName}}, 180000); QVERIFY2(r["ok"].toBool(), qPrintable(r["error"].toString()));
+    QCOMPARE(questions, 3);
+    auto gone = virDomainLookupByUUIDString(external, uuid.toUtf8().constData()); QVERIFY(!gone);
+    QVERIFY(!QDir(folder).exists()); QVERIFY(Labs::load(LabPlan::slug(labName)).isEmpty());
+    QVERIFY(Logins::exists(labName));
+    agent.setEnabled(wasEnabled);
+    Logins::setTestMode({});
+}
+
+void ManagementTest::runAgentLabNetwork() {
+    if (qEnvironmentVariable("OMAWARE_AGENT_NETWORK_TEST") != "1") QSKIP("Lab networks need administrator approval: set OMAWARE_AGENT_NETWORK_TEST=1 on a test machine that allows OmaWare's helper.");
+    if (!placeCloudImage()) QSKIP("Set OMAWARE_CLOUD_IMAGE to an Ubuntu cloud image (qcow2) to test labs.");
+    QTemporaryDir loginFolder; QVERIFY(loginFolder.isValid()); Logins::setTestMode(loginFolder.path());
+    AgentBridge agent(backend.get());
+    const bool wasEnabled = agent.enabled();
+    agent.setEnabled(true);
+    connect(&agent, &AgentBridge::confirmationChanged, this, [&] {
+        const auto id = agent.confirmation().value("id").toString();
+        if (!id.isEmpty()) QTimer::singleShot(100, &agent, [&agent, id] { agent.answer(id, true); });
+    });
+    const auto suffix = QUuid::createUuid().toString(QUuid::Id128).left(6);
+    const auto labName = "Net " + suffix, vmName = "netvm-" + suffix;
+    const QVariantMap plan{{"name", labName}, {"user", "tester"}, {"networks", QVariantList{QVariantMap{{"name", "lan"}, {"type", "private"}}}},
+        {"vms", QVariantList{QVariantMap{{"name", vmName}, {"cpus", 1}, {"memory_mib", 1024}, {"disk_gib", 8}, {"networks", QVariantList{"lan"}}, {"setup", QVariantList{"echo built-by-omaware > /etc/omaware-test"}}}}}};
+    auto r = tool(agent, "propose_lab", {{"plan", plan}}); QVERIFY2(r["ok"].toBool(), qPrintable(r["error"].toString()));
+    const auto id = r["result"].toMap()["lab_id"].toString();
+    agent.approve(id, labName, "tester", "agent-test-pass", false);
+    const auto status = waitForLab(agent, id, 8);
+    QVERIFY2(status["state"] == "ready", qPrintable(QJsonDocument::fromVariant(status).toJson()));
+    const auto lab = Labs::load(LabPlan::slug(labName));
+    QCOMPARE(lab["networks"].toList().size(), 1);
+    // Commands go over SSH as the lab user, checked against the VM's own host key.
+    QElapsedTimer timer; timer.start();
+    do { r = tool(agent, "run_command", {{"vm", vmName}, {"command", "cloud-init status --wait >/dev/null; cat /etc/omaware-test; whoami; sudo -n id -u"}, {"timeout_seconds", 400}}, 450000); }
+    while (!r["ok"].toBool() && r["error"].toString().contains("no address") && timer.elapsed() < 240000 && (QTest::qWait(5000), true));
+    QVERIFY2(r["ok"].toBool(), qPrintable(r["error"].toString()));
+    const auto result = r["result"].toMap();
+    QCOMPARE(result["exit_code"].toInt(), 0);
+    QCOMPARE(result["stdout"].toString(), QString("built-by-omaware\ntester\n0\n"));
+    QVERIFY(result["via"].toString().contains("SSH"));
+    // The overview shows the VM's address on the lab network.
+    const auto overview = tool(agent, "omaware_overview", {})["result"].toMap();
+    QString address;
+    for (const auto &v : overview["vms"].toList()) if (v.toMap()["name"] == vmName) address = v.toMap()["adapters"].toList().value(0).toMap()["ips"].toList().value(0).toString();
+    QVERIFY2(!address.isEmpty(), qPrintable(QJsonDocument::fromVariant(overview).toJson()));
+    // Pulling the cable cuts it off; plugging it back in restores it.
+    r = tool(agent, "set_cable", {{"vm", vmName}, {"network", LabPlan::slug(labName) + "-lan"}, {"plugged", false}}); QVERIFY2(r["ok"].toBool(), qPrintable(r["error"].toString()));
+    r = tool(agent, "run_command", {{"vm", vmName}, {"command", "true"}, {"timeout_seconds", 20}}); QVERIFY(!r["ok"].toBool());
+    r = tool(agent, "set_cable", {{"vm", vmName}, {"network", LabPlan::slug(labName) + "-lan"}, {"plugged", true}}); QVERIFY2(r["ok"].toBool(), qPrintable(r["error"].toString()));
+    QTRY_VERIFY_WITH_TIMEOUT(tool(agent, "run_command", {{"vm", vmName}, {"command", "true"}, {"timeout_seconds", 20}})["ok"].toBool(), 60000);
+    r = tool(agent, "delete_lab", {{"lab", labName}}, 180000); QVERIFY2(r["ok"].toBool(), qPrintable(r["error"].toString()));
+    const auto netUuid = lab["networks"].toList().value(0).toMap()["uuid"].toString();
+    auto system = virConnectOpenReadOnly("qemu:///system"); QVERIFY(system);
+    auto net = virNetworkLookupByUUIDString(system, netUuid.toUtf8().constData());
+    QVERIFY(!net); if (net) virNetworkFree(net);
+    virConnectClose(system);
+    agent.setEnabled(wasEnabled);
+    Logins::setTestMode({});
+}
+
 int main(int argc, char **argv) {
     qputenv("QT_NO_GLIB", "1"); QGuiApplication app(argc, argv); QStandardPaths::setTestModeEnabled(true);
     QQuickStyle::setStyle("Basic"); qmlRegisterType<Console>("Omaware", 1, 0, "VmConsole"); qmlRegisterType<Workspace>("Omaware", 1, 0, "Workspace"); qmlRegisterType<IsoLibrary>("Omaware", 1, 0, "IsoLibrary"); qmlRegisterType<Updater>("Omaware", 1, 0, "Updater");

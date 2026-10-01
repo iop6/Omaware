@@ -220,7 +220,7 @@ ColumnLayout {
             x: 24; y: 20
             width: scroll.width - 48
             spacing: 16
-            Label { visible: !panel.info.uuid || !!panel.info.error; text: panel.info.error || (panel.busy ? "Reading virtual machine configuration…" : "Select a VM to see its configuration."); color: theme.colors.muted; wrapMode: Text.WordWrap; Layout.fillWidth: true }
+            Label { textFormat: Text.PlainText; visible: !panel.info.uuid || !!panel.info.error; text: panel.info.error || (panel.busy ? "Reading virtual machine configuration…" : "Select a VM to see its configuration."); color: theme.colors.muted; wrapMode: Text.WordWrap; Layout.fillWidth: true }
             ColumnLayout {
                 visible: !!panel.info.uuid && !panel.info.error
                 Layout.fillWidth: true
@@ -458,6 +458,28 @@ ColumnLayout {
                                 Layout.fillWidth: true; Layout.preferredWidth: 1; Layout.alignment: Qt.AlignTop; spacing: 0
                                 SectionHeading { title: "Identity & management"; iconName: "monitor" }
                                 Repeater { model: panel.identityRows; DetailRow { required property var modelData; Layout.fillWidth: true; label: modelData.label; value: modelData.value } }
+                            }
+                        }
+                        // VMs built as part of a lab: the login they were set up with. The password stays hidden until asked for.
+                        ColumnLayout {
+                            id: labLogin
+                            objectName: "labLogin"
+                            readonly property var lab: { const revision = agent.labs.length; return panel.vmUuid ? agent.vmLab(panel.vmUuid) : ({}) }
+                            property string shown: ""
+                            visible: !!lab.lab
+                            Layout.fillWidth: true; spacing: 0
+                            Connections { target: panel; function onVmUuidChanged() { labLogin.shown = "" } }
+                            SectionHeading { title: "Lab login"; caption: "Set up when the lab “" + (labLogin.lab.lab || "") + "” was built"; iconName: "keyboard" }
+                            DetailRow { Layout.fillWidth: true; label: "User"; value: labLogin.lab.user || "" }
+                            RowLayout {
+                                Layout.fillWidth: true; spacing: 8
+                                DetailRow { objectName: "labPassword"; Layout.fillWidth: true; label: "Password"; value: labLogin.shown || "••••••••" }
+                                AppButton {
+                                    objectName: "showLabPassword"
+                                    text: labLogin.shown ? "Hide" : "Show"; tone: "quiet"; implicitHeight: 28
+                                    hint: "Saved as “" + (labLogin.lab.login || "") + "” in your password store"
+                                    onClicked: labLogin.shown = labLogin.shown ? "" : (agent.revealPassword(labLogin.lab.login) || "(couldn't be read)")
+                                }
                             }
                         }
                         SectionHeading { visible: panel.counterRows.length > 0; title: "Live counters"; caption: "Raw cumulative values from the latest sample"; iconName: "history" }

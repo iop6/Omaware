@@ -52,19 +52,19 @@ case $family in
         packages=(qemu-system-x86 qemu-utils libvirt-daemon-system libvirt-clients virtinst ovmf swtpm swtpm-tools dnsmasq-base
             qt6-base-dev qt6-declarative-dev qt6-wayland qml6-module-qtqml qml6-module-qtquick qml6-module-qtquick-controls
             qml6-module-qtquick-layouts qml6-module-qtquick-window qml6-module-qtquick-dialogs qml6-module-qtqml-workerscript
-            qml6-module-qtquick-templates libtomlplusplus-dev bzip2 ca-certificates)
+            qml6-module-qtquick-templates libtomlplusplus-dev bzip2 ca-certificates openssh-client)
         has() { [[ $(dpkg-query -W -f='${Status}' "$1" 2>/dev/null) == "install ok installed" ]]; } ;;
     fedora|rhel|centos|rocky|almalinux)
         installer=(sudo dnf install -y -q)
-        packages=(qemu-kvm qemu-img libvirt-daemon-kvm virt-install edk2-ovmf swtpm swtpm-tools qt6-qtbase qt6-qtdeclarative qt6-qtwayland tomlplusplus bzip2)
+        packages=(qemu-kvm qemu-img libvirt-daemon-kvm virt-install edk2-ovmf swtpm swtpm-tools qt6-qtbase qt6-qtdeclarative qt6-qtwayland tomlplusplus bzip2 openssh-clients)
         has() { rpm -q --whatprovides "$1" >/dev/null 2>&1; } ;;
     arch|endeavouros|manjaro|omarchy)
         installer=(sudo pacman -S --needed --noconfirm)
-        packages=(qemu-desktop libvirt virt-install edk2-ovmf swtpm dnsmasq qt6-base qt6-declarative qt6-wayland tomlplusplus bzip2)
+        packages=(qemu-desktop libvirt virt-install edk2-ovmf swtpm dnsmasq qt6-base qt6-declarative qt6-wayland tomlplusplus bzip2 openssh)
         has() { pacman -T "$1" >/dev/null 2>&1; } ;;
     opensuse*|suse|sles)
         installer=(sudo zypper -q install -y)
-        packages=(qemu-x86 qemu-tools libvirt-daemon-qemu virt-install qemu-ovmf-x86_64 swtpm qt6-base-devel qt6-declarative-devel qt6-wayland tomlplusplus-devel bzip2)
+        packages=(qemu-x86 qemu-tools libvirt-daemon-qemu virt-install qemu-ovmf-x86_64 swtpm qt6-base-devel qt6-declarative-devel qt6-wayland tomlplusplus-devel bzip2 openssh-clients)
         has() { rpm -q --whatprovides "$1" >/dev/null 2>&1; } ;;
 esac
 

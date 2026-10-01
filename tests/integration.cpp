@@ -19,6 +19,33 @@
 
 // Presentation-only inventory for empty/disconnected/read-only layout coverage.
 // Real power, console and input paths below still use newly created QEMU VMs.
+// Stands in for OmaWare's agent bridge: agent access off, no labs.
+class UiAgent : public QObject {
+    Q_OBJECT
+    Q_PROPERTY(bool enabled MEMBER enabled NOTIFY changed)
+    Q_PROPERTY(QString error MEMBER error NOTIFY changed)
+    Q_PROPERTY(QString command MEMBER command CONSTANT)
+    Q_PROPERTY(QVariantMap screen MEMBER screen NOTIFY changed)
+    Q_PROPERTY(QVariantMap proposal MEMBER proposal NOTIFY changed)
+    Q_PROPERTY(QVariantMap confirmation MEMBER confirmation NOTIFY changed)
+    Q_PROPERTY(QVariantMap build MEMBER build NOTIFY changed)
+    Q_PROPERTY(QVariantList labs MEMBER labs NOTIFY changed)
+    Q_PROPERTY(QVariantList logins MEMBER logins NOTIFY changed)
+public:
+    bool enabled = false;
+    QString error, command = "claude mcp add omaware -- omaware mcp";
+    QVariantMap screen, proposal, confirmation, build;
+    QVariantList labs, logins;
+    Q_INVOKABLE QVariantMap vmLab(const QString &) const { return {}; }
+    Q_INVOKABLE QString revealPassword(const QString &) const { return {}; }
+    Q_INVOKABLE QString generatePassword() const { return "abcd-efgh-jkmn-pqrs"; }
+    Q_INVOKABLE void approve(const QString &, const QString &, const QString &, const QString &, bool) {}
+    Q_INVOKABLE void decline(const QString &) {}
+    Q_INVOKABLE void answer(const QString &, bool) {}
+    Q_INVOKABLE void stop() { enabled = false; emit changed(); }
+signals:
+    void changed();
+};
 class UiInventory : public QObject {
     Q_OBJECT
     Q_PROPERTY(QVariantList domains MEMBER domains NOTIFY changed)
@@ -77,6 +104,7 @@ signals:
 
 class Integration : public QObject {
     Q_OBJECT
+    UiAgent uiAgent;
     QString uuid_;
     QString extraUuid_;
     virConnectPtr external_ = nullptr;
@@ -228,7 +256,7 @@ private slots:
         QList<QQmlError> warnings;
         connect(&engine, &QQmlEngine::warnings, this, [&](const QList<QQmlError> &items) { warnings += items; });
         engine.rootContext()->setContextProperty("backend", &inventory);
-        engine.rootContext()->setContextProperty("theme", &theme);
+        engine.rootContext()->setContextProperty("theme", &theme); engine.rootContext()->setContextProperty("agent", &uiAgent);
         engine.load(QUrl("qrc:/qml/Main.qml"));
         QVERIFY(!engine.rootObjects().isEmpty());
         auto window = qobject_cast<QQuickWindow *>(engine.rootObjects().first());
@@ -282,6 +310,33 @@ private slots:
         inventory.domains.clear();
         emit inventory.changed();
         QTRY_VERIFY(!window->property("detailsOpen").toBool());
+        // A lab an agent proposed: the plan, then the login; Build waits for a valid user and password.
+        theme.setMode("dark");
+        const QVariantMap vm{{"name", "web1"}, {"os", "ubuntu"}, {"cpus", 2}, {"memoryMiB", 2048}, {"diskGiB", 16},
+            {"nics", QVariantList{QVariantMap{{"network", "dmz"}, {"ip", ""}}}}, {"packages", QVariantList{"nginx"}}, {"setup", QVariantList{"systemctl enable --now nginx"}}};
+        const QVariantMap fw{{"name", "fw"}, {"os", "debian"}, {"cpus", 1}, {"memoryMiB", 1024}, {"diskGiB", 8},
+            {"nics", QVariantList{QVariantMap{{"network", "dmz"}, {"ip", ""}}, QVariantMap{{"network", "lan"}, {"ip", "172.30.1.10/24"}}}}};
+        uiAgent.proposal = {{"id", "p1"}, {"login", "Web lab"}, {"user", "alex"},
+            {"plan", QVariantMap{{"name", "Web lab"}, {"networks", QVariantList{QVariantMap{{"name", "dmz"}, {"type", "internet"}, {"subnet", ""}}, QVariantMap{{"name", "lan"}, {"type", "isolated"}, {"subnet", "172.30.1.0/24"}}}}, {"vms", QVariantList{fw, vm}}}},
+            {"warnings", QVariantList{"Together the VMs use most of this computer's memory."}}, {"images", QVariantList{QVariantMap{{"os", "debian"}, {"ready", false}}}}};
+        emit uiAgent.changed();
+        auto labDialog = window->findChild<QObject *>("labDialog"); QVERIFY(labDialog);
+        QTRY_VERIFY(labDialog->property("visible").toBool());
+        auto buildButton = window->findChild<QObject *>("buildLab"); QVERIFY(buildButton);
+        QVERIFY(!buildButton->property("enabled").toBool());
+        window->findChild<QObject *>("labPassword")->setProperty("text", "long-enough-1");
+        QTRY_VERIFY(buildButton->property("enabled").toBool());
+        QVERIFY(capture("lab-proposal"));
+        uiAgent.proposal.clear();
+        uiAgent.build = {{"id", "p1"}, {"name", "Web lab"}, {"state", "building"}, {"step", 2}, {"steps", QVariantList{"Getting the debian image", "Creating the network dmz", "Creating fw", "Starting fw"}}, {"message", "Creating fw"}};
+        uiAgent.screen = {{"uuid", "x"}, {"name", "fw"}, {"at", double(QDateTime::currentMSecsSinceEpoch())}};
+        uiAgent.enabled = true;
+        emit uiAgent.changed();
+        auto banner = window->findChild<QObject *>("agentBanner"); QVERIFY(banner);
+        QTRY_VERIFY(banner->property("visible").toBool());
+        QVERIFY(capture("lab-building"));
+        QMetaObject::invokeMethod(labDialog, "close");
+        uiAgent.build.clear(); uiAgent.screen.clear(); uiAgent.enabled = false; emit uiAgent.changed();
         QVERIFY2(warnings.isEmpty(), qPrintable(warnings.isEmpty() ? QString{} : warnings.first().toString()));
     }
     void snapshotTabDeferredLoad() {
@@ -303,7 +358,7 @@ private slots:
         };
         Theme theme("/nonexistent/palette"); QQmlApplicationEngine engine; QList<QQmlError> warnings;
         connect(&engine, &QQmlEngine::warnings, this, [&](QList<QQmlError> items) { warnings += items; });
-        engine.rootContext()->setContextProperty("backend", &inventory); engine.rootContext()->setContextProperty("theme", &theme);
+        engine.rootContext()->setContextProperty("backend", &inventory); engine.rootContext()->setContextProperty("theme", &theme); engine.rootContext()->setContextProperty("agent", &uiAgent);
         engine.load(QUrl("qrc:/qml/Main.qml")); QVERIFY(!engine.rootObjects().isEmpty());
         auto window = qobject_cast<QQuickWindow *>(engine.rootObjects().first()); QVERIFY(window);
         window->setProperty("selectedUuid", "snapshot-ui");
@@ -341,7 +396,7 @@ private slots:
         inventory.management["snapshots.list"] = QVariantMap{{"uuid", "context-ui"}, {"items", QVariantList{QVariantMap{{"id", "saved"}, {"name", "Saved point"}, {"kind", "copy"}, {"time", 1}, {"current", true}}}}, {"currentId", "saved"}};
         Theme theme("/nonexistent/palette"); QQmlApplicationEngine engine; QList<QQmlError> warnings;
         connect(&engine, &QQmlEngine::warnings, this, [&](QList<QQmlError> items) { warnings += items; });
-        engine.rootContext()->setContextProperty("backend", &inventory); engine.rootContext()->setContextProperty("theme", &theme);
+        engine.rootContext()->setContextProperty("backend", &inventory); engine.rootContext()->setContextProperty("theme", &theme); engine.rootContext()->setContextProperty("agent", &uiAgent);
         engine.load(QUrl("qrc:/qml/Main.qml")); QVERIFY(!engine.rootObjects().isEmpty());
         auto window = qobject_cast<QQuickWindow *>(engine.rootObjects().first()); QVERIFY(window);
         window->setProperty("selectedUuid", "context-ui"); window->setProperty("detailsOpen", true);
@@ -378,7 +433,7 @@ private slots:
         QList<QQmlError> qmlWarnings;
         connect(&engine, &QQmlEngine::warnings, this, [&](const QList<QQmlError> &warnings) { qmlWarnings += warnings; });
         engine.rootContext()->setContextProperty("backend", backend_.get());
-        engine.rootContext()->setContextProperty("theme", &theme);
+        engine.rootContext()->setContextProperty("theme", &theme); engine.rootContext()->setContextProperty("agent", &uiAgent);
         engine.load(QUrl("qrc:/qml/Main.qml"));
         QVERIFY(!engine.rootObjects().isEmpty());
         auto window = qobject_cast<QQuickWindow *>(engine.rootObjects().first());
@@ -664,7 +719,7 @@ private slots:
         QList<QQmlError> warnings;
         connect(&engine, &QQmlEngine::warnings, this, [&](const QList<QQmlError> &items) { warnings += items; });
         engine.rootContext()->setContextProperty("backend", backend_.get());
-        engine.rootContext()->setContextProperty("theme", &theme);
+        engine.rootContext()->setContextProperty("theme", &theme); engine.rootContext()->setContextProperty("agent", &uiAgent);
         engine.load(QUrl("qrc:/qml/Main.qml"));
         QVERIFY(!engine.rootObjects().isEmpty());
         auto window = qobject_cast<QQuickWindow *>(engine.rootObjects().first());

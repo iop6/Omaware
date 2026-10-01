@@ -595,16 +595,7 @@ Backend::Backend(QString uri, QObject *parent) : QObject(parent), worker_(new Vm
     connect(worker_, &VmWorker::inventory, this, [this](QVariantList rows) { rows_ = rows; emit changed(); if (!inspectedUuid_.isEmpty()) inspect(inspectedUuid_); });
     connect(worker_, &VmWorker::connection, this, [this](bool ok, QString msg) { connected_ = ok; busy_ = checkpointJob_.value("active").toBool(); message_ = msg; if (!ok) inspect({}); emit changed(); if (!ok) emit operationFinished(msg, false); });
     connect(worker_, &VmWorker::finished, this, [this](QString msg, bool ok) { busy_ = checkpointJob_.value("active").toBool(); message_ = msg; emit changed(); emit operationFinished(msg, ok); });
-    connect(this, &Backend::operationFinished, this, [this](QString msg, bool ok) {
-        const QVariantMap entry{{"ok", ok}, {"message", msg}, {"nextStep", ok ? QString{} : Diagnostics::nextStep(msg)}, {"connection", uri_}};
-        activityWarning_.clear();
-        if (!activityLog_.append(entry, activity_, activityWarning_)) {
-            auto temporary = entry; temporary["time"] = QDateTime::currentDateTime().toString(Qt::ISODateWithMs);
-            if (activity_.isEmpty() || activity_.first().toMap()["message"] != msg) activity_.prepend(temporary);
-            while (activity_.size() > 200) activity_.removeLast();
-        }
-        emit activityChanged();
-    });
+    connect(this, &Backend::operationFinished, this, &Backend::note);
     connect(worker_, &VmWorker::progress, this, [this](QString message) { message_ = message; emit changed(); });
     connect(storageWorker_, &VmWorker::checkpointProgress, this, [this](QVariantMap job) {
         const auto done = job["completed"].toULongLong(), total = job["total"].toULongLong();
@@ -703,6 +694,16 @@ bool Backend::request(QString operation, QVariantMap input) {
         QMetaObject::invokeMethod(storageWorker_, [=, this] { storageWorker_->manage(operation, input); });
     } else QMetaObject::invokeMethod(worker_, [=, this] { worker_->manage(operation, input); });
     return true;
+}
+void Backend::note(const QString &msg, bool ok) {
+    const QVariantMap entry{{"ok", ok}, {"message", msg}, {"nextStep", ok ? QString{} : Diagnostics::nextStep(msg)}, {"connection", uri_}};
+    activityWarning_.clear();
+    if (!activityLog_.append(entry, activity_, activityWarning_)) {
+        auto temporary = entry; temporary["time"] = QDateTime::currentDateTime().toString(Qt::ISODateWithMs);
+        if (activity_.isEmpty() || activity_.first().toMap()["message"] != msg) activity_.prepend(temporary);
+        while (activity_.size() > 200) activity_.removeLast();
+    }
+    emit activityChanged();
 }
 void Backend::cancelRestart() { QMetaObject::invokeMethod(worker_, &VmWorker::cancelRestart); }
 void Backend::clearActivity() {

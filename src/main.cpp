@@ -1,5 +1,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
+#include "agentbridge.h"
 #include "backend.h"
+#include "mcpserver.h"
+#include <QCoreApplication>
 #include "console.h"
 #include "instance.h"
 #include "isolibrary.h"
@@ -18,6 +21,14 @@ int main(int argc, char **argv) {
     // libvirt's default GLib context belongs exclusively to its event thread.
     // Qt must not acquire that same context while waiting for worker shutdown.
     qputenv("QT_NO_GLIB", "1");
+    // `omaware mcp`: the Model Context Protocol server an AI agent starts; no window.
+    if (argc == 2 && QByteArray(argv[1]) == "mcp") {
+        QCoreApplication app(argc, argv);
+        app.setOrganizationName("Omaware");
+        app.setApplicationName("Omaware");
+        app.setApplicationVersion(OMAWARE_VERSION);
+        return Mcp::run();
+    }
     QGuiApplication app(argc, argv);
     // Keep the storage identity stable so existing preferences/checkpoints reopen.
     app.setOrganizationName("Omaware");
@@ -55,9 +66,12 @@ int main(int argc, char **argv) {
     qmlRegisterType<Updater>("Omaware", 1, 0, "Updater");
     Backend backend("qemu:///session");
     Theme theme(args.value("theme-file"));
+    // Declared before the engine, so the window is gone before it is.
+    AgentBridge agent(&backend);
     QQmlApplicationEngine engine;
     engine.rootContext()->setContextProperty("backend", &backend);
     engine.rootContext()->setContextProperty("theme", &theme);
+    engine.rootContext()->setContextProperty("agent", &agent);
     engine.load(QUrl("qrc:/qml/Main.qml"));
     if (engine.rootObjects().isEmpty()) return 1;
     auto console = engine.rootObjects().first()->findChild<Console *>("console");

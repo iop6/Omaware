@@ -124,7 +124,7 @@ ColumnLayout {
                             ColumnLayout {
                                 Layout.fillWidth: true; spacing: 2
                                 Label { textFormat: Text.PlainText; text: modelData.title || String(modelData.name).replace(/^omaware-/, ""); font.pixelSize: Math.round((17) * theme.textScale); font.weight: Font.DemiBold; Layout.fillWidth: true; elide: Text.ElideRight }
-                                Label { text: page.plainKind(modelData) + (modelData.cidr ? " · " + modelData.cidr : "") + (modelData.managed ? "" : " · managed outside OmaWare"); color: theme.colors.muted; font.pixelSize: Math.round(12 * theme.textScale); Layout.fillWidth: true; elide: Text.ElideRight }
+                                Label { textFormat: Text.PlainText; text: page.plainKind(modelData) + (modelData.cidr ? " · " + modelData.cidr : "") + (modelData.managed ? "" : " · managed outside OmaWare"); color: theme.colors.muted; font.pixelSize: Math.round(12 * theme.textScale); Layout.fillWidth: true; elide: Text.ElideRight }
                             }
                             StatusBadge { text: modelData.active ? "Running" : "Stopped"; stateCode: modelData.active ? 1 : 5 }
                         }

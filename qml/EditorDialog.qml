@@ -67,7 +67,7 @@ AppDialog {
             Layout.fillWidth: true; Layout.margins: 20
             AppButton { objectName: "jobBackground"; visible: dialog.applying && !!dialog.checkpointJob.active; text: "Background"; hint: "Continue browsing; follow progress in Jobs"; onClicked: dialog.close() }
             AppBusyIndicator { running: dialog.applying; visible: running; Layout.preferredWidth: 24; Layout.preferredHeight: 24 }
-            Label { visible: dialog.applying; text: backend.message; color: theme.colors.muted; elide: Text.ElideRight; Layout.fillWidth: true }
+            Label { textFormat: Text.PlainText; visible: dialog.applying; text: backend.message; color: theme.colors.muted; elide: Text.ElideRight; Layout.fillWidth: true }
             Item { Layout.fillWidth: true }
             AppButton { objectName: "editorCancel"; text: dialog.applying && dialog.checkpointJob.active ? "Cancel checkpoint" : "Cancel"; enabled: !dialog.applying || (!!dialog.checkpointJob.active && !!dialog.checkpointJob.cancellable && !dialog.checkpointJob.cancelRequested); onClicked: dialog.applying ? backend.cancelCheckpoint() : dialog.reject() }
             AppButton { objectName: "editorSave"; text: dialog.actionText; tone: dialog.actionTone; enabled: dialog.ready && !dialog.applying && !backend.busy && (!dialog.requiresConnection || backend.connected); onClicked: dialog.submitted() }

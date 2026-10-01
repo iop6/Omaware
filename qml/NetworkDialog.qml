@@ -83,7 +83,7 @@ AppDialog {
                 Label { text: dialog.choice.description || ""; color: theme.colors.muted; font.pixelSize: Math.round((12) * theme.textScale); wrapMode: Text.WordWrap; Layout.fillWidth: true }
                 Label { visible: dialog.contained; objectName: "containedNotice"; text: dialog.allowed(dialog.choice) ? "Contained VM · this switch passed live isolation checks." : "Contained VM · only switches that pass live isolation checks can be used. Create an isolated switch in Networks, or remove this adapter."
                     color: dialog.allowed(dialog.choice) ? theme.colors.success : theme.colors.danger; font.pixelSize: Math.round((12) * theme.textScale); wrapMode: Text.WordWrap; Layout.fillWidth: true }
-                Label { visible: !!dialog.choice.reason; text: dialog.choice.reason || ""; color: theme.colors.warning; font.pixelSize: Math.round((12) * theme.textScale); wrapMode: Text.WordWrap; Layout.fillWidth: true }
+                Label { textFormat: Text.PlainText; visible: !!dialog.choice.reason; text: dialog.choice.reason || ""; color: theme.colors.warning; font.pixelSize: Math.round((12) * theme.textScale); wrapMode: Text.WordWrap; Layout.fillWidth: true }
                 AppDisclosure {
                     id: adapterAdvanced; objectName: "adapterAdvanced"; title: "Advanced adapter settings"
                     Label { text: dialog.adapter.mac ? "MAC address  " + dialog.adapter.mac : "A unique MAC address will be assigned automatically."; color: theme.colors.muted; font.pixelSize: Math.round((12) * theme.textScale); Layout.fillWidth: true; wrapMode: Text.WordWrap }

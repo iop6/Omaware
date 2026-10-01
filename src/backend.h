@@ -130,6 +130,8 @@ public:
     // Never waits for the busy flag: pulling a cable is a safety action and is queued behind any running operation.
     Q_INVOKABLE void setLinks(QVariantList targets, bool up);
     Q_INVOKABLE bool request(QString operation, QVariantMap input = {});
+    // Adds a line to the activity log without reporting it as the result of an operation (used for agent actions).
+    void note(const QString &message, bool ok);
     Q_INVOKABLE void cancelRestart();
     Q_INVOKABLE void cancelCheckpoint();
 signals:

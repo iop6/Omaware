@@ -66,7 +66,6 @@ public:
     Q_INVOKABLE void attachForVm(GraphicsHandle socket, QString uuid);
     Q_INVOKABLE void disconnectConsole();
     Q_INVOKABLE void releaseInput();
-    Q_INVOKABLE void sendCtrlAltDelete();
     Q_INVOKABLE void sendSpecial(QString key);
     Q_INVOKABLE void pasteClipboard();
     Q_INVOKABLE void resizeGuest(int width, int height);
@@ -87,6 +86,7 @@ protected:
     void keyReleaseEvent(QKeyEvent *event) override;
     void focusOutEvent(QFocusEvent *event) override;
 private:
+    void sendCtrlAltDelete();
     void sendPointer(QMouseEvent *event);
     void pointerAt(QPointF position, int buttons);
     void sendKey(QKeyEvent *event, bool down);
@@ -100,5 +100,6 @@ private:
     bool connected_ = false;
     quint64 generation_ = 0;
     QString clipboardMode_ = "off";
+    QString clipboardVm_;   // the VM clipboardMode_ was chosen for
     bool receivingClipboard_ = false;
 };

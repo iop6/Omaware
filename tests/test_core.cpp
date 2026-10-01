@@ -11,6 +11,13 @@
 #include "instance.h"
 #include "isolibrary.h"
 #include "updater.h"
+#include "guestinput.h"
+#include "cloudseed.h"
+#include "cloudimages.h"
+#include "labplan.h"
+#include "logins.h"
+#include "mcpserver.h"
+#include <crypt.h>
 #include <memory>
 #include <QDomDocument>
 #include <QJsonDocument>
@@ -377,6 +384,9 @@ private slots:
         QVERIFY(violations("<graphics type='vnc'><listen type='none'/></graphics>").isEmpty());
         QCOMPARE(violations("<graphics type='vnc' port='5900'><listen type='address' address='0.0.0.0'/></graphics>").size(), 1);
         QCOMPARE(violations("<serial type='tcp'><source mode='bind' host='0.0.0.0' service='4444'/></serial>").size(), 1);
+        QCOMPARE(violations("<vsock model='virtio'><cid auto='yes'/></vsock>").size(), 1);
+        QCOMPARE(violations("<tpm model='tpm-tis'><backend type='passthrough'><device path='/dev/tpm0'/></backend></tpm>").size(), 1);
+        QVERIFY(violations("<tpm model='tpm-crb'><backend type='emulator' version='2.0'/></tpm>").isEmpty());
         const auto agent = Containment::check(domain("<channel type='unix'><target type='virtio' name='org.qemu.guest_agent.0'/></channel>"), bridges);
         QVERIFY(agent["violations"].toStringList().isEmpty()); QCOMPARE(agent["warnings"].toStringList().size(), 1);
         // The marker round-trips through a full definition and can be removed again.
@@ -650,6 +660,188 @@ private slots:
         QCOMPARE(theme.colors()["accentText"].toString(), "#000000");
         theme.setMode("omarchy");
         QCOMPARE(theme.colors()["accent"].toString(), "#ffbb88");
+    }
+
+    void guestKeyboard() {
+        QList<GuestInput::Chord> chords; QString error;
+        QVERIFY(GuestInput::chordsForText("aZ!\n", chords, error));
+        QCOMPARE(chords.size(), 4);
+        QCOMPARE(chords[0], GuestInput::Chord({30}));              // a
+        QCOMPARE(chords[1], GuestInput::Chord({42, 44}));          // Shift+Z
+        QCOMPARE(chords[2], GuestInput::Chord({42, 2}));           // Shift+1 = !
+        QCOMPARE(chords[3], GuestInput::Chord({28}));              // Enter
+        QVERIFY(!GuestInput::chordsForText("é", chords, error)); QVERIFY(error.contains("US keyboard"));
+        GuestInput::Chord chord;
+        QVERIFY(GuestInput::chordForKeys("ctrl+alt+delete", chord, error)); QCOMPARE(chord, GuestInput::Chord({29, 56, 111}));
+        QVERIFY(GuestInput::chordForKeys("Win + R", chord, error)); QCOMPARE(chord, GuestInput::Chord({125, 19}));
+        QVERIFY(GuestInput::chordForKeys("f12", chord, error)); QCOMPARE(chord, GuestInput::Chord({88}));
+        QVERIFY(!GuestInput::chordForKeys("hyper+x", chord, error)); QVERIFY(error.contains("hyper"));
+        QVERIFY(!GuestInput::chordForKeys("", chord, error));
+    }
+    void cloudSeedDisc() {
+        CloudSeed::Settings seed;
+        seed.instanceId = "test-1"; seed.hostname = CloudSeed::hostname("Web_1 Server"); seed.user = "alex";
+        seed.passwordHash = CloudSeed::hashPassword("correct horse");
+        seed.sshKey = "ssh-ed25519 AAAAC3Nza test"; seed.packages = {"nginx"}; seed.commands = {"echo \"hi\" > /tmp/x"}; seed.guestAgent = true;
+        seed.nics = {{"52:54:00:aa:bb:cc", ""}, {"52:54:00:aa:bb:dd", "172.30.1.10/24"}};
+        QCOMPARE(seed.hostname, QString("web-1-server"));
+        // The hash checks out with the system's crypt and never contains the password.
+        QVERIFY(seed.passwordHash.startsWith("$6$"));
+        crypt_data data{};
+        QCOMPARE(QString::fromLatin1(crypt_r("correct horse", seed.passwordHash.toLatin1().constData(), &data)), seed.passwordHash);
+        const auto user = CloudSeed::userData(seed);
+        QVERIFY(user.startsWith("#cloud-config\n"));
+        const auto config = QJsonDocument::fromJson(user.mid(14)).object();
+        QCOMPARE(config["hostname"].toString(), QString("web-1-server"));
+        const auto account = config["users"].toArray().first().toObject();
+        QCOMPARE(account["name"].toString(), QString("alex")); QCOMPARE(account["passwd"].toString(), seed.passwordHash);
+        QVERIFY(!user.contains("correct horse"));
+        QCOMPARE(config["packages"].toArray().first().toString(), QString("qemu-guest-agent"));
+        QCOMPARE(config["runcmd"].toArray().last().toArray().last().toString(), QString("echo \"hi\" > /tmp/x"));
+        const auto network = QJsonDocument::fromJson(CloudSeed::networkConfig(seed)).object()["ethernets"].toObject();
+        QVERIFY(network["eth0"].toObject()["dhcp4"].toBool());
+        QCOMPARE(network["eth1"].toObject()["addresses"].toArray().first().toString(), QString("172.30.1.10/24"));
+        QCOMPARE(network["eth1"].toObject()["match"].toObject()["macaddress"].toString(), QString("52:54:00:aa:bb:dd"));
+        QVERIFY(CloudSeed::validUser("alex")); QVERIFY(!CloudSeed::validUser("root")); QVERIFY(!CloudSeed::validUser("Alex")); QVERIFY(!CloudSeed::validUser("a b"));
+        // The disc: ISO 9660 with Joliet names, labelled cidata.
+        QTemporaryDir dir; QVERIFY(dir.isValid());
+        QString error;
+        const auto path = dir.filePath("seed.iso");
+        QVERIFY2(CloudSeed::writeIso(path, "cidata", {{"user-data", user}, {"meta-data", CloudSeed::metaData(seed)}, {"network-config", CloudSeed::networkConfig(seed)}}, error), qPrintable(error));
+        QFile iso(path); QVERIFY(iso.open(QIODevice::ReadOnly));
+        const auto bytes = iso.readAll();
+        QCOMPARE(bytes.size() % 2048, 0);
+        QCOMPARE(bytes.mid(16 * 2048 + 1, 5), QByteArray("CD001"));
+        QCOMPARE(bytes.mid(16 * 2048 + 40, 6), QByteArray("cidata"));
+        QCOMPARE(bytes.mid(17 * 2048 + 88, 3), QByteArray("%/E"));
+        QVERIFY(bytes.contains(user));
+        QVERIFY(!(QFileInfo(path).permissions() & (QFile::ReadGroup | QFile::ReadOther)));
+        // isoinfo (from genisoimage) reads it like the guest's kernel does, if it's installed.
+        if (!QStandardPaths::findExecutable("isoinfo").isEmpty()) {
+            QProcess info; info.start("isoinfo", {"-J", "-i", path, "-x", "/user-data"}); QVERIFY(info.waitForFinished(10000));
+            QCOMPARE(info.readAllStandardOutput(), user);
+            info.start("isoinfo", {"-d", "-i", path}); QVERIFY(info.waitForFinished(10000));
+            QVERIFY(info.readAllStandardOutput().contains("Volume id: cidata"));
+        }
+        QVERIFY(!CloudSeed::writeIso(dir.filePath("bad.iso"), "cidata", {{"../escape", "x"}}, error));
+    }
+    void labPlans() {
+        LabPlan::Host host; host.cpus = 8; host.memoryMiB = 16384; host.images = {"ubuntu", "debian", "fedora"}; host.existingVms = {"web9"}; host.existingNetworks = {"omaware-other"};
+        const auto plan = QJsonDocument::fromJson(
+            "{\"name\": \"Web Lab\", \"user\": \"alex\", \"networks\": [{\"name\": \"dmz\", \"type\": \"internet\"}, {\"name\": \"lan\", \"type\": \"isolated\"}],"
+            " \"vms\": [{\"name\": \"fw\", \"os\": \"debian\", \"networks\": [\"dmz\", {\"network\": \"lan\", \"ip\": \"172.30.1.10\"}]},"
+            "          {\"name\": \"web1\", \"networks\": [\"lan\"], \"memory_mib\": 1024},"
+            "          {\"name\": \"web2\", \"networks\": [\"dmz\"], \"packages\": [\"nginx\"], \"setup\": [\"systemctl enable --now nginx\"]}]}").toVariant().toMap();
+        auto result = LabPlan::check(plan, host);
+        QVERIFY2(result["ok"].toBool(), qPrintable(result["problems"].toStringList().join(" | ")));
+        const auto normalized = result["plan"].toMap();
+        QCOMPARE(normalized["slug"].toString(), QString("web-lab"));
+        const auto networks = normalized["networks"].toList();
+        QCOMPARE(networks[0].toMap()["mode"].toString(), QString("nat")); QCOMPARE(networks[0].toMap()["fullName"].toString(), QString("web-lab-dmz"));
+        QCOMPARE(networks[1].toMap()["subnet"].toString(), QString("172.30.1.0/24"));
+        const auto vms = normalized["vms"].toList();
+        // The fixed address given for fw is kept; web1 gets the next free one on the isolated network.
+        QCOMPARE(vms[0].toMap()["nics"].toList()[1].toMap()["ip"].toString(), QString("172.30.1.10/24"));
+        QCOMPARE(vms[1].toMap()["nics"].toList()[0].toMap()["ip"].toString(), QString("172.30.1.11/24"));
+        QCOMPARE(vms[0].toMap()["nics"].toList()[0].toMap()["ip"].toString(), QString(""));
+        QCOMPARE(vms[1].toMap()["os"].toString(), QString("ubuntu")); QCOMPARE(vms[1].toMap()["memoryMiB"].toInt(), 1024);
+        QVERIFY(vms[2].toMap()["internet"].toBool()); QVERIFY(!vms[1].toMap()["reachable"].toBool());
+        QVERIFY(result["warnings"].toStringList().join(" ").contains("web1 is only on isolated networks"));
+        // Problems are listed so the agent can fix the plan.
+        auto bad = plan;
+        bad["user"] = "root";
+        auto badVms = bad["vms"].toList();
+        auto web1 = badVms[1].toMap(); web1["packages"] = QVariantList{"curl"}; web1["name"] = "fw"; badVms[1] = web1;
+        auto web2 = badVms[2].toMap(); web2["name"] = "web9"; web2["os"] = "windows"; web2["networks"] = QVariantList{"nowhere"}; badVms[2] = web2;
+        bad["vms"] = badVms;
+        const auto problems = LabPlan::check(bad, host)["problems"].toStringList().join(" | ");
+        QVERIFY(problems.contains("user name")); QVERIFY(problems.contains("two VMs called")); QVERIFY(problems.contains("already exists"));
+        QVERIFY(problems.contains("os must be one of")); QVERIFY(problems.contains("isn't in the plan"));
+        auto clash = plan; auto clashVms = clash["vms"].toList();
+        auto other = clashVms[1].toMap(); other["networks"] = QVariantList{QVariantMap{{"network", "lan"}, {"ip", "172.30.1.10"}}}; clashVms[1] = other; clash["vms"] = clashVms;
+        QVERIFY(LabPlan::check(clash, host)["problems"].toStringList().join(" ").contains("more than one VM"));
+        auto overlap = plan; auto nets = overlap["networks"].toList();
+        auto dmz = nets[0].toMap(); dmz["subnet"] = "172.30.0.0/16"; nets[0] = dmz; overlap["networks"] = nets;
+        QVERIFY(LabPlan::check(overlap, host)["problems"].toStringList().join(" ").contains("overlapping"));
+        auto dhcp = plan; auto dhcpVms = dhcp["vms"].toList(); nets = dhcp["networks"].toList();
+        dmz = nets[0].toMap(); dmz["subnet"] = "10.9.0.0/24"; nets[0] = dmz; dhcp["networks"] = nets;
+        auto w2 = dhcpVms[2].toMap(); w2["networks"] = QVariantList{QVariantMap{{"network", "dmz"}, {"ip", "10.9.0.150"}}}; dhcpVms[2] = w2; dhcp["vms"] = dhcpVms;
+        QVERIFY(LabPlan::check(dhcp, host)["problems"].toStringList().join(" ").contains("automatic range"));
+    }
+    void savedLogins() {
+        QTemporaryDir dir; QVERIFY(dir.isValid());
+        Logins::setTestMode(dir.path());
+        QString store, error, password;
+        QVERIFY(Logins::save("Web lab", "alex", "s3cret pass", store, error));
+        QCOMPARE(store, QString("file"));
+        QCOMPARE(Logins::user("Web lab"), QString("alex"));
+        QVERIFY(Logins::password("Web lab", password, error)); QCOMPARE(password, QString("s3cret pass"));
+        // The index never holds the password, and the private file is readable only by you.
+        QFile index(dir.filePath("logins.json")); QVERIFY(index.open(QIODevice::ReadOnly)); QVERIFY(!index.readAll().contains("s3cret"));
+        QVERIFY(!(QFileInfo(dir.filePath("private/logins.json")).permissions() & (QFile::ReadGroup | QFile::ReadOther | QFile::WriteGroup | QFile::WriteOther)));
+        QVERIFY(!(QFileInfo(dir.filePath("private")).permissions() & (QFile::ReadGroup | QFile::ReadOther | QFile::ExeGroup | QFile::ExeOther)));
+        QCOMPARE(Logins::list().size(), 1);
+        QVERIFY(!Logins::save("x", "alex", "", store, error));
+        QVERIFY(Logins::remove("Web lab")); QVERIFY(!Logins::exists("Web lab"));
+        QVERIFY(!Logins::password("Web lab", password, error));
+        const auto generated = Logins::generate();
+        QVERIFY(QRegularExpression("^[A-Za-z2-9]{4}(-[A-Za-z2-9]{4}){3}$").match(generated).hasMatch());
+        QVERIFY(generated != Logins::generate());
+        Logins::setTestMode({});
+    }
+    void cloudImageLists() {
+        const QByteArray meta = "Dist: noble\nVersion: 24.04.3 LTS\nSupported: 1\n\nDist: resolute\nVersion: 26.04 LTS\nSupported: 1\n\nDist: zesty\nVersion: 17.04\nSupported: 0\n";
+        QCOMPARE(CloudImages::ubuntuLts(meta)["codename"].toString(), QString("resolute"));
+        QCOMPARE(CloudImages::ubuntuLts(meta)["version"].toString(), QString("26.04"));
+        const QByteArray fedora = "[{\"version\": \"44\", \"arch\": \"x86_64\", \"variant\": \"Cloud\", \"subvariant\": \"Cloud_Base\", \"link\": \"https://dl.fedoraproject.org/x/Fedora-Cloud-Base-Generic-44-1.7.x86_64.qcow2\", \"sha256\": \""
+            + QByteArray(64, 'a') + "\"}, {\"version\": \"45 Beta\", \"arch\": \"x86_64\", \"variant\": \"Cloud\", \"subvariant\": \"Cloud_Base\", \"link\": \"https://dl.fedoraproject.org/x/Fedora-Cloud-Base-Generic-45_Beta-1.3.x86_64.qcow2\", \"sha256\": \""
+            + QByteArray(64, 'b') + "\"}, {\"version\": \"44\", \"arch\": \"x86_64\", \"variant\": \"Cloud\", \"subvariant\": \"Cloud_Base\", \"link\": \"https://dl.fedoraproject.org/x/Fedora-Cloud-Base-AmazonEC2-44-1.7.x86_64.raw.xz\", \"sha256\": \""
+            + QByteArray(64, 'c') + "\"}]";
+        const auto image = CloudImages::fedoraCloud(fedora);
+        QCOMPARE(image.version, QString("44")); QVERIFY(image.url.endsWith("Generic-44-1.7.x86_64.qcow2")); QCOMPARE(image.hash, QString(64, 'a'));
+        const QByteArray sums = QByteArray(128, 'd') + "  debian-13-genericcloud-amd64.qcow2\n" + QByteArray(128, 'e') + "  debian-13-genericcloud-amd64.raw\n";
+        QCOMPARE(CloudImages::hashFor(sums, "debian-13-genericcloud-amd64.qcow2"), QString(128, 'd'));
+        QVERIFY(CloudImages::hashFor(sums, "other.qcow2").isEmpty());
+    }
+    void mcpProtocol() {
+        QVariantMap seen;
+        auto forward = [&](const QString &tool, const QVariantMap &args) -> QVariantMap {
+            seen = {{"tool", tool}, {"args", args}};
+            if (tool == "screenshot") return {{"ok", true}, {"result", QVariantMap{{"width", 800}}}, {"image", "iVBORw0K"}};
+            return {{"ok", false}, {"error", "The user said no."}};
+        };
+        auto send = [&](const QJsonObject &message) { return QJsonDocument::fromJson(Mcp::respond(QJsonDocument(message).toJson(QJsonDocument::Compact), forward)).object(); };
+        auto init = send({{"jsonrpc", "2.0"}, {"id", 1}, {"method", "initialize"}, {"params", QJsonObject{{"protocolVersion", "2025-03-26"}}}});
+        QCOMPARE(init["result"].toObject()["protocolVersion"].toString(), QString("2025-03-26"));
+        QVERIFY(init["result"].toObject()["instructions"].toString().contains("Never ask the user for a password"));
+        QVERIFY(Mcp::respond("{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}", forward).isEmpty());
+        const auto tools = send({{"jsonrpc", "2.0"}, {"id", 2}, {"method", "tools/list"}})["result"].toObject()["tools"].toArray();
+        QStringList names;
+        for (const auto &t : tools) { names << t.toObject()["name"].toString(); QCOMPARE(t.toObject()["inputSchema"].toObject()["type"].toString(), QString("object")); }
+        for (const QString name : {"omaware_overview", "propose_lab", "lab_status", "screenshot", "vm_input", "type_login", "run_command", "delete_lab", "restore_snapshot"}) QVERIFY2(names.contains(name), qPrintable(name));
+        auto shot = send({{"jsonrpc", "2.0"}, {"id", 3}, {"method", "tools/call"}, {"params", QJsonObject{{"name", "screenshot"}, {"arguments", QJsonObject{{"vm", "web1"}}}}}})["result"].toObject();
+        QCOMPARE(seen["tool"].toString(), QString("screenshot")); QCOMPARE(seen["args"].toMap()["vm"].toString(), QString("web1"));
+        QVERIFY(!shot["isError"].toBool());
+        QCOMPARE(shot["content"].toArray()[1].toObject()["type"].toString(), QString("image"));
+        QCOMPARE(shot["content"].toArray()[1].toObject()["data"].toString(), QString("iVBORw0K"));
+        auto refused = send({{"jsonrpc", "2.0"}, {"id", 4}, {"method", "tools/call"}, {"params", QJsonObject{{"name", "delete_lab"}, {"arguments", QJsonObject{{"lab", "x"}}}}}})["result"].toObject();
+        QVERIFY(refused["isError"].toBool()); QVERIFY(refused["content"].toArray()[0].toObject()["text"].toString().contains("said no"));
+        QCOMPARE(send({{"jsonrpc", "2.0"}, {"id", 5}, {"method", "tools/call"}, {"params", QJsonObject{{"name", "rm_rf"}}}})["error"].toObject()["code"].toInt(), -32602);
+        QCOMPARE(send({{"jsonrpc", "2.0"}, {"id", 6}, {"method", "resources/list"}})["error"].toObject()["code"].toInt(), -32601);
+    }
+    void agentHelperIsNotAnotherApp() {
+        // `omaware mcp` runs while OmaWare is closed and opened; it mustn't count as a second OmaWare.
+        QTemporaryDir dir; QVERIFY(dir.isValid());
+        QVERIFY(QFile::copy("/bin/bash", dir.filePath("omaware")));
+        QFile::setPermissions(dir.filePath("omaware"), QFile::ReadOwner | QFile::ExeOwner);
+        for (const QString name : {"mcp", "other"}) { QFile script(dir.filePath(name)); QVERIFY(script.open(QIODevice::WriteOnly)); script.write("sleep 20\n"); }
+        QProcess helper, app;
+        helper.setWorkingDirectory(dir.path()); helper.start(dir.filePath("omaware"), {"mcp"}); QVERIFY(helper.waitForStarted());
+        QTRY_VERIFY(QFile::symLinkTarget("/proc/" + QString::number(helper.processId()) + "/exe").endsWith("/omaware"));
+        QVERIFY(!InstanceGuard::otherProcesses().contains(helper.processId()));
+        app.setWorkingDirectory(dir.path()); app.start(dir.filePath("omaware"), {"other"}); QVERIFY(app.waitForStarted());
+        QTRY_VERIFY(InstanceGuard::otherProcesses().contains(app.processId()));
+        helper.kill(); app.kill(); helper.waitForFinished(); app.waitForFinished();
     }
 };
 QTEST_GUILESS_MAIN(CoreTest)

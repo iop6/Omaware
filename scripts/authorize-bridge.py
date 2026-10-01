@@ -1,6 +1,7 @@
 #!/usr/bin/python3 -I
 # SPDX-License-Identifier: GPL-3.0-or-later
-"""Explicitly invoked with pkexec to authorize one OmaWare-owned active bridge.
+"""Explicitly invoked with pkexec to authorize OmaWare-owned active bridges (one or more network UUIDs,
+so building a lab asks for the password once).
 
 No polkit policy is installed. Every invocation uses the system's existing
 administrator authentication for pkexec. No physical interface is reconfigured.
@@ -16,16 +17,19 @@ import tempfile
 import uuid
 import xml.etree.ElementTree as ET
 
-if os.geteuid() != 0 or len(sys.argv) != 2:
-    raise SystemExit('Administrator authorization and one network UUID are required.')
-identity = str(uuid.UUID(sys.argv[1]))
-raw = subprocess.check_output(['/usr/bin/virsh', '-c', 'qemu:///system', 'net-dumpxml', identity])
-root = ET.fromstring(raw)
-if not root.findtext('name', '').startswith('omaware-') or root.find('metadata/{https://omaware.org/xmlns/network/1}managed') is None:
-    raise SystemExit('The selected network is not managed by OmaWare.')
-bridge = root.find('bridge').get('name', '')
-if not bridge.startswith('oma') or len(bridge) > 15 or not bridge.isalnum() or not Path('/sys/class/net', bridge, 'bridge').is_dir():
-    raise SystemExit('The managed bridge is not active. Start the network first.')
+if os.geteuid() != 0 or not 2 <= len(sys.argv) <= 17:
+    raise SystemExit('Administrator authorization and one to sixteen network UUIDs are required.')
+grants = []
+for argument in sys.argv[1:]:
+    identity = str(uuid.UUID(argument))
+    raw = subprocess.check_output(['/usr/bin/virsh', '-c', 'qemu:///system', 'net-dumpxml', identity])
+    root = ET.fromstring(raw)
+    if not root.findtext('name', '').startswith('omaware-') or root.find('metadata/{https://omaware.org/xmlns/network/1}managed') is None:
+        raise SystemExit('The selected network is not managed by OmaWare.')
+    bridge = root.find('bridge').get('name', '')
+    if not bridge.startswith('oma') or len(bridge) > 15 or not bridge.isalnum() or not Path('/sys/class/net', bridge, 'bridge').is_dir():
+        raise SystemExit('The managed bridge is not active. Start the network first.')
+    grants.append((identity, bridge))
 helper = next((p for p in (Path('/usr/lib/qemu/qemu-bridge-helper'), Path('/usr/libexec/qemu-bridge-helper')) if p.exists()), None)
 if helper is None or helper.is_symlink() or helper.stat().st_uid != 0 or helper.stat().st_mode & 0o022:
     raise SystemExit('A root-owned, non-writable QEMU bridge helper is required.')
@@ -48,7 +52,7 @@ def check_rules(lines, visited):
         if len(words) != 2:
             continue
         rule, value = words
-        if rule == 'deny' and value in ('all', bridge):
+        if rule == 'deny' and (value == 'all' or value in (bridge for _, bridge in grants)):
             raise SystemExit('An existing deny rule blocks this bridge. Ask the host administrator to review its policy.')
         if rule == 'include':
             included = Path(value)
@@ -58,11 +62,13 @@ def check_rules(lines, visited):
                 raise SystemExit('Unexpected included bridge ACL ownership, permissions or size.')
             check_rules(included.read_text().splitlines(), visited | {included})
 check_rules(lines, {acl})
-grant = 'allow ' + bridge
-if grant not in (line.strip() for line in lines):
+existing = {line.strip() for line in lines}
+added = b''.join(b'\n# OmaWare network ' + identity.encode() + b'\nallow ' + bridge.encode() + b'\n'
+                 for identity, bridge in grants if 'allow ' + bridge not in existing)
+if added:
     with tempfile.NamedTemporaryFile(dir=directory, prefix='.omaware-', delete=False) as file:
         temp = Path(file.name)
-        file.write(old + b'\n# OmaWare network ' + identity.encode() + b'\n' + grant.encode() + b'\n')
+        file.write(old + added)
         file.flush()
         os.fsync(file.fileno())
     try:
@@ -71,4 +77,4 @@ if grant not in (line.strip() for line in lines):
     finally:
         temp.unlink(missing_ok=True)
 helper.chmod(stat.S_IMODE(helper.stat().st_mode) | stat.S_ISUID)
-print('Authorized bridge ' + bridge + ' for user-session VMs.')
+print('Authorized ' + ', '.join(bridge for _, bridge in grants) + ' for user-session VMs.')

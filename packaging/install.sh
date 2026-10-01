@@ -12,7 +12,8 @@ target="$data/omaware/app"
 bin="$HOME/.local/bin"
 if [[ $here == "$target" ]]; then echo "OmaWare is already installed here."; exit 0; fi
 (cd "$here" && sha256sum --status -c SHA256SUMS) || { echo "This package is incomplete or changed; download it again." >&2; exit 1; }
-if pgrep -f "^$target/omaware( |\$)" >/dev/null; then echo "OmaWare is open. Close it first, then run this again." >&2; exit 1; fi
+# (`omaware mcp`, started by an AI agent, isn't the app and may keep running.)
+if pgrep -f "^$target/omaware( -.*)?\$" >/dev/null; then echo "OmaWare is open. Close it first, then run this again." >&2; exit 1; fi
 mkdir -p "$data/omaware" "$bin" "$data/applications"
 # Keep the version being replaced, so it's easy to go back.
 if [[ -d $target ]]; then rm -rf "$target.previous"; mv "$target" "$target.previous"; fi

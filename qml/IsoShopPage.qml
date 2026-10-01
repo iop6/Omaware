@@ -193,7 +193,7 @@ ColumnLayout {
                                 }
                             }
                             Label { visible: !!card.info.note; text: card.info.note || ""; color: theme.colors.warning; font.pixelSize: Math.round(11 * theme.textScale); Layout.fillWidth: true; wrapMode: Text.WordWrap }
-                            Label { visible: !!card.info.error; text: card.info.error || ""; color: theme.colors.danger; font.pixelSize: Math.round(11 * theme.textScale); Layout.fillWidth: true; wrapMode: Text.WordWrap }
+                            Label { textFormat: Text.PlainText; visible: !!card.info.error; text: card.info.error || ""; color: theme.colors.danger; font.pixelSize: Math.round(11 * theme.textScale); Layout.fillWidth: true; wrapMode: Text.WordWrap }
                             ColumnLayout {
                                 visible: card.busy
                                 Layout.fillWidth: true; spacing: 4

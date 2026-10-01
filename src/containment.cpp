@@ -92,6 +92,8 @@ QVariantMap Containment::check(const QString &domainXml, const QHash<QString, QV
         else if (tag == "hostdev") violations << "Device passthrough gives the guest direct access to host hardware.";
         else if (tag == "redirdev") violations << "USB redirection connects host USB devices to the guest.";
         else if (tag == "shmem") violations << "Shared memory with the host is configured.";
+        else if (tag == "vsock") violations << "A vsock device opens a direct socket channel between the guest and this computer.";
+        else if (tag == "tpm" && e.firstChildElement("backend").attribute("type") == "passthrough") violations << "TPM passthrough gives the guest this computer's TPM chip.";
         else if (tag == "graphics") {
             const auto listen = e.firstChildElement("listen");
             const bool networked = (!listen.isNull() && (listen.attribute("type") == "address" || listen.attribute("type") == "network")) || (listen.isNull() && e.hasAttribute("listen"));

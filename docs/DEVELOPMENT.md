@@ -28,6 +28,12 @@
 | `src/isolibrary.*` | The ISO library behind the ISO Shop (`qml/IsoShopPage.qml`): each source's lookup of the publisher's latest release, verified downloads and unpacking (`IsoLibrary` in QML). |
 | `src/instance.*` | Keeps OmaWare to one running copy per user. |
 | `src/updater.*` | Built-in updates from GitHub Releases (`Updater` in QML): checks, verified download, in-place swap and restart. |
+| `src/agentbridge.*` | AI agent access (`agent` in QML): the local socket `omaware mcp` talks to, the tools, the user's approvals, and building and deleting labs. |
+| `src/mcpserver.*` | `omaware mcp`: the Model Context Protocol server agents start; describes the tools and forwards calls to the app. |
+| `src/labplan.*`, `src/labs.*` | Checking an agent's lab plan; the record of built labs (their networks, VMs, login name and SSH keys). |
+| `src/cloudimages.*`, `src/cloudseed.*` | Cloud images for labs (download and checksum), and the cloud-init setup disc (an ISO 9660 image OmaWare writes itself). |
+| `src/logins.*` | Saved VM logins: passwords in the Secret Service over D-Bus, or a private file without one. |
+| `src/guestinput.*` | Text and key names to keyboard codes for typing into a VM. |
 | `packaging/` | Desktop entry, and the release package's `omaware.sh` launcher and `install.sh`. |
 | `qml/` | The interface. `Main.qml` is the window; `App*.qml` are shared controls. |
 | `scripts/build.sh` | Builds everything, including the patched LibVNCClient. |
@@ -45,7 +51,7 @@ scripts/build.sh                  # builds into build/ and runs the unit tests
 scripts/build.sh --install        # also installs to ~/.local
 ```
 
-Requirements: CMake 3.22+, a C++20 compiler, Qt 6.4+ (Base including Network, Declarative, Wayland), libvirt, toml++, zlib, libjpeg and libpng. At runtime OmaWare also uses QEMU/KVM, `qemu-img`, `virt-install` with libosinfo, and UEFI firmware (OVMF) for UEFI VMs.
+Requirements: CMake 3.22+, a C++20 compiler, Qt 6.4+ (Base including Network, D-Bus, Declarative, Wayland), libvirt, libcrypt (libxcrypt), toml++, zlib, libjpeg and libpng. At runtime OmaWare also uses QEMU/KVM, `qemu-img`, `virt-install` with libosinfo, UEFI firmware (OVMF) for UEFI VMs, `swtpm` for TPMs, and the OpenSSH client (`ssh`, `ssh-keygen`) for labs.
 
 The script downloads LibVNCServer 0.9.15 at a pinned commit, checks both patch files against their SHA-256 hashes, and builds the library privately in `build/deps`. It is installed next to OmaWare and found through RPATH; nothing is installed system-wide. Always build OmaWare against the headers of the exact LibVNCClient it loads: libraries built with and without SASL have different struct layouts, and mixing them corrupts memory.
 
@@ -64,6 +70,7 @@ The script downloads LibVNCServer 0.9.15 at a pinned commit, checks both patch f
   Set `OMAWARE_SCREENSHOT_DIR` to save screenshots of each UI state. Test VMs are named `omaware-test-*`, and cleanup removes only the exact VMs and files a test created. If a run is killed, check leftover VMs by UUID before removing anything.
 - **Guest agent tests** need a tiny test kernel and initrd: copy the host kernel to `artifacts/agent-fixture/vmlinuz`, then run `tests/fixtures/make-agent-initrd.py`. The memory-snapshot and filesystem-flush tests fail without them.
 - **Online ISO checks** (not run by default, as they contact the publishers): `OMAWARE_ONLINE_TEST=1 build/app/omaware-tests isoLatestOnline` looks up every source and checks each ISO link exists; add `OMAWARE_ONLINE_DOWNLOAD=1` to also download and verify the Debian ISO (about 750 MB), or a list of source ids such as `alpine,opnsense`.
+- **Agent and lab tests** (`agentLabOnScreen`, `agentLabNetwork` in the management tests) build real labs from a cloud image. Give them an Ubuntu cloud image so they don't download one: `OMAWARE_CLOUD_IMAGE=/path/to/noble-server-cloudimg-amd64.img`. The first logs in on the VM's screen with the saved login and shuts it down with sudo; the second creates a private network, so it needs `OMAWARE_AGENT_NETWORK_TEST=1` and a machine where the installed bridge helper may run without a password prompt (a polkit rule for `org.freedesktop.policykit.exec` on that program).
 - **Host network test:** creates, edits, starts, stops and removes system networks, authorizes a bridge and boots a VM on it. It changes host networking and the bridge helper's permissions, so it needs a further opt-in, `OMAWARE_NETWORK_ADMIN_TEST=1`, and the installed helper.
 
 ## How it fits together
@@ -79,11 +86,24 @@ Console item ◀── latest frame ◀── VNC worker thread (LibVNCClient) �
 Omarchy colors.toml ── file watcher ── toml++ ── Theme ── QML colors
 ```
 
-- **libvirt is the only authority over VMs.** OmaWare never talks to QEMU directly. It uses the session connection `qemu:///session` for VMs, and reads `qemu:///system` for networks (writing only for explicit network actions).
+- **libvirt is the only authority over VMs.** OmaWare never talks to QEMU directly; even an agent's mouse input (`input-send-event`) and guest commands go through libvirt's monitor and guest-agent pass-through. It uses the session connection `qemu:///session` for VMs, and reads `qemu:///system` for networks (writing only for explicit network actions).
 - **All blocking libvirt calls run on worker threads.** The GUI thread only sends queued requests and receives results. Snapshot jobs use a second worker so the interface, details and console stay responsive during long copies.
 - **State changes come from libvirt events**, not polling: a separate thread runs libvirt's event loop, and each lifecycle event triggers a fresh inventory. Statistics are polled only while something is shown that needs them.
 - **The console never listens on the network.** QEMU's VNC server has no listener; libvirt hands OmaWare a connected socket. Frames are decoded on the VNC thread and passed to the GUI as the latest frame only, so a slow GUI never builds up a queue.
 - **Theme:** OmaWare reads Omarchy's palette file (never runs its scripts), checks the colors are readable, and swaps them atomically. A broken file keeps the last good colors.
+
+### AI agents
+
+```text
+agent ── stdio (MCP JSON-RPC) ── omaware mcp ── local socket, one JSON line each way ──▶ AgentBridge (in the app)
+                                                                                           ├─ Backend: changes and lists
+                                                                                           └─ its own VmWorker: screen, input, guest commands
+```
+
+- The socket lives in the user's runtime folder (`$XDG_RUNTIME_DIR/omaware-agent.sock`, user-only), and exists only while agent access is on.
+- Agents only reach OmaWare-owned VMs (`findVm`), never get passwords (lab logins are typed by `type_login`), and can't restore or delete without a yes in `agent.confirmation`.
+- A lab build is a list of steps run one after another (images, networks, one helper call for all bridges, keys, VMs, snapshots, start); each finished step is saved in the lab's record so a failed build can still be deleted.
+- Lab VMs get a cloud-init seed with the user, a SHA-512 password hash, OmaWare's lab SSH key and a host key OmaWare made, which it pins in the lab's `known_hosts` under the VM's UUID.
 
 ## Rules the code relies on
 
