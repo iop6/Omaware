@@ -220,6 +220,32 @@ private slots:
         shop->setProperty("category", "server");
         QTest::qWait(200); QVERIFY(click(window, "isoDelete_alpine")); QTest::qWait(100); QVERIFY(capture("iso-card-delete")); QVERIFY(click(window, "isoDeleteConfirm_alpine"));
         QTRY_COMPARE(isos->files().size(), 1); QCOMPARE(isos->files().first().toMap()["source"].toString(), QString("debian"));
+        // Dropping an ISO onto the window adds it to the folder and opens Create VM with it chosen.
+        shop->setProperty("category", "all"); window->setProperty("navigation", "library");
+        auto dropZone = window->findChild<QObject *>("isoDropZone"); QVERIFY(dropZone);
+        QTemporaryDir downloads; QVERIFY(downloads.isValid());
+        for (auto name : {"ubuntu-24.04.3-live-server-amd64.iso", "alpine-virt-3.24.2-x86_64.iso", "notes.txt"}) { QFile f(downloads.filePath(name)); QVERIFY(f.open(QIODevice::WriteOnly)); f.write(QByteArray(4096, 'd')); }
+        QSignalSpy imported(isos, &IsoLibrary::imported);
+        QVariant accepted;
+        QVERIFY(QMetaObject::invokeMethod(dropZone, "dropUrls", Q_RETURN_ARG(QVariant, accepted), Q_ARG(QVariant, QVariantList{QUrl::fromLocalFile(downloads.filePath("ubuntu-24.04.3-live-server-amd64.iso"))})));
+        QVERIFY(accepted.toBool()); QTRY_COMPARE(imported.size(), 1);
+        const auto dropped = files.filePath("iso-library/ubuntu-24.04.3-live-server-amd64.iso");
+        QVERIFY(QFile::exists(dropped)); QVERIFY(QFile::exists(downloads.filePath("ubuntu-24.04.3-live-server-amd64.iso")));
+        QTRY_VERIFY(creator->property("opened").toBool());
+        QCOMPARE(creator->findChild<QObject *>("newVmSource")->property("text").toString(), dropped);
+        QTRY_COMPARE(creator->findChild<QObject *>("isoLibraryPicker")->property("currentText").toString(), QString("ubuntu-24.04.3-live-server-amd64.iso"));
+        QVERIFY(dropZone->property("message").toString().contains("Added ubuntu-24.04.3-live-server-amd64.iso"));
+        QVERIFY(capture("iso-dropped"));
+        // With the dialog open, a drop switches its ISO; known files and non-ISOs are reported, not copied.
+        const QVariantList several{QUrl::fromLocalFile(downloads.filePath("alpine-virt-3.24.2-x86_64.iso")), QUrl::fromLocalFile(downloads.filePath("ubuntu-24.04.3-live-server-amd64.iso")), QUrl::fromLocalFile(downloads.filePath("notes.txt"))};
+        QVERIFY(QMetaObject::invokeMethod(dropZone, "dropUrls", Q_RETURN_ARG(QVariant, accepted), Q_ARG(QVariant, several)));
+        QTRY_COMPARE(imported.size(), 2);
+        QTRY_COMPARE(creator->findChild<QObject *>("newVmSource")->property("text").toString(), files.filePath("iso-library/alpine-virt-3.24.2-x86_64.iso"));
+        const auto said = dropZone->property("message").toString();
+        QVERIFY2(said.contains("Added alpine-virt-3.24.2-x86_64.iso") && said.contains("already in your ISOs") && said.contains("notes.txt was skipped"), qPrintable(said));
+        QCOMPARE(isos->files().size(), 3);
+        QVERIFY(QMetaObject::invokeMethod(creator, "close")); QTRY_VERIFY(!creator->property("visible").toBool());
+        dropZone->setProperty("message", "");
         shop->setProperty("category", "all"); window->setProperty("navigation", "library");
         auto wizard = window->findChild<QObject *>("createVmDialog"); QVERIFY(wizard);
         QVERIFY(QMetaObject::invokeMethod(wizard, "begin"));

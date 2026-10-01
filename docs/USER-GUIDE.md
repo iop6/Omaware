@@ -29,7 +29,7 @@ OmaWare works with VMs in your own libvirt session (`qemu:///session`). It only 
 Click **Create VM**.
 
 1. Enter a name and choose where the system comes from:
-   - **An installation ISO.** Choose one from your ISO library, get one from the **ISO Shop**, or browse to a file. OmaWare creates a new empty disk and attaches the ISO. Picking a known ISO also picks the matching operating system and a name.
+   - **An installation ISO.** Choose one from your ISO library, get one from the **ISO Shop**, browse to a file, or drag an ISO onto the window. OmaWare creates a new empty disk and attaches the ISO. Picking a known ISO also picks the matching operating system and a name.
    - **An existing disk image** (raw or qcow2). OmaWare copies it into a new, independent qcow2 disk. The original file is never changed.
 2. Choose the operating system type, so the VM gets sensible default devices.
 3. Optional: open **Advanced setup** for processors, memory, disk size, network, storage location and BIOS or UEFI firmware. UEFI needs firmware installed on the host.
@@ -160,13 +160,17 @@ Snapshots are not backups: they live on the same disk as the VM.
 
 Filter by category or search by name. **Download** saves the ISO into `~/.local/share/omaware/isos/`. Every download is checked against the publisher's own SHA-256 checksum and thrown away if it doesn't match; compressed images (OPNsense) are unpacked after they're verified. Downloads keep going in the background (the sidebar shows their progress) and can be cancelled.
 
+**Your own ISOs:** drag ISO files from your file manager onto any part of the OmaWare window. They're added to your ISO folder; a file on the same disk is added instantly and takes no extra space, anything else is copied (with progress and **Cancel**). Your original file stays where it was. Drop a single ISO and the create dialog opens with it chosen; drop it while that dialog is open and it switches to that ISO.
+
 When a newer release is out, its card says **Update**, and **Your ISOs** marks the older file.
 
 Deleting ISOs is quick, and always asks once in place before anything is removed:
 
 - **The trash button on a card** deletes your copies of that system.
 - **Delete older versions** in Your ISOs removes every ISO a newer download has replaced, and shows how much space that frees.
-- **Tick several files** (or **Select all**) and use **Delete selected**. Each file also has its own trash button. **New VM** on a card or file opens the create dialog with that ISO chosen, the matching operating system selected (when your computer knows it) and a name suggested. OmaWare only contacts the publishers when you open the shop or press **Check for updates**.
+- **Tick several files** (or **Select all**) and use **Delete selected**. Each file also has its own trash button.
+
+**New VM** on a card or file opens the create dialog with that ISO chosen, the matching operating system selected (when your computer knows it) and a name suggested. OmaWare only contacts the publishers when you open the shop or press **Check for updates**.
 
 ## Settings and themes
 

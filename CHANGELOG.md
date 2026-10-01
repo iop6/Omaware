@@ -6,6 +6,16 @@ All notable changes to OmaWare are listed here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- Drag ISO files onto the window to add them to your ISOs. A file on the same disk is added
+  instantly without using extra space; others are copied in the background with a progress bar
+  and a Cancel button. Dropping one ISO opens Create VM with it chosen.
+
+### Fixed
+
+- The ISO list in Create VM now shows the chosen ISO however it was picked (Browse, the ISO Shop or a drop).
+
 ## [1.0.0] - 2026-09-30
 
 First release.

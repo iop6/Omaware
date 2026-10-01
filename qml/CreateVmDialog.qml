@@ -69,6 +69,8 @@ EditorDialog {
         begin(); sourceMode.currentIndex = 0; source.text = path
         Qt.callLater(function() { dialog.pickPresetFor(path) })
     }
+    // Uses an ISO in the open dialog (for example one dropped onto the window).
+    function useIso(path) { sourceMode.currentIndex = 0; source.text = path; scanLibrary(); pickPresetFor(path) }
     Connections { target: dialog.isoLibrary; function onFinished(id, ok, message) { if (ok && dialog.visible) dialog.scanLibrary() } }
     function chooseMedia(index) { if (index >= 0 && index < images.length) { source.text = images[index].path; pickPresetFor(images[index].path) } }
     function applyPreset() {
@@ -105,6 +107,10 @@ EditorDialog {
                 displayText: currentIndex >= 0 ? currentText : dialog.scanning ? "Reading ISO library…" : dialog.images.length ? "Choose an ISO" : "No ISOs yet"
                 enabled: dialog.images.length > 0 && !dialog.scanning
                 onActivated: dialog.chooseMedia(currentIndex)
+                // Shows the chosen file whichever way it was chosen (list, Browse, ISO Shop or a drop).
+                function sync() { let at = -1; for (let i = 0; i < dialog.images.length; ++i) if (dialog.images[i].path === source.text) at = i; currentIndex = at }
+                Connections { target: source; function onTextChanged() { mediaPicker.sync() } }
+                Connections { target: dialog; function onImagesChanged() { mediaPicker.sync() } }
             }
             AppButton { objectName: "chooseIsoFolder"; iconName: "folder"; hint: dialog.isoFolder ? "Change ISO folder: " + dialog.isoFolder : "Choose ISO folder"; onClicked: libraryPicker.open() }
             AppButton { visible: dialog.isoFolder !== ""; iconName: "refresh"; hint: "Refresh ISO library"; enabled: !dialog.scanning; onClicked: dialog.scanLibrary() }

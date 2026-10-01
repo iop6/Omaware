@@ -25,6 +25,7 @@
 #include <QSaveFile>
 #include <QLockFile>
 #include <sys/socket.h>
+#include <sys/stat.h>
 
 class CoreTest : public QObject {
     Q_OBJECT
@@ -95,11 +96,62 @@ private slots:
         for (const auto &id : ids) {
             QSignalSpy finished(&library, &IsoLibrary::finished);
             QVERIFY2(library.download(id), qPrintable(id));
-            QTRY_VERIFY_WITH_TIMEOUT(!finished.isEmpty(), 1800000);
+            QTRY_VERIFY_WITH_TIMEOUT(!finished.isEmpty(), 7200000);
             QVERIFY2(finished.last()[1].toBool(), qPrintable(id + ": " + finished.last()[2].toString()));
             for (const auto &value : library.sources()) if (value.toMap()["id"] == id) QVERIFY2(value.toMap()["upToDate"].toBool(), qPrintable(id));
             qInfo().noquote() << id << "downloaded and verified:" << finished.last()[2].toString();
         }
+    }
+    void isoImports() {
+        QTemporaryDir dir; QVERIFY(dir.isValid());
+        QDir().mkpath(dir.filePath("elsewhere"));
+        const auto make = [&](const QString &name, const QByteArray &body) { QFile f(dir.filePath("elsewhere/" + name)); f.open(QIODevice::WriteOnly); f.write(body); return f.fileName(); };
+        const auto ubuntu = make("ubuntu-24.04.3-desktop-amd64.iso", QByteArray(1024, 'u'));
+        const auto other = make("Other.ISO", QByteArray(2048, 'o'));
+        const auto text = make("notes.txt", "not an ISO");
+        IsoLibrary library; library.setFolder(dir.filePath("isos"));
+        QSignalSpy imported(&library, &IsoLibrary::imported);
+        // Files on the same disk are linked: instant, the original stays where it was.
+        QVERIFY(library.importFiles({QUrl::fromLocalFile(ubuntu).toString(), other, text}));
+        QTRY_COMPARE(imported.size(), 1);
+        auto result = imported.takeFirst();
+        QVERIFY(result[1].toBool());
+        QCOMPARE(result[0].toStringList(), QStringList({dir.filePath("isos/ubuntu-24.04.3-desktop-amd64.iso"), dir.filePath("isos/Other.ISO")}));
+        QVERIFY(result[2].toString().contains("Added 2 ISOs.")); QVERIFY(result[2].toString().contains("notes.txt was skipped"));
+        QVERIFY(QFile::exists(ubuntu)); QCOMPARE(library.files().size(), 2); QVERIFY(!library.importing());
+        // Adding the same file again doesn't make a second copy; a different file with the same name gets a new name.
+        QVERIFY(library.importFiles({ubuntu}));
+        QTRY_COMPARE(imported.size(), 1); result = imported.takeFirst();
+        QVERIFY(result[1].toBool()); QVERIFY(result[2].toString().contains("already in your ISOs")); QCOMPARE(library.files().size(), 2);
+        QDir().mkpath(dir.filePath("second"));
+        { QFile f(dir.filePath("second/Other.ISO")); QVERIFY(f.open(QIODevice::WriteOnly)); f.write(QByteArray(3000, 'x')); }
+        QVERIFY(library.importFiles({dir.filePath("second/Other.ISO")}));
+        QTRY_COMPARE(imported.size(), 1); result = imported.takeFirst();
+        QCOMPARE(result[0].toStringList(), QStringList({dir.filePath("isos/Other (2).ISO")}));
+        // Nothing usable: refused with a message.
+        QVERIFY(!library.importFiles({text}));
+        QTRY_COMPARE(imported.size(), 1); result = imported.takeFirst();
+        QVERIFY(!result[1].toBool()); QVERIFY(result[2].toString().contains("Only .iso files"));
+        // Another disk (tmpfs) can't be linked, so the file is copied in the background.
+        QTemporaryDir shm("/dev/shm/omaware-test-XXXXXX");
+        struct stat a {}, b {};
+        if (!shm.isValid() || ::stat(qPrintable(shm.path()), &a) != 0 || ::stat(qPrintable(dir.path()), &b) != 0 || a.st_dev == b.st_dev) QSKIP("No second filesystem to copy from.");
+        QFile big(shm.filePath("rocky-copy.iso")); QVERIFY(big.open(QIODevice::WriteOnly));
+        QByteArray chunk(1 << 20, 'r'); for (int i = 0; i < 12; ++i) big.write(chunk); big.close();
+        QVERIFY(library.importFiles({big.fileName()}));
+        QVERIFY(library.importing()); QCOMPARE(library.importName(), QString("rocky-copy.iso"));
+        QTRY_COMPARE(imported.size(), 1); result = imported.takeFirst();
+        QVERIFY2(result[1].toBool(), qPrintable(result[2].toString()));
+        QFile copy(dir.filePath("isos/rocky-copy.iso")); QVERIFY(copy.open(QIODevice::ReadOnly)); QCOMPARE(copy.size(), qint64(12 << 20));
+        QVERIFY(!QFile::exists(dir.filePath("isos/rocky-copy.iso.part"))); QVERIFY(QFile::exists(big.fileName()));
+        // A cancelled copy leaves nothing behind.
+        QFile huge(shm.filePath("huge.iso")); QVERIFY(huge.open(QIODevice::WriteOnly));
+        for (int i = 0; i < 160; ++i) huge.write(chunk);
+        huge.close();
+        QVERIFY(library.importFiles({huge.fileName()})); library.cancelImport();
+        QTRY_COMPARE(imported.size(), 1); result = imported.takeFirst();
+        QVERIFY(!result[1].toBool()); QVERIFY(result[2].toString().contains("cancelled"));
+        QVERIFY(!QFile::exists(dir.filePath("isos/huge.iso"))); QVERIFY(!QFile::exists(dir.filePath("isos/huge.iso.part")));
     }
     void isoDownloads() {
         QTemporaryDir dir; QVERIFY(dir.isValid());

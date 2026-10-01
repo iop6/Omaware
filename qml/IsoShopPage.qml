@@ -71,7 +71,7 @@ ColumnLayout {
             Layout.fillWidth: true; spacing: 4
             Label { text: "ISO Shop"; font.pixelSize: Math.round(28 * theme.textScale); font.weight: Font.DemiBold }
             Label {
-                text: "Free, official installation images. Every download is checked against its publisher's checksum and saved in your ISO folder."
+                text: "Free, official installation images. Every download is checked against its publisher's checksum and saved in your ISO folder. To add your own ISOs, drag them onto the window."
                 color: theme.colors.muted; font.pixelSize: Math.round(12 * theme.textScale); Layout.fillWidth: true; wrapMode: Text.WordWrap
             }
         }

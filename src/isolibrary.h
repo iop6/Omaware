@@ -9,10 +9,13 @@
 #include <QPointer>
 #include <QUrl>
 #include <QVariantList>
+#include <atomic>
 #include <functional>
 #include <memory>
 
 class QNetworkReply;
+class QThread;
+class QTimer;
 
 // Installation ISOs in OmaWare's data folder, and the ISO shop: the latest official releases of
 // popular operating systems. It contacts publishers only when asked: check() reads their release
@@ -31,6 +34,10 @@ class IsoLibrary : public QObject {
     Q_PROPERTY(bool downloading READ downloading NOTIFY changed)
     // Whether opening the shop looks up the latest releases (tests turn this off to stay offline).
     Q_PROPERTY(bool autoCheck MEMBER autoCheck_ NOTIFY changed)
+    // Adding ISOs from elsewhere (drag and drop): the file being copied and how far along it is.
+    Q_PROPERTY(bool importing READ importing NOTIFY changed)
+    Q_PROPERTY(QString importName READ importName NOTIFY changed)
+    Q_PROPERTY(double importProgress READ importProgress NOTIFY changed)
 public:
     explicit IsoLibrary(QObject *parent = nullptr);
     ~IsoLibrary() override;
@@ -42,6 +49,9 @@ public:
     QVariantList files() const { return files_; }
     bool checking() const { return pending_ > 0; }
     bool downloading() const { return !jobs_.isEmpty(); }
+    bool importing() const { return !!import_; }
+    QString importName() const;
+    double importProgress() const;
 
     // Looks up the newest release of every source.
     Q_INVOKABLE void check();
@@ -56,6 +66,11 @@ public:
     // The source an ISO file belongs to: {source, sourceName, version, preset}. The preset is the
     // libosinfo id that best matches, for example "ubuntu24.04" or "rocky10".
     Q_INVOKABLE QVariantMap identify(const QString &name) const;
+    // Adds ISO files (paths or file:// URLs) to the folder. A file on the same disk is linked, which is
+    // instant and takes no extra space; anything else is copied in the background. Other kinds of
+    // files are skipped. imported() reports the result; returns false if nothing could be added.
+    Q_INVOKABLE bool importFiles(const QVariantList &urls);
+    Q_INVOKABLE void cancelImport();
 
     // Fetches any URL into the folder, verified against sha256 (used by download() and tests).
     bool fetch(const QString &id, const QUrl &url, const QString &sha256, const QString &file, qint64 size = 0);
@@ -76,6 +91,8 @@ signals:
     void changed();
     void filesChanged();
     void finished(const QString &id, bool ok, const QString &message);
+    // paths: the dropped ISOs as they are now in the folder (including ones that were already there).
+    void imported(const QStringList &paths, bool ok, const QString &message);
 
 private:
     struct Source {
@@ -94,6 +111,18 @@ private:
         bool unpacking = false;
         QPointer<QObject> unpacker;
     };
+    struct Import {
+        QStringList from, to, names;        // the copies still to make
+        QStringList paths, already, skipped;  // results so far
+        int linked = 0;
+        std::atomic<int> copiedFiles{0};
+        qint64 total = 0;
+        std::atomic<qint64> copied{0};
+        std::atomic<int> current{0};
+        std::atomic<bool> cancel{false};
+        QString error;
+    };
+    void finishImport();
     using Done = std::function<void(bool ok, const QByteArray &data, const QUrl &finalUrl)>;
     Source *find(const QString &id);
     const Source *find(const QString &id) const;
@@ -108,5 +137,8 @@ private:
     QHash<QString, Job *> jobs_;
     int pending_ = 0;
     bool autoCheck_ = true;
+    std::shared_ptr<Import> import_;
+    QThread *importThread_ = nullptr;
+    QTimer *importTicker_ = nullptr;
     QNetworkAccessManager network_;
 };

@@ -1131,7 +1131,17 @@ ApplicationWindow {
     Connections {
         target: isoLibrary
         function onFinished(id, ok, message) { if (!ok) root.operationError = message }
+        // Dropped ISOs: one goes straight into Create VM (unless you're looking at your ISOs); several are listed.
+        function onImported(paths, ok, message) {
+            isoDropZone.show(message, !ok)
+            if (!ok || paths.length === 0) return
+            if (createDialog.visible) createDialog.useIso(paths[0])
+            else if (paths.length === 1 && root.navigation !== "isos") createDialog.beginWith(paths[0])
+            else { root.navigation = "isos"; isoShop.category = "mine" }
+        }
     }
+    // Above everything, open dialogs included, so an ISO can be dropped anywhere.
+    IsoDropZone { id: isoDropZone; parent: Overlay.overlay; anchors.fill: parent; z: 1000; library: isoLibrary }
     HardwareDialog { id: hardwareDialog; workspace: preferences }
     PendingDialog { id: pendingDialog; objectName: "pendingDialog" }
     ConsoleToolbar {

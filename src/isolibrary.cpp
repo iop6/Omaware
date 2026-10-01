@@ -12,7 +12,10 @@
 #include <QProcess>
 #include <QRegularExpression>
 #include <QStorageInfo>
+#include <QThread>
 #include <QTimer>
+#include <sys/stat.h>
+#include <unistd.h>
 
 namespace {
 // Fills {codename}, {version}, {major} and similar placeholders in a URL or preset template.
@@ -98,6 +101,12 @@ IsoLibrary::IsoLibrary(QObject *parent) : QObject(parent) {
 }
 IsoLibrary::~IsoLibrary() {
     for (auto id : jobs_.keys()) cancel(id);
+    if (importThread_) {
+        import_->cancel = true;
+        importThread_->disconnect(this);
+        importThread_->wait();
+        delete importThread_;
+    }
 }
 QString IsoLibrary::root() const { return Paths::root(); }
 void IsoLibrary::setFolder(const QString &folder) {
@@ -484,4 +493,114 @@ int IsoLibrary::removeAll(const QStringList &names) {
         if (deletable(folder_, name, busy) && QFile::remove(folder_ + "/" + name)) ++removed;
     rescan();
     return removed;
+}
+
+// ---- Adding ISOs from elsewhere ----
+namespace {
+QString freeName(const QString &folder, const QString &name) {
+    const auto taken = [&](const QString &n) { return QFileInfo::exists(folder + "/" + n) || QFileInfo::exists(folder + "/" + n + ".part"); };
+    if (!taken(name)) return name;
+    const QFileInfo info(name);
+    for (int i = 2;; ++i) {
+        const auto candidate = QString("%1 (%2).%3").arg(info.completeBaseName()).arg(i).arg(info.suffix());
+        if (!taken(candidate)) return candidate;
+    }
+}
+bool sameFile(const QString &a, const QString &b) {
+    struct stat x {}, y {};
+    return ::stat(QFile::encodeName(a).constData(), &x) == 0 && ::stat(QFile::encodeName(b).constData(), &y) == 0
+        && x.st_dev == y.st_dev && x.st_ino == y.st_ino;
+}
+}
+QString IsoLibrary::importName() const {
+    return import_ ? import_->names.value(import_->current.load()) : QString();
+}
+double IsoLibrary::importProgress() const {
+    return import_ && import_->total > 0 ? double(import_->copied.load()) / double(import_->total) : 0;
+}
+bool IsoLibrary::importFiles(const QVariantList &urls) {
+    if (import_) { emit imported({}, false, "An ISO is still being copied. Try again when it's done."); return false; }
+    QDir().mkpath(folder_);
+    auto job = std::make_shared<Import>();
+    const auto here = QFileInfo(folder_).canonicalFilePath();
+    for (const auto &value : urls) {
+        const QUrl url(value.toString());
+        const QFileInfo info(url.isLocalFile() ? url.toLocalFile() : value.toString());
+        if (!info.isFile() || info.suffix().compare("iso", Qt::CaseInsensitive) != 0) { job->skipped << (info.fileName().isEmpty() ? value.toString() : info.fileName()); continue; }
+        if (info.canonicalPath() == here) { job->already << info.absoluteFilePath(); continue; }
+        // The same file (or one with the same name and size) is already in the folder.
+        const QFileInfo existing(folder_ + "/" + info.fileName());
+        if (existing.isFile() && (sameFile(existing.filePath(), info.filePath()) || existing.size() == info.size())) { job->already << existing.absoluteFilePath(); continue; }
+        const auto name = freeName(folder_, info.fileName());
+        const auto target = folder_ + "/" + name;
+        // On the same disk a hard link is instant and shares the space; otherwise copy it.
+        if (::link(QFile::encodeName(info.absoluteFilePath()).constData(), QFile::encodeName(target).constData()) == 0) { job->paths << target; ++job->linked; continue; }
+        job->from << info.absoluteFilePath(); job->to << target; job->names << name; job->total += info.size();
+    }
+    if (job->total > 0 && job->total > QStorageInfo(folder_).bytesAvailable()) {
+        job->error = QString("There isn't enough free space in %1 to copy %2.").arg(folder_, job->names.size() == 1 ? job->names.first() : "these ISOs");
+        job->from.clear(); job->to.clear(); job->names.clear(); job->total = 0;
+    }
+    import_ = job;
+    if (job->from.isEmpty()) { QMetaObject::invokeMethod(this, &IsoLibrary::finishImport, Qt::QueuedConnection); emit changed(); return !job->paths.isEmpty() || !job->already.isEmpty(); }
+    importThread_ = QThread::create([job] {
+        QByteArray buffer(4 << 20, Qt::Uninitialized);
+        for (int i = 0; i < job->from.size() && !job->cancel; ++i) {
+            job->current = i;
+            QFile in(job->from[i]), out(job->to[i] + ".part");
+            if (!in.open(QIODevice::ReadOnly) || !out.open(QIODevice::WriteOnly)) { job->error = QString("Couldn't copy %1: %2").arg(job->names[i], in.isOpen() ? out.errorString() : in.errorString()); return; }
+            QString failure;
+            while (!job->cancel) {
+                const auto n = in.read(buffer.data(), buffer.size());
+                if (n < 0) { failure = in.errorString(); break; }
+                if (n == 0) break;
+                if (out.write(buffer.constData(), n) != n) { failure = out.errorString(); break; }
+                job->copied += n;
+            }
+            out.close();
+            if (!failure.isEmpty() || job->cancel || !out.rename(job->to[i])) {
+                if (failure.isEmpty() && !job->cancel) failure = out.errorString();
+                out.remove();
+                if (!failure.isEmpty()) job->error = QString("Couldn't copy %1: %2").arg(job->names[i], failure);
+                return;
+            }
+            job->copiedFiles = i + 1;
+        }
+    });
+    connect(importThread_, &QThread::finished, this, &IsoLibrary::finishImport);
+    if (!importTicker_) {
+        importTicker_ = new QTimer(this);
+        importTicker_->setInterval(250);
+        connect(importTicker_, &QTimer::timeout, this, &IsoLibrary::changed);
+    }
+    importTicker_->start();
+    importThread_->start();
+    emit changed();
+    return true;
+}
+void IsoLibrary::cancelImport() {
+    if (import_) import_->cancel = true;
+}
+void IsoLibrary::finishImport() {
+    if (!import_) return;
+    if (importThread_) { importThread_->wait(); importThread_->deleteLater(); importThread_ = nullptr; }
+    if (importTicker_) importTicker_->stop();
+    const auto job = std::move(import_);
+    import_.reset();
+    auto paths = job->paths;
+    for (int i = 0; i < job->copiedFiles.load(); ++i) paths << job->to[i];
+    const auto added = paths.size();
+    paths << job->already;
+    const auto file = [](const QString &path) { return QFileInfo(path).fileName(); };
+    QStringList message;
+    if (added == 1) message << QString("Added %1 to your ISOs.").arg(file(paths.first()));
+    else if (added > 1) message << QString("Added %1 ISOs.").arg(added);
+    if (job->already.size() == 1) message << QString("%1 is already in your ISOs.").arg(file(job->already.first()));
+    else if (job->already.size() > 1) message << QString("%1 were already in your ISOs.").arg(job->already.size());
+    if (job->skipped.size() == 1) message << QString("Only .iso files can be added, so %1 was skipped.").arg(job->skipped.first());
+    else if (job->skipped.size() > 1) message << QString("Only .iso files can be added, so %1 other files were skipped.").arg(job->skipped.size());
+    if (job->cancel) message << "Copying was cancelled.";
+    if (!job->error.isEmpty()) message << job->error;
+    rescan();
+    emit imported(paths, !paths.isEmpty() && job->error.isEmpty() && !job->cancel, message.join(' '));
 }
