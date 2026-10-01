@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.2.1 (2026-10-01)
+
+- Simpler install: the one command asks at most once, skips anything already set up, and no longer needs you to log out and back in.
+- The install command also sets up the helper that lets VMs join networks you create.
+
 ## 1.2.0 (2026-10-01)
 
 - Install with one command (see the README).

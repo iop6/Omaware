@@ -1,5 +1,6 @@
 # OmaWare user guide
 
+- [Installing](#installing)
 - [The window at a glance](#the-window-at-a-glance)
 - [Creating a VM](#creating-a-vm)
 - [The VM list](#the-vm-list)
@@ -16,6 +17,27 @@
 - [Where OmaWare keeps its files](#where-omaware-keeps-its-files)
 
 Networking has its own guide: [NETWORKS.md](NETWORKS.md).
+
+## Installing
+
+```sh
+curl -fsSL https://github.com/iop6/Omaware/releases/latest/download/install.sh | bash
+```
+
+This one command does everything, asking for your password once and only if something is missing:
+
+- installs QEMU/KVM, libvirt, `virt-install`, UEFI firmware, `swtpm` (for Windows 11) and Qt 6 from your distribution, on Ubuntu/Debian, Fedora, Arch/Omarchy and openSUSE;
+- turns on libvirt and gives you access to it (OmaWare picks up the access when it starts, so there's no need to log out);
+- downloads the newest release, checks it against its published checksums, and installs it in `~/.local/share/omaware/app` with an `omaware` command and an app-menu entry;
+- installs the small root-owned helper that lets VMs join networks you create (`/usr/local/libexec/omaware/authorize-bridge`).
+
+Running it again reinstalls; `--dry-run` shows what it would do. Updates come through OmaWare itself (see [Updating OmaWare](#updating-omaware)).
+
+**By hand:** download `omaware-<version>-linux-x86_64.tar.gz` from the [Releases page](https://github.com/iop6/Omaware/releases/latest), unpack it and run its `install.sh`. Install the packages above yourself and add yourself to the `libvirt` group (`sudo usermod -aG libvirt "$USER"`).
+
+**From source:** see [Building](DEVELOPMENT.md#building).
+
+**If the window stays blank** on a machine without working GPU drivers, start OmaWare with `QT_QUICK_BACKEND=software omaware`.
 
 ## The window at a glance
 

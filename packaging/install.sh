@@ -34,6 +34,8 @@ Terminal=false
 Categories=System;Emulator;
 Keywords=vm;virtual;qemu;kvm;libvirt;snapshot;
 DESKTOP
+# The one-command installer prints its own summary.
+[[ -n ${OMAWARE_QUIET:-} ]] && exit 0
 echo "Installed OmaWare $(cat "$target/VERSION" 2>/dev/null || echo) in $target."
 echo "Start it from your app menu or with: omaware"
 case ":$PATH:" in *":$bin:"*) ;; *) echo "($bin isn't on your PATH yet; add it to run 'omaware' by name.)" ;; esac

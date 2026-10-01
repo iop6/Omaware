@@ -23,30 +23,7 @@ Open a terminal and run:
 curl -fsSL https://github.com/iop6/Omaware/releases/latest/download/install.sh | bash
 ```
 
-That's it. It installs what OmaWare needs from your distribution (asking first; Ubuntu/Debian, Fedora, Arch/Omarchy and openSUSE), turns on libvirt, downloads the newest release, checks it against its published checksums and installs it in your home folder: the app in `~/.local/share/omaware/app` (next to your `vms/` and `isos/`), an `omaware` command and an app-menu entry. If it added you to the `libvirt` and `kvm` groups, log out and back in once. Run the same command again to reinstall; updates normally come through OmaWare itself.
-
-**By hand:** download `omaware-<version>-linux-x86_64.tar.gz` from the [Releases page](https://github.com/iop6/Omaware/releases/latest), unpack it and run its `install.sh`. You need QEMU/KVM, libvirt, `virt-install`, the OVMF UEFI firmware, Qt 6.4+ and toml++ from your distribution, plus `swtpm` for Windows 11.
-
-**From source** (Ubuntu/Debian, Fedora, Arch/Omarchy and openSUSE):
-
-```sh
-scripts/build.sh --install-deps   # optional: installs the needed packages (uses sudo)
-scripts/build.sh --install        # builds, tests and installs to ~/.local
-```
-
-Then add yourself to the `libvirt` and `kvm` groups (log out and back in afterwards):
-
-```sh
-sudo usermod -aG libvirt,kvm "$USER"
-```
-
-To connect session VMs to networks you create, also install the small root helper (from a source build):
-
-```sh
-sudo cmake --install build/app --component helper
-```
-
-If the window stays blank on a machine without working GPU drivers, start OmaWare with `QT_QUICK_BACKEND=software`.
+Then open OmaWare from your app menu. Works on Ubuntu/Debian, Fedora, Arch/Omarchy and openSUSE. Other ways to install (by hand, from source) and troubleshooting are in the [user guide](docs/USER-GUIDE.md#installing).
 
 ## Updating
 

@@ -39,7 +39,7 @@ Use the [map](#the-network-map) or **Details → Networks** (**Edit** an adapter
 
 You can tick VMs to connect straight away; each gets an extra connection to the new network, live if it's running. The addresses are chosen for you: OmaWare picks a free `192.168.x.0/24` subnet and hands out addresses automatically (DHCP). **Address settings** lets you choose your own.
 
-Your VMs run as your user, so they need permission to join a network's bridge. Creating a network asks for your password once to grant it. For a network that needs it later, use **Allow VMs** on its card or in the map's side panel. This runs a small helper as root, which only accepts networks OmaWare created, and it must be installed first (it has to be owned by root, so OmaWare never runs a copy you could modify):
+Your VMs run as your user, so they need permission to join a network's bridge. Creating a network asks for your password once to grant it. For a network that needs it later, use **Allow VMs** on its card or in the map's side panel. This runs a small helper as root, which only accepts networks OmaWare created. It has to be owned by root, so OmaWare never runs a copy you could modify; the [one-command install](USER-GUIDE.md#installing) puts it in place, and a source build installs it with:
 
 ```sh
 sudo cmake --install build/app --component helper   # installs /usr/local/libexec/omaware/authorize-bridge

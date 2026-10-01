@@ -111,6 +111,6 @@ The main branch is always the next version in development, and its builds end in
 2. In `CMakeLists.txt`, set the version and remove the `-dev` suffix.
 3. Build and run the tests.
 4. Commit, then tag: `git tag -a vX.Y.Z -m "OmaWare X.Y.Z"`.
-5. Build the app package (the binary, its private LibVNCClient in `lib/`, `vnc-abi-test`, `packaging/omaware.sh` and `packaging/install.sh`, the license files and a `SHA256SUMS` covering them) and the source archive, and publish them with a `SHA256SUMS` for both as the GitHub Release for the tag. Also attach `packaging/get-omaware.sh` as `install.sh`: the one-command install in the README downloads it from the latest release. The built-in updater looks for `omaware-X.Y.Z-linux-x86_64.tar.gz` and `SHA256SUMS` there.
+5. Build the app package (the binary, its private LibVNCClient in `lib/`, `vnc-abi-test`, `packaging/omaware.sh`, `packaging/install.sh` and `scripts/authorize-bridge.py` as `authorize-bridge`, the license files and a `SHA256SUMS` covering them) and the source archive, and publish them with a `SHA256SUMS` for both as the GitHub Release for the tag. Also attach `packaging/get-omaware.sh` as `install.sh`: the one-command install in the README downloads it from the latest release. The built-in updater looks for `omaware-X.Y.Z-linux-x86_64.tar.gz` and `SHA256SUMS` there.
 6. Set `CMakeLists.txt` to the next version, put the `-dev` suffix back, and commit.
 
