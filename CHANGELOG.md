@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.5.1 (2026-10-01)
+
+- Fixed AI-agent `create_vm` failing right after approval with "Approved provisioning media, arguments or network identity changed." for every request.
+- Agent provisioning errors now give the actual reason when the approved media or storage can't be prepared.
+
 ## 1.5.0 (2026-10-01)
 
 - Background MCP provisioning from confined local ISO and qcow2/raw appliance libraries, with stopped independent VM imports and up to four owned network destinations.
