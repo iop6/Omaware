@@ -39,6 +39,31 @@
 class CoreTest : public QObject {
     Q_OBJECT
 private slots:
+    void secureBootFirmware() {
+        QTemporaryDir dir; const auto user = dir.filePath("user"), etc = dir.filePath("etc"), share = dir.filePath("share");
+        for (const auto &d : {user, etc, share}) QVERIFY(QDir().mkpath(d));
+        auto descriptor = [](const QString &path, const QString &arch, const QString &device, const QStringList &features) {
+            QFile f(path); if (!f.open(QIODevice::WriteOnly)) return false;
+            const QJsonObject o{{"interface-types", QJsonArray{"uefi"}}, {"mapping", QJsonObject{{"device", device}}},
+                {"targets", QJsonArray{QJsonObject{{"architecture", arch}, {"machines", QJsonArray{"pc-q35-*"}}}}}, {"features", QJsonArray::fromStringList(features)}};
+            return f.write(QJsonDocument(o).toJson()) > 0;
+        };
+        const QStringList dirs{user, etc, share};
+        QCOMPARE(DomainConfig::secureBootFirmware(dirs), QString());
+        // Arch's edk2-ovmf: Secure Boot code without Microsoft keys, plus plain UEFI.
+        QVERIFY(descriptor(share + "/50-secure.json", "x86_64", "flash", {"requires-smm", "secure-boot"}));
+        QVERIFY(descriptor(share + "/60-plain.json", "x86_64", "flash", {"acpi-s3"}));
+        QCOMPARE(DomainConfig::secureBootFirmware(dirs), QString("unenrolled"));
+        // Firmware with Microsoft's keys (Fedora/Ubuntu style) is preferred.
+        QVERIFY(descriptor(share + "/40-ms.json", "x86_64", "flash", {"enrolled-keys", "requires-smm", "secure-boot"}));
+        QCOMPARE(DomainConfig::secureBootFirmware(dirs), QString("enrolled"));
+        // An empty file of the same name in an earlier folder masks it; another architecture or memory mapping doesn't count.
+        QVERIFY(QFile(etc + "/40-ms.json").open(QIODevice::WriteOnly));
+        QVERIFY(descriptor(user + "/30-arm.json", "aarch64", "flash", {"enrolled-keys", "secure-boot"}));
+        QVERIFY(descriptor(user + "/31-mem.json", "x86_64", "memory", {"enrolled-keys", "secure-boot"}));
+        QCOMPARE(DomainConfig::secureBootFirmware(dirs), QString("unenrolled"));
+        QCOMPARE(DomainConfig::secureBootFirmware({dir.filePath("absent")}), QString());
+    }
     void isoReleaseLists() {
         // Ubuntu: the newest supported LTS from meta-release-lts, then the ISO from its SHA256SUMS.
         const QByteArray meta = "Dist: jammy\nName: Jammy Jellyfish\nVersion: 22.04.5 LTS\nSupported: 1\n\nDist: noble\nName: Noble Numbat\nVersion: 24.04.3 LTS\nSupported: 1\n\nDist: zesty\nSupported: 0\n";

@@ -562,9 +562,12 @@ void VmWorker::manage(QString op, QVariantMap in) {
         if (cloud) args << "--disk" << "path=" + seedPath + ",device=cdrom";
         if (disk.contains(',') || source.contains(',')) { cleanup(); done(false, "Choose paths without commas for the virt-install workflow."); return; }
         const auto boot = firmware == "uefi" ? QString("uefi") : importing ? QString("hd") : QString("cdrom,hd");
-        const QString secureBoot = "uefi,firmware.feature0.name=secure-boot,firmware.feature0.enabled=yes,firmware.feature1.name=enrolled-keys,firmware.feature1.enabled=yes";
-        // Secure Boot when the host has firmware for it; otherwise plain UEFI.
-        bool defined = windows && firmware == "uefi" && run("virt-install", args + QStringList{"--boot", secureBoot}, output, failure);
+        // Secure Boot when the host has firmware for it, preferably with Microsoft's keys preloaded;
+        // otherwise plain UEFI. virt-install's dry run doesn't resolve firmware, so the choice
+        // follows the host's firmware descriptors instead of waiting for the define to fail.
+        const auto secureFirmware = windows && firmware == "uefi" ? DomainConfig::secureBootFirmware() : QString();
+        const QString secureBoot = "uefi,firmware.feature0.name=secure-boot,firmware.feature0.enabled=yes,firmware.feature1.name=enrolled-keys,firmware.feature1.enabled=" + QString(secureFirmware == "enrolled" ? "yes" : "no");
+        bool defined = !secureFirmware.isEmpty() && run("virt-install", args + QStringList{"--boot", secureBoot}, output, failure);
         if (!defined && !run("virt-install", args + QStringList{"--boot", boot}, output, failure)) { cleanup(); done(false, failure); return; }
         QDomDocument doc;
         if (!doc.setContent(output)) { cleanup(); done(false, "virt-install did not return a valid domain definition."); return; }

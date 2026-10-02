@@ -1,8 +1,12 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "domainconfig.h"
 #include <QCryptographicHash>
+#include <QDir>
 #include <QDomDocument>
 #include <QFile>
+#include <QJsonArray>
+#include <QJsonDocument>
+#include <QJsonObject>
 #include <QSet>
 #include <QRegularExpression>
 #include <QTextStream>
@@ -186,4 +190,24 @@ bool DomainConfig::bridgeAllowed(const QString &bridge, const QString &aclPath) 
     bool allow = false, deny = false, valid = true;
     readAcl(aclPath, bridge, seen, allow, deny, valid);
     return valid && allow && !deny;
+}
+QString DomainConfig::secureBootFirmware(const QStringList &descriptorDirs) {
+    auto dirs = descriptorDirs;
+    if (dirs.isEmpty()) dirs = {qEnvironmentVariable("XDG_CONFIG_HOME", QDir::homePath() + "/.config") + "/qemu/firmware", "/etc/qemu/firmware", "/usr/share/qemu/firmware"};
+    QSet<QString> seen; bool enrolled = false, unenrolled = false;
+    for (const auto &dir : dirs)
+        for (const auto &name : QDir(dir).entryList({"*.json"}, QDir::Files, QDir::Name)) {
+            if (seen.contains(name)) continue;
+            seen.insert(name);
+            QFile file(dir + "/" + name);
+            if (file.size() > 65536 || !file.open(QIODevice::ReadOnly)) continue;
+            const auto d = QJsonDocument::fromJson(file.readAll()).object();
+            if (!d["interface-types"].toArray().contains(QJsonValue("uefi")) || d["mapping"].toObject()["device"].toString() != "flash") continue;
+            bool x86 = false;
+            for (const auto &t : d["targets"].toArray()) if (t.toObject()["architecture"].toString() == "x86_64") x86 = true;
+            const auto features = d["features"].toArray();
+            if (!x86 || !features.contains(QJsonValue("secure-boot"))) continue;
+            (features.contains(QJsonValue("enrolled-keys")) ? enrolled : unenrolled) = true;
+        }
+    return enrolled ? "enrolled" : unenrolled ? "unenrolled" : QString();
 }
