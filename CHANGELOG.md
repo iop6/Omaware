@@ -1,6 +1,6 @@
 # Changelog
 
-## 1.5.0-dev
+## 1.5.0 (2026-10-01)
 
 - Background MCP provisioning from confined local ISO and qcow2/raw appliance libraries, with stopped independent VM imports and up to four owned network destinations.
 - Approval-gated network creation and bridge authorization, immediate operation status and bounded session-local request deduplication; fresh worker access, media and ownership checks.
