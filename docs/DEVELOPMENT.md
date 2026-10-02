@@ -30,6 +30,7 @@
 | `src/updater.*` | Built-in updates from GitHub Releases (`Updater` in QML): checks, verified download, in-place swap and restart. |
 | `src/agentbridge.*` | AI agent access (`agent` in QML): the local socket `omaware mcp` talks to, the tools, the user's approvals, and building and deleting labs. |
 | `src/agentmanagement.cpp`, `src/agenttransfer.*` | Agent VM-management tools, bounded readiness checks, and confined file transfers. |
+| `src/agentprovision.*`, `src/agentprovisionbridge.cpp` | Local media schemas, confined read-only preparation, worker envelope validation and approval/status orchestration; mutations reuse `management.cpp`. |
 | `src/mcpserver.*` | `omaware mcp`: the Model Context Protocol server agents start; describes the tools and forwards calls to the app. |
 | `src/labplan.*`, `src/labs.*` | Checking an agent's lab plan; the record of built labs (their networks, VMs, login name and SSH keys). |
 | `src/cloudimages.*`, `src/cloudseed.*` | Cloud images for labs (download and checksum), and the cloud-init setup disc (an ISO 9660 image OmaWare writes itself). |
@@ -52,13 +53,14 @@ scripts/build.sh                  # builds into build/ and runs the unit tests
 scripts/build.sh --install        # also installs to ~/.local
 ```
 
-Requirements: CMake 3.22+, a C++20 compiler, Qt 6.4+ (Base including Network, D-Bus, Declarative, Wayland), libvirt, libcrypt (libxcrypt), toml++, zlib, libjpeg and libpng. At runtime OmaWare also uses QEMU/KVM, `qemu-img`, `virt-install` with libosinfo, UEFI firmware (OVMF) for UEFI VMs, `swtpm` for TPMs, and the OpenSSH client (`ssh`, `ssh-keygen`) for labs.
+Requirements: CMake 3.22+, a C++20 compiler, Qt 6.4+ (Base including Network, D-Bus, Declarative, Wayland), libvirt, libcrypt (libxcrypt), toml++, libarchive (OVA import), zlib, libjpeg and libpng. At runtime OmaWare also uses QEMU/KVM, `qemu-img`, `virt-install` with libosinfo, UEFI firmware (OVMF) for UEFI VMs, `swtpm` for TPMs, and the OpenSSH client (`ssh`, `ssh-keygen`) for labs.
 
 The script downloads LibVNCServer 0.9.15 at a pinned commit, checks both patch files against their SHA-256 hashes, and builds the library privately in `build/deps`. It is installed next to OmaWare and found through RPATH; nothing is installed system-wide. Always build OmaWare against the headers of the exact LibVNCClient it loads: libraries built with and without SASL have different struct layouts, and mixing them corrupts memory.
 
 ## Tests
 
 - **Unit tests** (`ctest`, run by `build.sh`): palette handling, domain XML, network rules, snapshot bookkeeping and the patched VNC decoder. Safe anywhere.
+- **Appliance tests** (also in `ctest`): `appliance-import` builds real OVA/VMDK/qcow2 fixtures with `qemu-img` and libarchive in temporary folders and checks conversion (plain and gzip-compressed VMDKs, manifests, a hostile extent name), every rejection rule, private staging and library routing. `appliance-ui` loads the actual QML with an inert backend to check that OVA/qcow2 media go to disk import and ISOs stay installers. Neither touches libvirt. To convert a real downloaded appliance as well (read-only on the original), run `OMAWARE_REAL_APPLIANCE=/path/to/x.ova OMAWARE_REAL_APPLIANCE_WORK=/dir/with/space build/app/omaware-appliance-tests realAppliance`.
 - **Agent regression tests** (also in `ctest`): `agent-tools` checks MCP schemas and transfer validation; `agent-transfer-io` exercises binary transfers, overwrite protection and unsafe-file rejection in temporary directories, including the generated guest-side Python commands. `mcp-stdio` starts the actual MCP executable with a fresh runtime directory, checking protocol responses without connecting to a running OmaWare app. These tests do not contact or change any VM and need Python 3.
 - **VM test suites** (`omaware-integration`, `omaware-management-tests`): create, start, pause, snapshot and power off real VMs in your libvirt session, and render the interface offscreen. **Run them only on a disposable machine or VM.** The management tests' pause-on-close test pauses every running OmaWare VM in the session. They refuse to start without an explicit opt-in:
 
@@ -104,6 +106,7 @@ agent ── stdio (MCP JSON-RPC) ── omaware mcp ── local socket, one JS
 
 - The socket lives in the user's runtime folder (`$XDG_RUNTIME_DIR/omaware-agent.sock`, user-only), and exists only while agent access is on.
 - Agents only reach OmaWare-owned VMs (`findVm`), never get passwords (lab logins are typed by `type_login`), and can't restore or delete without a yes in `agent.confirmation`.
+- Local media provisioning dispatches before `findVm`: six tools list confined media/owned networks, create stopped VMs and owned networks, authorize bridges and observe asynchronous request status. See [MCP-PROVISIONING.md](MCP-PROVISIONING.md) for arguments, dry-run scope and session-local replay limits. Mutations return before waiting for approval or disk copying; worker input is rebuilt from the exact approved arguments and fresh identities. An atomic access epoch prevents a revoked request from reviving after re-enabling agents. No new host shell/XML/path facility is exposed.
 - A lab build is a list of steps run one after another (images, networks, one helper call for all bridges, keys, VMs, snapshots, start); each finished step is saved in the lab's record so a failed build can still be deleted.
 - Lab VMs get a cloud-init seed with the user, a SHA-512 password hash, OmaWare's lab SSH key and a host key OmaWare made, which it pins in the lab's `known_hosts` under the VM's UUID.
 

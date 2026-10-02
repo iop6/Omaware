@@ -1024,6 +1024,7 @@ ApplicationWindow {
                 Layout.fillWidth: true; Layout.fillHeight: true; Layout.margins: 26
                 library: isoLibrary
                 onUseIso: function(path) { createDialog.beginWith(path) }
+                onUseAppliance: function(path) { createDialog.beginWith(path) }
                 onLanguageChosen: function(id, language) { preferences.set("isoLanguage:" + id, language) }
             }
         }
@@ -1191,7 +1192,7 @@ ApplicationWindow {
         function onImported(paths, ok, message) {
             isoDropZone.show(message, !ok)
             if (!ok || paths.length === 0) return
-            if (createDialog.visible) createDialog.useIso(paths[0])
+            if (createDialog.visible) createDialog.useMedia(paths[0])
             else if (paths.length === 1 && root.navigation !== "isos") createDialog.beginWith(paths[0])
             else { root.navigation = "isos"; isoShop.category = "mine" }
         }

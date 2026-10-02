@@ -25,7 +25,9 @@ class VmWorker : public QObject {
     Q_OBJECT
 public:
     explicit VmWorker(QString uri, bool storageOnly = false) : uri_(std::move(uri)), storageOnly_(storageOnly) {}
-    // Only this atomic crosses threads directly; all libvirt work stays on the worker.
+    // Only atomics cross threads directly; all libvirt work stays on the worker.
+    void setProvisionAccess(bool enabled) { if (bool(provisionEpoch_.load() & 1) != enabled) ++provisionEpoch_; }
+    quint64 provisionEpoch() const { return provisionEpoch_.load(); }
     void requestCheckpointCancel() { checkpointCancel_ = true; }
     void resetCheckpointCancel() { checkpointCancel_ = false; }
 public slots:
@@ -83,6 +85,7 @@ private:
     QString restartUuid_;
     int restartTicks_ = 0;
     std::atomic_bool checkpointCancel_{false};
+    std::atomic_uint64_t provisionEpoch_{0};
     bool storageOnly_ = false;
 };
 
@@ -130,6 +133,8 @@ public:
     // Never waits for the busy flag: pulling a cable is a safety action and is queued behind any running operation.
     Q_INVOKABLE void setLinks(QVariantList targets, bool up);
     Q_INVOKABLE bool request(QString operation, QVariantMap input = {});
+    void setProvisionAccess(bool enabled) { worker_->setProvisionAccess(enabled); }
+    quint64 provisionEpoch() const { return worker_->provisionEpoch(); }
     // Adds a line to the activity log without reporting it as the result of an operation (used for agent actions).
     void note(const QString &message, bool ok);
     Q_INVOKABLE void cancelRestart();

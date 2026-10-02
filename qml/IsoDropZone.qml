@@ -14,7 +14,7 @@ Item {
     readonly property bool hovering: drop.containsDrag
     // Only offer the drop when at least one dragged file is an ISO.
     function hasIso(urls) {
-        for (const url of urls || []) if (/\.iso$/i.test(String(url))) return true
+        for (const url of urls || []) if (/\.(iso|ova|qcow2)$/i.test(String(url))) return true
         return false
     }
     function show(text, bad) { message = text; failed = bad; messageTimer.restart() }
@@ -48,10 +48,10 @@ Item {
             anchors.centerIn: parent
             spacing: 8
             AppIcon { Layout.alignment: Qt.AlignHCenter; width: 40; height: 40; name: "disk"; color: theme.colors.accent }
-            Label { Layout.alignment: Qt.AlignHCenter; text: "Drop to add to your ISOs"; font.pixelSize: Math.round(20 * theme.textScale); font.weight: Font.DemiBold }
+            Label { Layout.alignment: Qt.AlignHCenter; text: "Drop to add ISO or appliance media"; font.pixelSize: Math.round(20 * theme.textScale); font.weight: Font.DemiBold }
             Label {
                 Layout.alignment: Qt.AlignHCenter
-                text: "Saved in " + (zone.library ? zone.library.folder : "your ISO folder")
+                text: "ISOs stay in isos/; OVA and QCOW2 disks are copied into appliances/"
                 color: theme.colors.muted; font.pixelSize: Math.round(12 * theme.textScale)
             }
         }

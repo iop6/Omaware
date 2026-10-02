@@ -25,6 +25,7 @@ class QTimer;
 class IsoLibrary : public QObject {
     Q_OBJECT
     Q_PROPERTY(QString folder READ folder NOTIFY changed)
+    Q_PROPERTY(QString applianceFolder READ applianceFolder NOTIFY changed)
     // OmaWare's data folder, with vms/ and isos/ inside.
     Q_PROPERTY(QString root READ root CONSTANT)
     // Source ids in display order; stable, so views keep their items while details change.
@@ -43,6 +44,8 @@ public:
     explicit IsoLibrary(QObject *parent = nullptr);
     ~IsoLibrary() override;
     QString folder() const { return folder_; }
+    QString applianceFolder() const { return applianceFolder_; }
+    void setApplianceFolder(const QString &folder) { applianceFolder_ = folder; rescan(); }
     QString root() const;
     void setFolder(const QString &folder);
     QStringList sourceIds() const;
@@ -159,6 +162,7 @@ private:
     void complete(const QString &id);
     void fail(const QString &id, const QString &message);
     QString folder_;
+    QString applianceFolder_;
     QList<Source> sources_;
     QVariantList files_;
     QHash<QString, Job *> jobs_;

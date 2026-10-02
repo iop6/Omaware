@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "agentbridge.h"
+#include "agentprovision.h"
 #include "backend.h"
 #include "cloudimages.h"
 #include "cloudseed.h"
@@ -63,9 +64,11 @@ AgentBridge::AgentBridge(Backend *backend, QObject *parent)
     server_.setSocketOptions(QLocalServer::UserAccessOption);
     connect(&server_, &QLocalServer::newConnection, this, &AgentBridge::accept);
     enabled_ = QSettings().value("agent/enabled", false).toBool();
+    backend_->setProvisionAccess(enabled_);
     if (enabled_) listen();
 }
 AgentBridge::~AgentBridge() {
+    backend_->setProvisionAccess(false);
     images_->cancelAll();
     server_.close();
     QLocalServer::removeServer(socketPath());
@@ -90,9 +93,15 @@ QString AgentBridge::command() const {
 void AgentBridge::setEnabled(bool on) {
     if (on == enabled_) return;
     enabled_ = on;
+    backend_->setProvisionAccess(on);
     QSettings().setValue("agent/enabled", on);
     if (on) listen();
     else {
+        // Disabling access revokes unanswered approvals, even if access is enabled
+        // again later. Decline while enabled_ is false so callbacks cannot dispatch.
+        const auto questions = questions_.keys();
+        for (const auto &id : questions) answer(id, false);
+        if (!proposal_.isEmpty()) decline(proposal_["id"].toString());
         server_.close();
         QLocalServer::removeServer(socketPath());
         for (auto socket : findChildren<QLocalSocket *>()) socket->abort();
@@ -199,6 +208,7 @@ void AgentBridge::handle(const QString &tool, const QVariantMap &args, Reply rep
     if (tool == "propose_lab") { proposeLab(args.contains("plan") ? args["plan"].toMap() : args, reply); return; }
     if (tool == "lab_status") { labStatus(args, reply); return; }
     if (tool == "delete_lab") { deleteLab(LabPlan::slug(args.value("lab").toString()), reply); return; }
+    if (AgentProvision::handles(tool)) { provisioningTool(tool, args, reply); return; }
     const auto vm = vmArg();
     if (vm.isEmpty()) { reply(failure(error)); return; }
     const auto uuid = vm["uuid"].toString(), name = vm["short"].toString();

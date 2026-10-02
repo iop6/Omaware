@@ -1,5 +1,9 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "backend.h"
+#include "applianceimport.h"
+#include "agentprovision.h"
+#include <QScopeGuard>
+#include <unistd.h>
 #include "paths.h"
 #include "configuration.h"
 #include "domainconfig.h"
@@ -206,6 +210,46 @@ void VmWorker::manage(QString op, QVariantMap in) {
     }
     if (!conn_ && storageOnly_) conn_ = virConnectOpen("qemu:///session");
     if (!conn_) { done(false, "Reconnect to the local VM session first."); return; }
+    // Provisioning envelopes are prepared at the bridge and reconstructed against fresh
+    // libvirt ownership/availability here, before ANY storage or network writes.
+    const bool provisioning = in.contains("provisionTool");
+    int provisionMediaFd = -1;
+    const auto closeMedia = qScopeGuard([&] { if (provisionMediaFd >= 0) ::close(provisionMediaFd); });
+    auto checkProvision = [&]() -> bool {
+        if (!provisioning) return true;
+        if (!(provisionEpoch() & 1) || in["provisionEpoch"].typeId() != QMetaType::ULongLong || in["provisionEpoch"].toULongLong() != provisionEpoch()) { done(false,"Agent provisioning authorization was revoked."); return false; }
+        const auto tool = in["provisionTool"].toString();
+        const auto expectedOp = tool == "create_vm" ? "vm.create" : tool == "create_network" ? "networks.save" : tool == "authorize_network" ? "networks.authorize" : "";
+        QString error;
+        const auto args = in["provisionArgs"].toMap();
+        if (!in["agentRequest"].toBool() || op != expectedOp || !AgentProvision::validate(tool,args,error) || args.value("dry_run",false).toBool()) { done(false,"Invalid provisioning envelope or dry-run mutation."); return false; }
+        Connection system(virConnectOpenReadOnly("qemu:///system"),virConnectClose);
+        if (!system) { done(false,"Cannot recheck owned host networks."); return false; }
+        QString status; const auto choices = NetworkCatalog::discover(conn_,status);
+        QVariantList networks;
+        virNetworkPtr *all = nullptr; const int count = virConnectListAllNetworks(system.get(),&all,0);
+        if (count < 0) { done(false,"Cannot recheck network inventory."); return false; }
+        for (int i=0; i<count; ++i) {
+            const auto xml = networkXml(all[i]); auto n = NetworkCatalog::describe(xml);
+            char uuid[VIR_UUID_STRING_BUFLEN]; virNetworkGetUUIDString(all[i],uuid);
+            n["uuid"] = QString::fromUtf8(uuid); n["managed"] = managedNetwork(xml); n["active"] = virNetworkIsActive(all[i]) == 1; n["revision"] = DomainConfig::revision(xml);
+            for (const auto &v : choices) if (v.toMap()["id"] == "bridge:"+n["bridge"].toString()) n["available"] = v.toMap()["available"];
+            networks.append(n); virNetworkFree(all[i]);
+        }
+        free(all);
+        if (!AgentProvision::verifyEnvelope(op,in,networks,error)) { done(false,error); return false; }
+        // Discovery itself may take time; revocation during the checks must also win.
+        if (!(provisionEpoch() & 1) || in["provisionEpoch"].toULongLong() != provisionEpoch()) { done(false,"Agent provisioning authorization was revoked."); return false; }
+        return true;
+    };
+    if (!checkProvision()) return;
+    if (op == "vm.create" && in["agentRequest"].toBool() && in["sourceMode"] != "cloud" && !provisioning) { done(false,"Agent local VM creation requires a provisioning envelope."); return; }
+    if (provisioning && op == "vm.create") {
+        QVariantMap identity; QString error;
+        const auto args = in["provisionArgs"].toMap();
+        provisionMediaFd = AgentProvision::openMedia(args["media_kind"].toString(),args["media"].toString(),identity,error);
+        if (provisionMediaFd < 0 || identity != in["mediaIdentity"].toMap()) { done(false,"Approved media changed before worker dispatch."); return; }
+    }
     if (op == "stats.all") {
         // One bulk call covers every running VM; rates are derived in the UI from consecutive samples.
         QVariantList vms; virDomainStatsRecordPtr *records = nullptr;
@@ -405,6 +449,7 @@ void VmWorker::manage(QString op, QVariantMap in) {
             if (net && edited.documentElement().firstChildElement("name").text() != oldName) { done(false, "Keep the existing network name when editing its settings."); return; }
             if (settings["mode"] != "isolated") failure = conflict(settings["subnet"].toString());
             if (!failure.isEmpty()) { done(false, failure); return; }
+            if (!checkProvision()) return;
             Network defined(virNetworkDefineXML(system.get(), xml.toUtf8().constData()), virNetworkFree);
             if (!defined) { done(false, lastError("Save host network")); return; }
             if (virNetworkSetAutostart(defined.get(), settings.value("autostart", true).toBool()) < 0) { done(false, lastError("Network saved, but setting autostart failed")); return; }
@@ -429,6 +474,7 @@ void VmWorker::manage(QString op, QVariantMap in) {
             else result = virNetworkUndefine(net.get());
         } else if (op == "networks.authorize") {
             if (virNetworkIsActive(net.get()) != 1) { done(false, "Start the network before allowing VMs to join it."); return; }
+            if (!checkProvision()) return;
             QString failure;
             if (!authorize(uuid, failure)) { done(false, failure); return; }
             done(true, "Your VMs can now join this network."); return;
@@ -457,39 +503,37 @@ void VmWorker::manage(QString op, QVariantMap in) {
         // A cloud image newer than this host's OS list still boots fine as a generic Linux.
         if (!knownPreset && cloud) { preset = "generic"; knownPreset = true; }
         if (!knownPreset || !QStringList{"bios", "uefi"}.contains(firmware)) { done(false, "Choose a supported OS preset and firmware."); return; }
-        const bool importing = in["sourceMode"] == "disk" || cloud;
+        const bool importing = in["sourceMode"] == "disk" || cloud || (!provisioning && ApplianceImport::mediaType(in["source"].toString()) == "disk");
         auto source = in["source"].toString();
+        // qemu-img reads the pinned descriptor through the parent's proc directory, not a
+        // replaceable filename. CLOEXEC is fine: it remains open in this worker process.
+        if (provisioning && importing) source = QString("/proc/%1/fd/%2").arg(::getpid()).arg(provisionMediaFd);
         if (!QFileInfo(source).isAbsolute() || !QFileInfo(source).isFile() || !QFileInfo(source).isReadable()) { done(false, "Choose a readable local ISO or disk image."); return; }
         // Cloud images only come from OmaWare's own image folder, where they were checked against their publisher's checksum.
         if (cloud && QFileInfo(source).canonicalPath() != QFileInfo(CloudImages::folder()).canonicalFilePath()) { done(false, "Cloud images must be in OmaWare's image folder."); return; }
         const auto seed = in["seed"].toMap();
         if (cloud && (seed["userData"].toByteArray().size() > 262144 || seed["metaData"].toByteArray().isEmpty() || seed["networkConfig"].toByteArray().size() > 65536)) { done(false, "The first-boot setup is missing or too large."); return; }
         auto parent = in.value("location").toString().isEmpty() ? Paths::vms() : in.value("location").toString();
+        QString storageError;
+        if (!checkProvision()) return;
+        if (provisioning && !AgentProvision::storageRoot(storageError, true)) { done(false,storageError); return; }
         if (!QFileInfo(parent).isAbsolute() || (!QDir().mkpath(parent)) || !QFileInfo(parent).isWritable()) { done(false, "The storage directory is not writable."); return; }
         auto identity = QUuid::createUuid().toString(QUuid::WithoutBraces), directory = parent + "/" + name + "-" + identity.left(8), disk = directory + "/system.qcow2";
-        QByteArray output; QString failure, format;
+        QByteArray output; QString failure;
+        // Staging sits next to the new VM: an appliance can unpack to tens of GiB, too much for a RAM-backed /tmp.
+        ApplianceImport importedDisk(parent);
         quint64 required = qulonglong(size) * 1073741824;
         if (importing) {
-            // Imported images may be hostile. Never let qemu-img guess the format (a raw image can carry a
-            // qcow2 header), and refuse backing or external data files: a crafted qcow2 could otherwise
-            // copy host files such as SSH keys into the new VM's disk, where the guest could read them.
-            QFile header(source); QByteArray magic;
-            if (header.open(QIODevice::ReadOnly)) magic = header.read(4);
-            format = magic == QByteArray("QFI\xfb", 4) ? "qcow2" : "raw";
-            if (!run("qemu-img", {"info", "--output=json", "-f", format, source}, output, failure)) { done(false, failure); return; }
-            const auto info = QJsonDocument::fromJson(output).toVariant().toMap();
-            if (info.isEmpty()) { done(false, "The disk image information could not be read."); return; }
-            required = std::max<quint64>(info["virtual-size"].toULongLong(), cloud ? qulonglong(size) * 1073741824 : 0);
-            const auto specific = info["format-specific"].toMap()["data"].toMap();
-            if (info.contains("backing-filename") || info.contains("full-backing-filename") || specific.contains("data-file"))
-                { done(false, "This image depends on another file (a backing or external data file). Import a standalone image; flatten it first with qemu-img convert if you trust its source."); return; }
-            if (info.value("encrypted", false).toBool()) { done(false, "Encrypted images cannot be imported."); return; }
+            emit progress("Unpacking and checking the appliance or disk image…");
+            if (!importedDisk.prepare(source, in["source"].toString(), failure)) { done(false, failure); return; }
+            required = std::max<quint64>(importedDisk.capacity(), cloud ? qulonglong(size) * 1073741824 : 0);
         }
         if (QStorageInfo(parent).bytesAvailable() < qint64(required)) { done(false, "There is not enough free space for the disk's full capacity at this location."); return; }
+        if (!checkProvision()) return;
         if (!QDir().mkdir(directory)) { done(false, "Could not create a new unique VM storage directory."); return; }
         QFile::setPermissions(directory, QFile::ReadOwner | QFile::WriteOwner | QFile::ExeOwner);
         emit progress(importing ? "Copying the source disk into a new independent image…" : "Creating the VM's new disk…");
-        bool diskOk = importing ? run("qemu-img", {"convert", "-f", format, "-O", "qcow2", source, disk}, output, failure, 600000) : run("qemu-img", {"create", "-f", "qcow2", disk, QString::number(size) + "G"}, output, failure);
+        bool diskOk = importing ? importedDisk.convert(disk, failure) : run("qemu-img", {"create", "-f", "qcow2", disk, QString::number(size) + "G"}, output, failure);
         auto seedPath = directory + "/seed.iso";
         auto cleanup = [&] { QFile::remove(disk); QFile::remove(seedPath); QDir().rmdir(directory); };
         if (diskOk && cloud) {
@@ -562,10 +606,11 @@ void VmWorker::manage(QString op, QVariantMap in) {
             QDomDocument device; device.setContent(nic); devices.appendChild(doc.importNode(device.documentElement(), true));
         }
         auto balloon = devices.firstChildElement("memballoon"); if (!balloon.isNull() && balloon.attribute("model") == "virtio") child(doc, balloon, "stats").setAttribute("period", "5");
+        if (provisioning && !checkProvision()) { cleanup(); return; }
         Domain createdVm(virDomainDefineXMLFlags(conn_, doc.toString(-1).toUtf8().constData(), VIR_DOMAIN_DEFINE_VALIDATE), virDomainFree);
         if (!createdVm) { failure = lastError("Define VM"); cleanup(); done(false, failure); return; }
         emit created(identity);
-        done(true, "VM created. Start it to boot the selected installation media or imported disk.", {{"uuid", identity}, {"storage", directory}}); return;
+        done(true, (QStringList{"VM created. Start it to boot the selected installation media or imported disk."} + importedDisk.notes()).join(' '), {{"uuid", identity}, {"storage", directory}, {"importNotes", importedDisk.notes()}}); return;
     }
 
     const auto uuid = in["uuid"].toString();

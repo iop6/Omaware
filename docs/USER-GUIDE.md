@@ -54,7 +54,7 @@ Click **Create VM**.
 
 1. Enter a name and choose where the system comes from:
    - **An installation ISO.** Choose one from your ISO library, get one from the **ISO Shop**, browse to a file, or drag an ISO onto the window. OmaWare creates a new empty disk and attaches the ISO. Picking a known ISO also picks the matching operating system and a name.
-   - **An existing disk image** (raw or qcow2). OmaWare copies it into a new, independent qcow2 disk. The original file is never changed.
+   - **An existing disk image or appliance** (OVA, qcow2 or raw). OmaWare copies it into a new, independent qcow2 disk and leaves the VM stopped. The original file is never changed. Picking an OVA or qcow2 anywhere (your media list, **Browse file…**, or dropping it on the window) switches to this mode automatically; appliances are never attached as installer ISOs. See [Appliances (OVA and QCOW2)](#appliances-ova-and-qcow2).
 2. Choose the operating system type, so the VM gets sensible default devices.
 3. Optional: open **Advanced setup** for processors, memory, disk size, network, storage location and BIOS or UEFI firmware. UEFI needs firmware installed on the host.
 4. Review and create. The new VM starts out stopped; start it to run the installer.
@@ -181,7 +181,7 @@ Snapshots are not backups: they live on the same disk as the VM.
 
 - **Desktop:** Ubuntu, Kubuntu, Xubuntu, Linux Mint, Fedora Workstation, Fedora KDE Plasma, Debian, Arch Linux, openSUSE Tumbleweed, Pop!_OS and NixOS.
 - **Server:** Ubuntu Server, Rocky Linux, AlmaLinux, Alpine Linux, Proxmox VE and FreeBSD.
-- **Security & networking:** Kali Linux and OPNsense.
+- **Security & networking:** Kali Linux, OPNsense, and REMnux (a malware-analysis appliance; see below).
 - **Windows:** Windows 11 straight from Microsoft, in the language you choose on its card (OmaWare picks your computer's language at first), checked against the SHA-256 checksum Microsoft publishes for that language. Microsoft sometimes refuses automated downloads from some networks or after many attempts; the card then says so and offers **Website**, and a Windows ISO you download there is recognized too.
 - **From the publisher's website:** pfSense (through Netgate's free store). Save the ISO into your ISO folder and the shop recognizes it.
 
@@ -198,6 +198,19 @@ Deleting ISOs is quick, and always asks once in place before anything is removed
 - **Tick several files** (or **Select all**) and use **Delete selected**. Each file also has its own trash button.
 
 **New VM** on a card or file opens the create dialog with that ISO chosen, the matching operating system selected (when your computer knows it) and a name suggested. OmaWare only contacts the publishers when you open the shop or press **Check for updates**.
+
+### Appliances (OVA and QCOW2)
+
+Some systems ship as a ready-made virtual appliance instead of an installer. **Your media** lists these as *Appliance disk* (installers are *Installer ISO*), and their button says **Import VM** instead of **New VM**. Add one with **Add files…** or by dropping it on the window: it is copied into `~/.local/share/omaware/appliances/` (never hard-linked, so the library copy is yours alone).
+
+The **REMnux** card links to the [official REMnux virtual appliance page](https://docs.remnux.org/install-distro/get-virtual-appliance). OmaWare doesn't download REMnux itself or claim a checksum for it: download the OVA there, verify it as the page describes, then add it. A file named like `remnux-noble-amd64.ova` is recognized as REMnux.
+
+Importing an OVA:
+
+- Reads it once into a private folder next to the new VM's storage (an appliance can unpack to tens of GiB, so make sure that drive has room for the unpacked disk plus its copy), then converts it into an independent qcow2 disk. The VM is created **stopped**.
+- Supports OVAs with one virtual machine and one VMDK disk (monolithicSparse or streamOptimized, plain or gzip-compressed, as exported by VMware and VirtualBox). OVAs with several disks or VMs, split (chunked) disks, external or parent disks, links, folders or unexpected files are refused.
+- Checks the disk against the OVA's manifest (`.mf`) checksums when there is one. That catches a damaged download; it does not prove who made the file. A signing certificate, if present, is not checked.
+- **Imports only the disk.** CPU and memory come from the create dialog (the OVF's suggestion is shown when the VM is created), and the OVF's network adapters, disk controllers, sound and other devices are not copied. Choose the matching firmware (most VMware/VirtualBox appliances, including REMnux, use BIOS) and an isolated network for malware analysis.
 
 ## AI agents and labs
 
@@ -235,8 +248,13 @@ The MCP interface exposes focused VM-management tools rather than unrestricted c
 | `set_cable` | Plugs or pulls an existing adapter's virtual cable. |
 | `list_snapshots`, `snapshot_vm`, `restore_snapshot` | Lists, saves and restores snapshots. |
 | `propose_lab`, `lab_status`, `delete_lab` | Proposes, tracks and removes labs. |
+| `list_installation_media`, `list_owned_networks` | Lists safe local ISO/appliance filenames and owned network UUIDs/revisions without selecting an existing VM. |
+| `create_vm`, `create_network`, `authorize_network` | After approval, creates a stopped VM from local media, creates/starts an owned network, or authorizes its bridge through the existing administrator helper. |
+| `provision_status` | Observes a background provisioning request; repeated IDs do not create duplicate work during the same app session. |
 
 The agent should use the server's `tools/list` response for exact arguments and limits. A successful MCP connection is not proof that OmaWare is reachable: the app must be open and agent access enabled before VM tools can work. A powered-on VM may still be booting; use readiness checks before sending commands.
+
+Local-media provisioning does not need the agent to click or focus the desktop. User approval still happens in OmaWare; administrator authorization may also be necessary. Imports copy an independent disk and leave VMs stopped, without changing existing VMs. Windows/FLARE installation and pfSense configuration remain guest tasks. Read [Background provisioning through MCP](MCP-PROVISIONING.md) for media staging, safe network selection, exact retry rules, dry-run limits and examples. The running installed release must support these development tools before they can be used.
 
 #### Transfer and cloning limits
 
@@ -324,7 +342,7 @@ Press `?` or F1 in OmaWare for the full list. Shortcuts are off while the consol
 
 ## Where OmaWare keeps its files
 
-- **VMs, ISOs and the app:** `~/.local/share/omaware/` (or `$XDG_DATA_HOME/omaware`), with each VM's disks in `vms/`, installation ISOs in `isos/`, and OmaWare itself in `app/` when installed from the Linux package. A new VM can use another storage location, chosen when creating it.
+- **VMs, ISOs and the app:** `~/.local/share/omaware/` (or `$XDG_DATA_HOME/omaware`), with each VM's disks in `vms/`, installation ISOs in `isos/`, OVA and qcow2 appliances in `appliances/`, and OmaWare itself in `app/` when installed from the Linux package. A new VM can use another storage location, chosen when creating it.
 - **Snapshots, pending changes and activity history:** `~/.local/share/Omaware/Omaware/`. VMs made by earlier versions keep their disks there too; nothing is moved.
 - **Settings** (theme, window size, folders, tags, notes): `~/.config/Omaware/Omaware/workspace.ini`.
 - **VM definitions** are kept by libvirt, not OmaWare.

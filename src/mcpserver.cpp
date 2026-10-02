@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "mcpserver.h"
+#include "agentprovision.h"
 #include "agentbridge.h"
 #include <QCoreApplication>
 #include <QElapsedTimer>
@@ -17,6 +18,7 @@ const char *instructions = R"(OmaWare runs virtual machines (QEMU/KVM) on the us
 
 How to work with it:
 - Start with omaware_overview.
+- For local appliances/installers, use list_installation_media, create_network, list_owned_networks, authorize_network and create_vm. Mutations return a request_id immediately; poll provision_status. Approval remains in OmaWare; no desktop focus is needed by the agent. Created VMs remain stopped. Retry lost responses with the SAME request_id and arguments, never a fresh ID; after app restart inspect inventory first. These tools do not install FLARE or configure guests.
 - To build something, write a lab plan and call propose_lab. Ask the user what VM user name they want first. Never ask the user for a password and never put one in a plan: OmaWare asks for the password in its own window when the user approves the plan, and type_login types it for you when a login screen needs it.
 - After propose_lab, call lab_status with wait_seconds until the lab is ready, failed or declined. Building downloads images (once), creates networks (the user may be asked for their computer password once), creates the VMs and starts them.
 - VMs on "internet" or "private" networks can run commands with run_command (over SSH as the lab user, with passwordless sudo, or through the QEMU guest agent). VMs only on "isolated" networks can only be used through their screen.
@@ -123,9 +125,10 @@ QVariantMap forwardToApp(const QString &name, const QVariantMap &args) {
 }
 }
 
-QVariantList Mcp::tools() { return toolList().toVariantList(); }
+QVariantList Mcp::tools() { auto list = toolList().toVariantList(); list.append(AgentProvision::tools()); return list; }
 
 bool Mcp::validateManagementArguments(const QString &name, const QVariantMap &args, QString &error) {
+    if (AgentProvision::handles(name)) return AgentProvision::validate(name, args, error);
     if (!QStringList{"vm_details", "diagnose_vm", "wait_for_vm", "transfer_file", "update_vm_resources", "clone_vm", "manage_iso", "manage_network_adapter"}.contains(name)) return true;
     QJsonObject input;
     for (const auto &t : toolList()) if (t.toObject()["name"] == name) input = t.toObject()["inputSchema"].toObject();
@@ -158,12 +161,17 @@ QByteArray Mcp::respond(const QByteArray &message, const std::function<QVariantM
             {"serverInfo", QJsonObject{{"name", "omaware"}, {"title", "OmaWare"}, {"version", QCoreApplication::applicationVersion()}}}, {"instructions", instructions}});
     }
     if (method == "ping") return answer({});
-    if (method == "tools/list") return answer({{"tools", toolList()}});
+    if (method == "tools/list") return answer({{"tools", QJsonArray::fromVariantList(tools())}});
     if (method == "tools/call") {
         const auto name = params["name"].toString();
         bool known = false;
-        for (const auto &t : toolList()) known |= t.toObject()["name"].toString() == name;
+        for (const auto &t : tools()) known |= t.toMap()["name"].toString() == name;
         if (!known) return error(-32602, "Unknown tool: " + name);
+        if (AgentProvision::handles(name)) {
+            QString why;
+            if (!params["arguments"].isObject() || !AgentProvision::validate(name, params["arguments"].toObject().toVariantMap(), why))
+                return error(-32602, why.isEmpty() ? "Arguments must be an object." : why);
+        }
         const auto reply = forward(name, params["arguments"].toObject().toVariantMap());
         QJsonArray content;
         const bool ok = reply.value("ok").toBool();

@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 import QtQuick
 import QtQuick.Controls
+import QtQuick.Dialogs
 import QtQuick.Layouts
 
 // The ISO Shop: free, official installation images, downloaded into OmaWare's ISO folder and
@@ -12,11 +13,13 @@ ColumnLayout {
     property string category: "all"
     property string query: ""
     signal useIso(string path)
+    signal useAppliance(string path)
+    function useMedia(file) { if (file.type === "disk") useAppliance(file.path); else useIso(file.path) }
     spacing: 14
 
     readonly property var categories: [
         {key: "all", label: "All"}, {key: "desktop", label: "Desktop"}, {key: "server", label: "Server"},
-        {key: "security", label: "Security & networking"}, {key: "windows", label: "Windows"}, {key: "mine", label: "Your ISOs"}]
+        {key: "security", label: "Security & networking"}, {key: "windows", label: "Windows"}, {key: "mine", label: "Your media"}]
     // Names and categories never change, so filtering only rebuilds the grid when the filter does.
     property var catalogue: ({})
     function remember() {
@@ -66,6 +69,7 @@ ColumnLayout {
     }
     onVisibleChanged: if (visible && library) { remember(); library.rescan(); if (library.autoCheck && !library.checking) library.check() }
     Component.onCompleted: remember()
+    FileDialog { id: mediaPicker; title: "Add installer or appliance media"; fileMode: FileDialog.OpenFiles; nameFilters: ["ISO and appliances (*.iso *.ISO *.ova *.OVA *.qcow2 *.QCOW2)"]; onAccepted: page.library.importFiles(selectedFiles) }
 
     // ---- Header ----
     RowLayout {
@@ -74,11 +78,12 @@ ColumnLayout {
             Layout.fillWidth: true; spacing: 4
             Label { text: "ISO Shop"; font.pixelSize: Math.round(28 * theme.textScale); font.weight: Font.DemiBold }
             Label {
-                text: "Free, official installation images. Every download is checked against its publisher's checksum and saved in your ISO folder. To add your own ISOs, drag them onto the window."
+                text: "Official installer images and appliance links. Automatic ISO downloads are checksum-verified. Add your own ISO, OVA or QCOW2 with Add files or drag and drop; verify appliances with their publisher first."
                 color: theme.colors.muted; font.pixelSize: Math.round(12 * theme.textScale); Layout.fillWidth: true; wrapMode: Text.WordWrap
             }
         }
         AppButton { objectName: "isoCheck"; text: page.library && page.library.checking ? "Checking…" : "Check for updates"; iconName: "refresh"; enabled: !!page.library && !page.library.checking; onClicked: page.library.check() }
+        AppButton { objectName: "addMedia"; text: "Add files…"; enabled: !!page.library && !page.library.importing; onClicked: mediaPicker.open() }
         AppButton { objectName: "isoOpenFolder"; text: "Open folder"; iconName: "folder"; hint: page.library ? page.library.folder : ""; onClicked: Qt.openUrlExternally("file://" + page.library.folder) }
     }
     RowLayout {
@@ -233,7 +238,7 @@ ColumnLayout {
                                     visible: (card.info.upToDate || (card.info.kind === "page" && !!card.info.have))
                                     text: "New VM"; tone: "quiet"; iconName: "plus"
                                     hint: "Create a VM from this ISO"
-                                    onClicked: { for (const f of page.library.files) if (f.source === card.modelData && f.newest) { page.useIso(f.path); break } }
+                                    onClicked: { for (const f of page.library.files) if (f.source === card.modelData && f.newest) { page.useMedia(f); break } }
                                 }
                                 AppButton {
                                     // When a publisher refuses an automated download, its website still works.
@@ -317,7 +322,7 @@ ColumnLayout {
                 }
                 Label {
                     visible: !!page.library && page.library.files.length === 0
-                    text: "None yet. Download one above, or put .iso files in " + (page.library ? page.library.folder : "your ISO folder") + "."
+                    text: "None yet. Download an ISO above, or drop an ISO, OVA or QCOW2 appliance here. Appliances live in " + (page.library ? page.library.applianceFolder : "appliances/") + "."
                     color: theme.colors.muted; Layout.fillWidth: true; wrapMode: Text.WordWrap; font.pixelSize: Math.round(12 * theme.textScale)
                 }
                 Repeater {
@@ -343,11 +348,11 @@ ColumnLayout {
                                 Layout.fillWidth: true; spacing: 1
                                 Label { textFormat: Text.PlainText; text: fileRow.modelData.name; elide: Text.ElideMiddle; Layout.fillWidth: true; font.pixelSize: Math.round(12 * theme.textScale) }
                                 Label {
-                                    text: page.size(fileRow.modelData.size) + (fileRow.modelData.sourceName ? " · " + fileRow.modelData.sourceName + " " + fileRow.modelData.version : "") + (fileRow.modelData.newest ? "" : " · older version, you can delete it")
+                                    text: (fileRow.modelData.type === "disk" ? "Appliance disk · " : "Installer ISO · ") + page.size(fileRow.modelData.size) + (fileRow.modelData.sourceName ? " · " + fileRow.modelData.sourceName + " " + fileRow.modelData.version : "") + (fileRow.modelData.newest ? "" : " · older version, you can delete it")
                                     color: fileRow.modelData.newest ? theme.colors.muted : theme.colors.warning; font.pixelSize: Math.round(10 * theme.textScale)
                                 }
                             }
-                            AppButton { visible: !fileRow.confirming; text: "New VM"; iconName: "plus"; tone: "quiet"; hint: "Create a VM from this ISO"; onClicked: page.useIso(fileRow.modelData.path) }
+                            AppButton { visible: !fileRow.confirming; text: fileRow.modelData.type === "disk" ? "Import VM" : "New VM"; iconName: "plus"; tone: "quiet"; hint: fileRow.modelData.type === "disk" ? "Copy appliance into an independent VM disk" : "Create a VM from this ISO"; onClicked: page.useMedia(fileRow.modelData) }
                             AppButton { visible: !fileRow.confirming; iconName: "trash"; tone: "quiet"; hint: "Delete this ISO"; onClicked: fileRow.confirming = true }
                             AppButton { visible: fileRow.confirming; text: "Delete"; tone: "danger"; onClicked: { fileRow.confirming = false; page.library.remove(fileRow.modelData.name) } }
                             AppButton { visible: fileRow.confirming; text: "Keep"; tone: "quiet"; onClicked: fileRow.confirming = false }
