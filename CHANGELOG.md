@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.5.0-dev
+
+- Background MCP provisioning from confined local ISO and qcow2/raw appliance libraries, with stopped independent VM imports and up to four owned network destinations.
+- Approval-gated network creation and bridge authorization, immediate operation status and bounded session-local request deduplication; fresh worker access, media and ownership checks.
+- OVA and QCOW2 appliances: listed as *Appliance disk* in the ISO Shop's media list, added by drag and drop or **Add files…** into `appliances/`, and always routed to disk import. OVAs with one VM and one VMDK (plain or gzip-compressed) are unpacked once into private staging beside the VM storage, checked against their manifest, and converted into an independent stopped qcow2 VM; only the disk is imported and the OVF's hardware suggestions are reported, not applied.
+- REMnux in the ISO Shop, linking to its official virtual appliance page (no automatic download or invented checksum).
+- Host-safe schema, media-confinement, request-envelope, replay and protocol regression coverage; no live VM provisioning implied by these tests.
+
 ## 1.4.0 (2026-10-01)
 
 - Eight additional MCP tools for VM details, readiness checks, diagnostics, file transfers, CPU/RAM changes, cloning, local ISO media and network adapters.

@@ -15,7 +15,7 @@ EditorDialog {
     property bool scanning: false
     property var mediaResponse: backend.management["media.list"] || ({})
     readonly property var library: mediaResponse.folder === isoFolder ? mediaResponse : ({})
-    readonly property var images: library.items || []
+    readonly property var images: (library.items || []).concat(isoLibrary ? isoLibrary.files.filter(function(f) { return f.type === "disk" }) : [])
     property var caps: backend.management["capabilities"] || ({})
     property var networks: [{id: "none", label: "No network", available: true}, {id: "user", label: "Per-VM NAT · internet access", available: true}].concat((caps.networks || []).filter(function(n) { return n.id !== "user" }))
     // An OS picked from a shop ISO that isn't in the short list is added to it.
@@ -69,13 +69,14 @@ EditorDialog {
     }
     // Opens the dialog with an ISO already chosen (from Get ISOs).
     function beginWith(path) {
-        begin(); sourceMode.currentIndex = 0; source.text = path
+        begin(); useMedia(path)
         Qt.callLater(function() { dialog.pickPresetFor(path) })
     }
     // Uses an ISO in the open dialog (for example one dropped onto the window).
-    function useIso(path) { sourceMode.currentIndex = 0; source.text = path; scanLibrary(); pickPresetFor(path) }
+    function useMedia(path, type) { sourceMode.currentIndex = /\.iso$/i.test(String(path)) ? 0 : type === "disk" || /\.(qcow2|ova|raw|img)$/i.test(String(path)) ? 1 : 0; source.text = path; scanLibrary(); pickPresetFor(path) }
+    function useIso(path) { useMedia(path) }
     Connections { target: dialog.isoLibrary; function onFinished(id, ok, message) { if (ok && dialog.visible) dialog.scanLibrary() } }
-    function chooseMedia(index) { if (index >= 0 && index < images.length) { source.text = images[index].path; pickPresetFor(images[index].path) } }
+    function chooseMedia(index) { if (index >= 0 && index < images.length) useMedia(images[index].path, images[index].type) }
     function applyPreset() {
         selectedPreset = (presets[preset.currentIndex] || {}).id || "generic"
         const windows = String((presets[preset.currentIndex] || {}).id).indexOf("win") === 0
@@ -107,7 +108,7 @@ EditorDialog {
             AppSelect { id: sourceMode; objectName: "newVmSourceMode"; Accessible.name: "Installation source type"; Layout.fillWidth: true; model: ["Install from an ISO", "Copy an existing disk image"]; onActivated: source.text = "" }
             AppButton { text: "Browse file…"; objectName: "browseMedia"; onClicked: sourcePicker.open() }
         }
-        RowLayout { visible: sourceMode.currentIndex === 0; Layout.fillWidth: true
+        RowLayout { Layout.fillWidth: true
             AppSelect {
                 id: mediaPicker; objectName: "isoLibraryPicker"; Accessible.name: "ISO library"; Layout.fillWidth: true
                 model: dialog.images; textRole: "name"; currentIndex: -1
@@ -124,7 +125,7 @@ EditorDialog {
             AppButton { objectName: "getIsos"; text: "ISO Shop"; iconName: "store"; hint: "Download the latest Ubuntu, Fedora, Debian, Mint and more"; onClicked: dialog.getIsos() }
         }
         Label { textFormat: Text.PlainText; visible: sourceMode.currentIndex === 0 && dialog.isoFolder !== "" && !dialog.scanning && (dialog.images.length === 0 || !!dialog.library.error || !!dialog.library.notice); text: dialog.library.error || dialog.library.notice || "No ISOs yet. Get one from the ISO Shop, or browse to a file."; color: dialog.library.error ? theme.colors.warning : theme.colors.muted; Layout.fillWidth: true; wrapMode: Text.WordWrap; font.pixelSize: Math.round((12) * theme.textScale)}
-        AppField { id: source; objectName: "newVmSource"; Accessible.name: sourceMode.currentIndex === 0 ? "ISO path" : "Disk image path"; placeholderText: sourceMode.currentIndex === 0 ? "Choose an ISO above, or paste its path" : "Choose a raw or qcow2 image, or paste its path"; Layout.fillWidth: true }
+        AppField { id: source; objectName: "newVmSource"; Accessible.name: sourceMode.currentIndex === 0 ? "ISO path" : "Disk image path"; placeholderText: sourceMode.currentIndex === 0 ? "Choose an ISO above, or paste its path" : "Choose an OVA, raw or qcow2 image, or paste its path"; Layout.fillWidth: true }
         Label { text: "Operating system" }
         AppSelect { id: preset; objectName: "newVmPreset"; Accessible.name: "Operating system"; Layout.fillWidth: true; model: dialog.presets; textRole: "label"; onActivated: dialog.applyPreset() }
         ColumnLayout {
@@ -180,7 +181,7 @@ EditorDialog {
         AppButton { objectName: "backToSetup"; text: "Back to settings"; onClicked: dialog.reviewing = false }
     }
     Label { visible: dialog.caps.virtInstall === false; text: "Creation needs virt-install and libosinfo on this host. Install these dependencies, then reopen the wizard."; color: theme.colors.warning; Layout.fillWidth: true; wrapMode: Text.WordWrap }
-    FileDialog { id: sourcePicker; title: "Choose installation media or disk image"; nameFilters: sourceMode.currentIndex === 0 ? ["ISO images (*.iso *.ISO)", "All files (*)"] : ["Disk images (*.qcow2 *.raw *.img)", "All files (*)"]; onAccepted: source.text = dialog.workspace.localPath(selectedFile.toString()) }
+    FileDialog { id: sourcePicker; title: "Choose installation media or appliance"; nameFilters: ["Supported media (*.iso *.ISO *.ova *.OVA *.qcow2 *.QCOW2 *.raw *.img)", "All files (*)"]; onAccepted: dialog.useMedia(dialog.workspace.localPath(selectedFile.toString()), sourceMode.currentIndex === 1 ? "disk" : "") }
     FolderDialog { id: libraryPicker; title: "Choose your ISO library folder"; onAccepted: dialog.setIsoFolder(dialog.workspace.localPath(selectedFolder.toString())) }
     FolderDialog { id: directoryPicker; title: "Choose VM storage directory"; onAccepted: location.text = dialog.workspace.localPath(selectedFolder.toString()) }
 }

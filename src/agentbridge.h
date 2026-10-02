@@ -113,6 +113,8 @@ private:
     void deleteLab(const QString &slug, Reply reply);
     void setCable(const QVariantMap &vm, const QVariantMap &args, Reply reply);
 
+    void provisioningTool(const QString &tool, const QVariantMap &args, Reply reply);
+    QHash<QString, QVariantMap> provisioningStates_, provisioningRequests_;
     void managementTool(const QString &tool, const QVariantMap &vm, const QVariantMap &args, Reply reply);
     void waitForVm(const QVariantMap &vm, const QVariantMap &args, Reply reply);
     void transferFile(const QVariantMap &vm, const QVariantMap &args, Reply reply);

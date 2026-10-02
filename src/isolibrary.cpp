@@ -1,5 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "isolibrary.h"
+#include "applianceimport.h"
+#include <QSet>
 #include "paths.h"
 #include <QCoreApplication>
 #include <QDate>
@@ -89,6 +91,9 @@ IsoLibrary::IsoLibrary(QObject *parent) : QObject(parent) {
         R"(^FreeBSD-([0-9][0-9.]*)-RELEASE-amd64-disc1\.iso$)", "freebsd{mm}",
         {{"type", "folder"}, {"index", "https://download.freebsd.org/releases/amd64/amd64/ISO-IMAGES/"}, {"sums", "https://download.freebsd.org/releases/amd64/amd64/ISO-IMAGES/{version}/CHECKSUM.SHA256-FreeBSD-{version}-RELEASE-amd64"}, {"base", "https://download.freebsd.org/releases/amd64/amd64/ISO-IMAGES/{version}/"}});
     // Security & networking
+    add("remnux", "REMnux", "Malware analysis toolkit. Download the official virtual appliance, then import its OVA as a disk (not an installer ISO).", "security", "#4B8795",
+        R"(^remnux[-_]?([0-9][0-9.]*)?.*\.(?:ova|qcow2)$)", "",
+        {{"type", "page"}, {"page", "https://docs.remnux.org/install-distro/get-virtual-appliance"}, {"note", "Official appliance page; download and verify using the publisher's instructions. OmaWare copies the disk into an independent stopped VM. Choose matching firmware and keep malware-analysis networking isolated."}});
     add("kali", "Kali Linux", "Security testing tools, ready to use.", "security", "#367BF0",
         R"(^kali-linux-([0-9][0-9.]*)-installer-amd64\.iso$)", "",
         {{"type", "sums"}, {"sums", "https://cdimage.kali.org/current/SHA256SUMS"}, {"base", "https://cdimage.kali.org/current/"}});
@@ -107,6 +112,7 @@ IsoLibrary::IsoLibrary(QObject *parent) : QObject(parent) {
         R"(^Win(?:dows)?11_(?:Client_x64_[A-Za-z-]+_)?([0-9][0-9A-Za-z_]*?)(?:_[A-Z][A-Za-z]*_x64)?(?:v[0-9])?\.iso$)", "win11",
         {{"type", "microsoft"}, {"page", "https://www.microsoft.com/en-us/software-download/windows11"},
          {"note", "Microsoft sometimes refuses automated downloads from some networks. If that happens, download it on Microsoft's website and save it in your ISO folder."}});
+    applianceFolder_ = Paths::root() + "/appliances";
     setFolder(Paths::isos());
 }
 IsoLibrary::~IsoLibrary() {
@@ -121,6 +127,7 @@ IsoLibrary::~IsoLibrary() {
 QString IsoLibrary::root() const { return Paths::root(); }
 void IsoLibrary::setFolder(const QString &folder) {
     folder_ = folder;
+    applianceFolder_ = QFileInfo(folder).absolutePath() + "/appliances";
     QDir().mkpath(folder_);
     rescan();
 }
@@ -162,9 +169,16 @@ QVariantMap IsoLibrary::identify(const QString &name) const {
 void IsoLibrary::rescan() {
     QVariantList rows;
     QHash<QString, QString> newest;
-    const auto entries = QDir(folder_).entryInfoList({"*.iso", "*.ISO"}, QDir::Files | QDir::NoSymLinks, QDir::Name);
+    auto entries = QDir(folder_).entryInfoList({"*.iso", "*.ISO", "*.qcow2", "*.QCOW2", "*.ova", "*.OVA"}, QDir::Files | QDir::NoSymLinks, QDir::Name);
+    if (QDir(folder_).absolutePath() != QDir(applianceFolder_).absolutePath())
+        entries += QDir(applianceFolder_).entryInfoList({"*.qcow2", "*.QCOW2", "*.ova", "*.OVA"}, QDir::Files | QDir::NoSymLinks, QDir::Name);
+    QSet<QString> seen;
     for (const auto &info : entries) {
+        if (seen.contains(info.fileName())) continue;
+        seen.insert(info.fileName());
         auto row = identify(info.fileName());
+        row["type"] = ApplianceImport::mediaType(info.fileName());
+        row["format"] = info.suffix().toLower();
         const auto source = row["source"].toString(), version = row["version"].toString();
         if (!source.isEmpty() && (!newest.contains(source) || newer(version, newest[source]))) newest[source] = version;
         row["name"] = info.fileName(); row["path"] = info.absoluteFilePath(); row["size"] = double(info.size());
@@ -676,7 +690,7 @@ namespace {
 // Only plain .iso files directly inside the folder, never links or anything being downloaded.
 bool deletable(const QString &folder, const QString &name, const QStringList &busy) {
     const QFileInfo info(folder + "/" + name);
-    return QFileInfo(name).fileName() == name && name.endsWith(".iso", Qt::CaseInsensitive) && !info.isSymLink() && info.isFile()
+    return QFileInfo(name).fileName() == name && !ApplianceImport::mediaType(name).isEmpty() && !info.isSymLink() && info.isFile()
         && !busy.contains(name) && !busy.contains(name + ".bz2");
 }
 }
@@ -685,8 +699,16 @@ int IsoLibrary::removeAll(const QStringList &names) {
     QStringList busy;
     for (auto job : jobs_) busy << job->file;
     int removed = 0;
-    for (const auto &name : names)
-        if (deletable(folder_, name, busy) && QFile::remove(folder_ + "/" + name)) ++removed;
+    for (const auto &name : names) {
+        for (const auto &entry : files_) {
+            const auto row = entry.toMap();
+            if (row["name"].toString() != name) continue;
+            const auto folder = QFileInfo(row["path"].toString()).absolutePath();
+            if ((folder == QDir(folder_).absolutePath() || folder == QDir(applianceFolder_).absolutePath())
+                && deletable(folder, name, busy) && QFile::remove(folder + "/" + name)) ++removed;
+            break;
+        }
+    }
     rescan();
     return removed;
 }
@@ -718,19 +740,25 @@ bool IsoLibrary::importFiles(const QVariantList &urls) {
     if (import_) { emit imported({}, false, "An ISO is still being copied. Try again when it's done."); return false; }
     QDir().mkpath(folder_);
     auto job = std::make_shared<Import>();
-    const auto here = QFileInfo(folder_).canonicalFilePath();
     for (const auto &value : urls) {
         const QUrl url(value.toString());
         const QFileInfo info(url.isLocalFile() ? url.toLocalFile() : value.toString());
-        if (!info.isFile() || info.suffix().compare("iso", Qt::CaseInsensitive) != 0) { job->skipped << (info.fileName().isEmpty() ? value.toString() : info.fileName()); continue; }
+        const auto type = ApplianceImport::mediaType(info.fileName());
+        if (info.isSymLink() || !info.isFile() || type.isEmpty()) { job->skipped << (info.fileName().isEmpty() ? value.toString() : info.fileName()); continue; }
+        const auto destination = type == "iso" ? folder_ : applianceFolder_;
+        const bool created = !QFileInfo::exists(destination);
+        if (!QDir().mkpath(destination)) { job->error = "Could not create media folder."; continue; }
+        // Agent provisioning refuses shared-writable libraries, which a umask of 002 would otherwise create.
+        if (created && type != "iso") QFile::setPermissions(destination, QFile::ReadOwner | QFile::WriteOwner | QFile::ExeOwner);
+        const auto here = QFileInfo(destination).canonicalFilePath();
         if (info.canonicalPath() == here) { job->already << info.absoluteFilePath(); continue; }
         // The same file (or one with the same name and size) is already in the folder.
-        const QFileInfo existing(folder_ + "/" + info.fileName());
-        if (existing.isFile() && (sameFile(existing.filePath(), info.filePath()) || existing.size() == info.size())) { job->already << existing.absoluteFilePath(); continue; }
-        const auto name = freeName(folder_, info.fileName());
-        const auto target = folder_ + "/" + name;
+        const QFileInfo existing(destination + "/" + info.fileName());
+        if (!existing.isSymLink() && existing.isFile() && (sameFile(existing.filePath(), info.filePath()) || (type == "iso" && existing.size() == info.size()))) { job->already << existing.absoluteFilePath(); continue; }
+        const auto name = freeName(destination, info.fileName());
+        const auto target = destination + "/" + name;
         // On the same disk a hard link is instant and shares the space; otherwise copy it.
-        if (::link(QFile::encodeName(info.absoluteFilePath()).constData(), QFile::encodeName(target).constData()) == 0) { job->paths << target; ++job->linked; continue; }
+        if (type == "iso" && ::link(QFile::encodeName(info.absoluteFilePath()).constData(), QFile::encodeName(target).constData()) == 0) { job->paths << target; ++job->linked; continue; }
         job->from << info.absoluteFilePath(); job->to << target; job->names << name; job->total += info.size();
     }
     if (job->total > 0 && job->total > QStorageInfo(folder_).bytesAvailable()) {
@@ -744,7 +772,8 @@ bool IsoLibrary::importFiles(const QVariantList &urls) {
         for (int i = 0; i < job->from.size() && !job->cancel; ++i) {
             job->current = i;
             QFile in(job->from[i]), out(job->to[i] + ".part");
-            if (!in.open(QIODevice::ReadOnly) || !out.open(QIODevice::WriteOnly)) { job->error = QString("Couldn't copy %1: %2").arg(job->names[i], in.isOpen() ? out.errorString() : in.errorString()); return; }
+            if (!in.open(QIODevice::ReadOnly) || !out.open(QIODevice::WriteOnly | QIODevice::NewOnly)) { job->error = QString("Couldn't copy %1: %2").arg(job->names[i], in.isOpen() ? out.errorString() : in.errorString()); return; }
+            out.setPermissions(QFile::ReadOwner | QFile::WriteOwner);
             QString failure;
             while (!job->cancel) {
                 const auto n = in.read(buffer.data(), buffer.size());

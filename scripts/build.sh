@@ -38,21 +38,21 @@ case $family in
             qml6-module-qtquick-controls qml6-module-qtquick-layouts qml6-module-qtquick-window
             qml6-module-qtquick-dialogs qml6-module-qtqml-workerscript qml6-module-qtquick-templates
             libvirt-dev libvirt-daemon-system libvirt-clients qemu-system-x86 qemu-utils ovmf swtpm virtinst openssh-client libcrypt-dev
-            libtomlplusplus-dev zlib1g-dev libjpeg-dev libpng-dev policykit-1) ;;
+            libtomlplusplus-dev libarchive-dev zlib1g-dev libjpeg-dev libpng-dev policykit-1) ;;
     fedora|rhel|centos|rocky|almalinux)
         installer=(sudo dnf install -y)
         packages=(gcc-c++ cmake ninja-build pkgconf-pkg-config git python3 qt6-qtbase-devel
             qt6-qtdeclarative-devel qt6-qtwayland libvirt-devel libvirt-daemon-kvm qemu-kvm qemu-img
-            edk2-ovmf swtpm virt-install openssh-clients libxcrypt-devel tomlplusplus-devel zlib-devel libjpeg-turbo-devel libpng-devel polkit) ;;
+            edk2-ovmf swtpm virt-install openssh-clients libxcrypt-devel tomlplusplus-devel libarchive-devel zlib-devel libjpeg-turbo-devel libpng-devel polkit) ;;
     arch|endeavouros|manjaro|omarchy)
         installer=(sudo pacman -S --needed --noconfirm)
         packages=(base-devel cmake ninja pkgconf git python qt6-base qt6-declarative qt6-wayland libvirt
-            qemu-desktop edk2-ovmf swtpm virt-install openssh libxcrypt tomlplusplus zlib libjpeg-turbo libpng polkit) ;;
+            qemu-desktop edk2-ovmf swtpm virt-install openssh libxcrypt tomlplusplus libarchive zlib libjpeg-turbo libpng polkit) ;;
     opensuse*|suse|sles)
         installer=(sudo zypper install -y)
         packages=(gcc-c++ cmake ninja pkgconf git python3 qt6-base-devel qt6-declarative-devel
             qt6-wayland libvirt-devel libvirt-daemon-qemu qemu-x86 qemu-tools qemu-ovmf-x86_64 swtpm virt-install openssh-clients libxcrypt-devel
-            tomlplusplus-devel zlib-devel libjpeg8-devel libpng16-devel polkit) ;;
+            tomlplusplus-devel libarchive-devel zlib-devel libjpeg8-devel libpng16-devel polkit) ;;
     *) installer=(); packages=() ;;
 esac
 if [[ $install_deps == 1 ]]; then
@@ -62,7 +62,7 @@ if [[ $install_deps == 1 ]]; then
 fi
 missing=()
 for tool in cmake ninja pkg-config git cc c++ python3; do command -v "$tool" >/dev/null || missing+=("$tool"); done
-for module in Qt6Quick libvirt tomlplusplus; do pkg-config --exists "$module" 2>/dev/null || missing+=("$module (development files)"); done
+for module in Qt6Quick libvirt tomlplusplus libarchive; do pkg-config --exists "$module" 2>/dev/null || missing+=("$module (development files)"); done
 if [[ ${#missing[@]} -gt 0 ]]; then
     printf 'Missing: %s\n' "${missing[*]}" >&2
     [[ ${#installer[@]} -gt 0 ]] && printf 'Install them with:  %s --install-deps\n' "$0" >&2
