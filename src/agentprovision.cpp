@@ -187,6 +187,7 @@ bool AgentProvision::verifyEnvelope(const QString &op, const QVariantMap &input,
     if (received["provisionEpoch"].typeId() != QMetaType::ULongLong || !(received["provisionEpoch"].toULongLong() & 1)) { error = "Missing provisioning access epoch."; return false; }
     received.remove("provisionEpoch");
     QVariantMap prepared;
-    if (!prepare(tool,args,networks,prepared,error) || prepared != received) { error = "Approved provisioning media, arguments or network identity changed."; return false; }
+    if (!prepare(tool,args,networks,prepared,error)) return false;
+    if (prepared != received) { error = "Approved provisioning media, arguments or network identity changed."; return false; }
     return true;
 }

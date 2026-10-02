@@ -213,16 +213,19 @@ void VmWorker::manage(QString op, QVariantMap in) {
     // Provisioning envelopes are prepared at the bridge and reconstructed against fresh
     // libvirt ownership/availability here, before ANY storage or network writes.
     const bool provisioning = in.contains("provisionTool");
+    // Checks compare this untouched copy: a later in["key"] read would insert an empty key into
+    // the live map and make a valid approved request look changed.
+    const QVariantMap envelope = in;
     int provisionMediaFd = -1;
     const auto closeMedia = qScopeGuard([&] { if (provisionMediaFd >= 0) ::close(provisionMediaFd); });
     auto checkProvision = [&]() -> bool {
         if (!provisioning) return true;
-        if (!(provisionEpoch() & 1) || in["provisionEpoch"].typeId() != QMetaType::ULongLong || in["provisionEpoch"].toULongLong() != provisionEpoch()) { done(false,"Agent provisioning authorization was revoked."); return false; }
-        const auto tool = in["provisionTool"].toString();
+        if (!(provisionEpoch() & 1) || envelope["provisionEpoch"].typeId() != QMetaType::ULongLong || envelope["provisionEpoch"].toULongLong() != provisionEpoch()) { done(false,"Agent provisioning authorization was revoked."); return false; }
+        const auto tool = envelope["provisionTool"].toString();
         const auto expectedOp = tool == "create_vm" ? "vm.create" : tool == "create_network" ? "networks.save" : tool == "authorize_network" ? "networks.authorize" : "";
         QString error;
-        const auto args = in["provisionArgs"].toMap();
-        if (!in["agentRequest"].toBool() || op != expectedOp || !AgentProvision::validate(tool,args,error) || args.value("dry_run",false).toBool()) { done(false,"Invalid provisioning envelope or dry-run mutation."); return false; }
+        const auto args = envelope["provisionArgs"].toMap();
+        if (!envelope["agentRequest"].toBool() || op != expectedOp || !AgentProvision::validate(tool,args,error) || args.value("dry_run",false).toBool()) { done(false,"Invalid provisioning envelope or dry-run mutation."); return false; }
         Connection system(virConnectOpenReadOnly("qemu:///system"),virConnectClose);
         if (!system) { done(false,"Cannot recheck owned host networks."); return false; }
         QString status; const auto choices = NetworkCatalog::discover(conn_,status);
@@ -237,18 +240,18 @@ void VmWorker::manage(QString op, QVariantMap in) {
             networks.append(n); virNetworkFree(all[i]);
         }
         free(all);
-        if (!AgentProvision::verifyEnvelope(op,in,networks,error)) { done(false,error); return false; }
+        if (!AgentProvision::verifyEnvelope(op,envelope,networks,error)) { done(false,error); return false; }
         // Discovery itself may take time; revocation during the checks must also win.
-        if (!(provisionEpoch() & 1) || in["provisionEpoch"].toULongLong() != provisionEpoch()) { done(false,"Agent provisioning authorization was revoked."); return false; }
+        if (!(provisionEpoch() & 1) || envelope["provisionEpoch"].toULongLong() != provisionEpoch()) { done(false,"Agent provisioning authorization was revoked."); return false; }
         return true;
     };
     if (!checkProvision()) return;
     if (op == "vm.create" && in["agentRequest"].toBool() && in["sourceMode"] != "cloud" && !provisioning) { done(false,"Agent local VM creation requires a provisioning envelope."); return; }
     if (provisioning && op == "vm.create") {
         QVariantMap identity; QString error;
-        const auto args = in["provisionArgs"].toMap();
+        const auto args = envelope["provisionArgs"].toMap();
         provisionMediaFd = AgentProvision::openMedia(args["media_kind"].toString(),args["media"].toString(),identity,error);
-        if (provisionMediaFd < 0 || identity != in["mediaIdentity"].toMap()) { done(false,"Approved media changed before worker dispatch."); return; }
+        if (provisionMediaFd < 0 || identity != envelope["mediaIdentity"].toMap()) { done(false,"Approved media changed before worker dispatch."); return; }
     }
     if (op == "stats.all") {
         // One bulk call covers every running VM; rates are derived in the UI from consecutive samples.
@@ -511,7 +514,7 @@ void VmWorker::manage(QString op, QVariantMap in) {
         if (!QFileInfo(source).isAbsolute() || !QFileInfo(source).isFile() || !QFileInfo(source).isReadable()) { done(false, "Choose a readable local ISO or disk image."); return; }
         // Cloud images only come from OmaWare's own image folder, where they were checked against their publisher's checksum.
         if (cloud && QFileInfo(source).canonicalPath() != QFileInfo(CloudImages::folder()).canonicalFilePath()) { done(false, "Cloud images must be in OmaWare's image folder."); return; }
-        const auto seed = in["seed"].toMap();
+        const auto seed = in.value("seed").toMap();
         if (cloud && (seed["userData"].toByteArray().size() > 262144 || seed["metaData"].toByteArray().isEmpty() || seed["networkConfig"].toByteArray().size() > 65536)) { done(false, "The first-boot setup is missing or too large."); return; }
         auto parent = in.value("location").toString().isEmpty() ? Paths::vms() : in.value("location").toString();
         QString storageError;
