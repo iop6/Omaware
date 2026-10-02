@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.5.2 (2026-10-01)
+
+- Fixed Windows 11 (UEFI) VMs failing to create with "Unable to find 'efi' firmware that is compatible with the current configuration" on systems whose UEFI firmware has no preloaded Microsoft keys, such as Arch. OmaWare now picks Secure Boot firmware from what the system actually has: with Microsoft's keys if available, otherwise without them, otherwise plain UEFI.
+
 ## 1.5.1 (2026-10-01)
 
 - Fixed AI-agent `create_vm` failing right after approval with "Approved provisioning media, arguments or network identity changed." for every request.
