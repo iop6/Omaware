@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.6.0-dev
+
+- **Delete VM…** in a VM's right-click menu (and its Details menu) deletes the VM with its disks, all its snapshots, restored disks, pending changes and its UEFI/TPM state, after you type its name. Running VMs are powered off first. Installation media, disks OmaWare didn't make for the VM and disks another VM uses are kept. Agents can't delete VMs.
+
 ## 1.5.2 (2026-10-01)
 
 - Fixed Windows 11 (UEFI) VMs failing to create with "Unable to find 'efi' firmware that is compatible with the current configuration" on systems whose UEFI firmware has no preloaded Microsoft keys, such as Arch. OmaWare now picks Secure Boot firmware from what the system actually has: with Microsoft's keys if available, otherwise without them, otherwise plain UEFI.
