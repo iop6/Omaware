@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.8.1 (2026-10-03)
+
+- Fixed OmaWare not starting again after an update installed from the app when no VMs were running.
+
 ## 1.8.0 (2026-10-03)
 
 - Network map cables run like circuit-board traces: straight runs with rounded corners, a port of their own at both ends, nested so they don't cross, and never through another device. Ports have link lights that flicker with traffic.
