@@ -93,7 +93,7 @@ AppDialog {
                         id: adapterModel; objectName: "adapterModel"; Layout.fillWidth: true
                         model: ["virtio", "e1000e", "e1000", "rtl8139"]; enabled: !dialog.applying
                     }
-                    Label { text: "Virtio works well with modern Linux guests. Other models provide emulated hardware for guests without virtio drivers."; color: theme.colors.muted; font.pixelSize: Math.round((11) * theme.textScale); wrapMode: Text.WordWrap; Layout.fillWidth: true }
+                    Label { text: "Virtio for modern Linux; the others for guests without virtio drivers."; color: theme.colors.muted; font.pixelSize: Math.round((11) * theme.textScale); wrapMode: Text.WordWrap; Layout.fillWidth: true }
                 }
                 AppCheckBox { id: connectAtStart; objectName: "connectAtStart"; text: "Connect adapter at next startup"; enabled: !dialog.applying }
             }

@@ -177,7 +177,7 @@ EditorDialog {
             DetailRow { label: "Source"; value: source.text; Layout.fillWidth: true }
             DetailRow { label: "Destination"; value: location.text || dialog.caps.storage || ""; Layout.fillWidth: true }
         }
-        Label { text: "The VM starts out stopped. Imported disks are copied into a new VM directory."; color: theme.colors.muted; Layout.fillWidth: true; wrapMode: Text.WordWrap }
+        Label { text: "The VM starts stopped. Imported disks are copied."; color: theme.colors.muted; Layout.fillWidth: true; wrapMode: Text.WordWrap }
         AppButton { objectName: "backToSetup"; text: "Back to settings"; onClicked: dialog.reviewing = false }
     }
     Label { visible: dialog.caps.virtInstall === false; text: "Creation needs virt-install and libosinfo on this host. Install these dependencies, then reopen the wizard."; color: theme.colors.warning; Layout.fillWidth: true; wrapMode: Text.WordWrap }

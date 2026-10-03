@@ -63,8 +63,8 @@ ColumnLayout {
         Layout.fillWidth: true
         ColumnLayout { Layout.fillWidth: true; spacing: 4
             Label { text: "Networks"; font.pixelSize: Math.round((28) * theme.textScale); font.weight: Font.DemiBold; Layout.fillWidth: true }
-            Label { text: page.mapView ? "How your VMs connect. Drag a VM onto a network to connect it; pull a cable to disconnect it." : "Networks your VMs can share"; color: theme.colors.muted; font.pixelSize: Math.round((12) * theme.textScale); Layout.fillWidth: true; wrapMode: Text.WordWrap }
         }
+        HelpButton { topic: page.mapView ? "the-network-map" : "networks/connection-types" }
         AppButton { iconName: "refresh"; hint: "Refresh networks"; enabled: !backend.busy; onClicked: page.refresh() }
         AppButton { objectName: "newNetwork"; text: "New network"; iconName: "plus"; tone: "primary"; enabled: !backend.busy; onClicked: networkEditor.openFor({}) }
     }
@@ -99,7 +99,7 @@ ColumnLayout {
                 ColumnLayout { id: emptyNetworks; anchors.fill: parent; anchors.margins: 22; spacing: 10
                     AppIcon { name: "network"; color: theme.colors.accent; width: 28; height: 28 }
                     Label { text: "No shared networks yet"; font.pixelSize: Math.round((20) * theme.textScale); font.weight: Font.DemiBold; Layout.fillWidth: true; wrapMode: Text.WordWrap }
-                    Label { text: "Each VM can already reach the internet on its own private connection. Create a network when you want VMs to see each other, or to keep them off the internet."; color: theme.colors.muted; Layout.fillWidth: true; wrapMode: Text.WordWrap }
+                    Label { text: "Create one so VMs can reach each other."; color: theme.colors.muted; Layout.fillWidth: true; wrapMode: Text.WordWrap }
                     AppButton { text: "New network"; iconName: "plus"; tone: "primary"; onClicked: networkEditor.openFor({}) }
                 }
             }
@@ -196,13 +196,7 @@ ColumnLayout {
                     }
                 }
             }
-            AppDisclosure {
-                objectName: "networkHelp"; title: "Which kind of network do I need?"
-                Label { text: "• Internet + VMs: VMs can reach each other, this computer and the internet. The usual choice."; color: theme.colors.muted; wrapMode: Text.WordWrap; Layout.fillWidth: true }
-                Label { text: "• This computer + VMs: like above, but without the internet. Good for testing servers from your computer."; color: theme.colors.muted; wrapMode: Text.WordWrap; Layout.fillWidth: true }
-                Label { text: "• VMs only: VMs can only reach each other. Nothing gets in or out; OmaWare checks this live."; color: theme.colors.muted; wrapMode: Text.WordWrap; Layout.fillWidth: true }
-                Label { text: "Without any network, each VM can still use its own private internet connection. Creating a network never changes your computer's own connection."; color: theme.colors.muted; font.pixelSize: Math.round((11) * theme.textScale); Layout.fillWidth: true; wrapMode: Text.WordWrap }
-            }
+            AppButton { objectName: "networkHelp"; text: "Which kind of network do I need?"; iconName: "help"; tone: "quiet"; onClicked: helpCenter.show("networks/connection-types") }
         }
     }
     EditorDialog {
@@ -231,10 +225,12 @@ ColumnLayout {
             candidates = backend.domains.filter(function(vm) { return vm.owned }).map(function(vm) { return {uuid: vm.uuid, name: vm.name, stateCode: vm.stateCode, contained: vm.contained} })
             open()
         }
+        // Colors are looked up by name, so a theme change recolors the choices instead of rebuilding
+        // them: Qt 6.4's layouts can crash when a Repeater rebuilds while the dialog is laid out.
         readonly property var modes: [
-            {key: "nat", icon: "globe", title: "Internet", text: "VMs can reach each other, this computer and the internet.", ink: theme.colors.warning},
-            {key: "hostonly", icon: "monitor", title: "This computer", text: "VMs can reach each other and this computer. No internet.", ink: theme.colors.accent},
-            {key: "isolated", icon: "shield", title: "Only each other", text: "VMs can only reach each other. Nothing gets in or out.", ink: theme.colors.success}]
+            {key: "nat", icon: "globe", title: "Internet", text: "VMs can reach each other, this computer and the internet.", ink: "warning"},
+            {key: "hostonly", icon: "monitor", title: "This computer", text: "VMs can reach each other and this computer. No internet.", ink: "accent"},
+            {key: "isolated", icon: "shield", title: "Only each other", text: "VMs can only reach each other. Nothing gets in or out.", ink: "success"}]
         Label { text: "Name" }
         AppField { id: networkName; objectName: "hostNetworkName"; Layout.fillWidth: true; placeholderText: "For example: Home lab"; readOnly: networkEditor.editing }
         Label { text: "What can VMs on it reach?" }
@@ -251,18 +247,19 @@ ColumnLayout {
                     required property var modelData
                     required property int index
                     readonly property bool picked: networkEditor.modeIndex === index
+                    readonly property color ink: theme.colors[modelData.ink]
                     objectName: "networkMode_" + modelData.key
                     Layout.fillWidth: true; Layout.preferredWidth: 1; Layout.fillHeight: true; Layout.preferredHeight: choiceColumn.implicitHeight + 24
                     radius: 10
-                    color: picked ? Qt.rgba(Qt.lighter(modelData.ink, 1).r, Qt.lighter(modelData.ink, 1).g, Qt.lighter(modelData.ink, 1).b, .12) : theme.colors.field
+                    color: picked ? Qt.rgba(choice.ink.r, choice.ink.g, choice.ink.b, .12) : theme.colors.field
                     border.width: picked ? 2 : 1
-                    border.color: picked ? modelData.ink : choiceHover.hovered ? theme.colors.muted : theme.colors.border
+                    border.color: picked ? choice.ink : choiceHover.hovered ? theme.colors.muted : theme.colors.border
                     Accessible.role: Accessible.RadioButton
                     Accessible.name: modelData.title + ". " + modelData.text
                     Accessible.checked: picked
                     ColumnLayout {
                         id: choiceColumn; anchors.fill: parent; anchors.margins: 12; spacing: 6
-                        AppIcon { name: choice.modelData.icon; color: choice.modelData.ink; width: 22; height: 22 }
+                        AppIcon { name: choice.modelData.icon; color: choice.ink; width: 22; height: 22 }
                         Label { text: choice.modelData.title; font.weight: Font.DemiBold; font.pixelSize: Math.round(14 * theme.textScale); Layout.fillWidth: true }
                         Label { text: choice.modelData.text; color: theme.colors.muted; font.pixelSize: Math.round(11 * theme.textScale); wrapMode: Text.WordWrap; Layout.fillWidth: true }
                     }
@@ -287,7 +284,7 @@ ColumnLayout {
                     onToggled: { let next = Object.assign({}, networkEditor.chosenVms); if (checked) next[modelData.uuid] = true; else delete next[modelData.uuid]; networkEditor.chosenVms = next }
                 }
             }
-            Label { text: "Each gets an extra connection to the new network, straight away if it's running. Its other connections stay as they are."; color: theme.colors.muted; font.pixelSize: Math.round(11 * theme.textScale); wrapMode: Text.WordWrap; Layout.fillWidth: true }
+
         }
         AppDisclosure {
             id: networkAddresses; objectName: "networkAddresses"; title: "Address settings"; visible: networkEditor.modeIndex !== 2
@@ -300,13 +297,13 @@ ColumnLayout {
                 AppField { id: dhcpEnd; Layout.fillWidth: true; placeholderText: "Last address (automatic)" }
             }
             AppCheckBox { id: autostart; text: "Start this network when the computer starts" }
-            Label { text: "Your computer takes the first address in the subnet. Subnets already in use are refused."; color: theme.colors.muted; font.pixelSize: Math.round(11 * theme.textScale); wrapMode: Text.WordWrap; Layout.fillWidth: true }
+
         }
         Label {
-            text: networkEditor.modeIndex === 2 ? "VMs on it get no automatic addresses: give them fixed addresses on one subnet, or run a DHCP server in one of them. OmaWare checks the isolation live once it's running." : ""
+            text: networkEditor.modeIndex === 2 ? "No automatic addresses here: give the VMs fixed ones, or run DHCP in one of them." : ""
             visible: text !== ""; Layout.fillWidth: true; wrapMode: Text.WordWrap; color: theme.colors.muted; font.pixelSize: Math.round(11 * theme.textScale)
         }
-        Label { visible: !networkEditor.editing; text: "You'll be asked for your password once, so your VMs are allowed to join the new network."; Layout.fillWidth: true; wrapMode: Text.WordWrap; color: theme.colors.muted; font.pixelSize: Math.round(11 * theme.textScale) }
+        Label { visible: !networkEditor.editing; text: "You'll be asked for your password once."; Layout.fillWidth: true; wrapMode: Text.WordWrap; color: theme.colors.muted; font.pixelSize: Math.round(11 * theme.textScale) }
         onSubmitted: {
             page.pendingVms = Object.keys(chosenVms)
             execute("networks.save", {uuid: original.uuid || "", revision: original.revision || "", name: networkName.text.trim() || "Network", mode: ["nat", "hostonly", "isolated"][modeIndex],

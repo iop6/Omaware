@@ -14,7 +14,7 @@ OmaWare is a virtual machine manager for Linux desktops. It runs QEMU/KVM virtua
 - **Monitor:** live CPU, memory, disk and network use for your computer and every VM.
 - **Organized workspace:** favorites, folders, tags, search, a command prompt, keyboard shortcuts, and actions on several VMs at once.
 - **Pause on close:** running VMs are always paused when OmaWare closes (updates included) and can be resumed next time.
-- **Themes:** follow Omarchy, dark, light or hacker (green on black), with larger text and reduced-motion options.
+- **Themes:** follow your Omarchy theme live, or pick one of 15 built-in themes (Dark, Light, Hacker, Tokyo Night, Catppuccin, Nord, Gruvbox, Rosé Pine, Dracula, Everforest, Kanagawa, Solarized Light, Synthwave, Graphite and more) in Settings, with larger text and reduced-motion options.
 
 ## Install
 

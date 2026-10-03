@@ -37,8 +37,20 @@ ApplicationWindow {
             Connections { target: theme; function onChanged() { backdrop.requestPaint() } }
             onPaint: {
                 const ctx = getContext("2d"); ctx.reset(); ctx.fillStyle = String(theme.colors.border)
-                // Hacker mode gets CRT scanlines; other palettes a dot grid.
-                if (theme.mode === "hacker") { ctx.globalAlpha = .35; for (let y = 0; y < height; y += 3) ctx.fillRect(0, y, width, 1); return }
+                // Each theme picks its texture: CRT scanlines, a neon grid, a dot grid, or nothing.
+                const texture = theme.texture
+                if (texture === "none") return
+                if (texture === "scanlines") { ctx.globalAlpha = .35; for (let y = 0; y < height; y += 3) ctx.fillRect(0, y, width, 1); return }
+                if (texture === "grid") {
+                    // A glow rising from the bottom edge, under faint grid lines.
+                    const glow = ctx.createLinearGradient(0, height, 0, height * .45)
+                    glow.addColorStop(0, Qt.rgba(Qt.lighter(theme.colors.accent, 1).r, Qt.lighter(theme.colors.accent, 1).g, Qt.lighter(theme.colors.accent, 1).b, .12)); glow.addColorStop(1, "transparent")
+                    ctx.fillStyle = glow; ctx.fillRect(0, 0, width, height)
+                    ctx.fillStyle = String(theme.colors.border); ctx.globalAlpha = .45
+                    for (let x = 0; x < width; x += 44) ctx.fillRect(x, 0, 1, height)
+                    for (let y = 0; y < height; y += 44) ctx.fillRect(0, y, width, 1)
+                    return
+                }
                 for (let y = 12; y < height; y += 22) for (let x = 12; x < width; x += 22) ctx.fillRect(x, y, 2, 2)
             }
         }
@@ -63,6 +75,7 @@ ApplicationWindow {
         sidebarRail = !!preferences.get("sidebarRail", false)
         try { collapsedGroups = JSON.parse(String(preferences.get("collapsedGroups", "{}"))) || ({}) } catch (e) { collapsedGroups = ({}) }
         theme.setMode(String(preferences.get("theme", theme.omarchyAvailable ? "omarchy" : "dark")))
+        syncThemeCommands()
         theme.setTextScale(Number(preferences.get("textScale", 1)))
         theme.setReducedMotion(!!preferences.get("reducedMotion", false))
         const remembered = String(preferences.get("selectedVm", ""))
@@ -260,25 +273,34 @@ ApplicationWindow {
             {key: "monitor", title: "Open system monitor", detail: "Live CPU, RAM, disk and network across every VM", icon: "cpu", keywords: "top htop stats fleet", shortcut: "Ctrl+2"},
             {key: "log", title: "Toggle log drawer", detail: "Tail of every operation, with grep", icon: "history", keywords: "tail events console", shortcut: "Ctrl+`"},
             {key: "keys", title: "Keyboard map", detail: "Every shortcut in one place", icon: "keyboard", keywords: "help shortcuts cheatsheet", shortcut: "?"},
-            {key: "theme:omarchy", title: "Theme: follow Omarchy", icon: "monitor", keywords: "appearance palette colors"},
-            {key: "theme:dark", title: "Theme: dark", icon: "moon", keywords: "appearance palette colors"},
-            {key: "theme:light", title: "Theme: light", icon: "sun", keywords: "appearance palette colors"},
-            {key: "theme:hacker", title: "Theme: hacker", detail: "Phosphor green on black", icon: "terminal", keywords: "appearance palette colors matrix green crt"},
             {key: "updates", title: "Check for OmaWare updates", detail: "You have " + (Qt.application.version || "this version"), icon: "refresh", keywords: "update upgrade new version release"},
             {key: "isos", title: "Open the ISO Shop", detail: "Download or update Ubuntu, Fedora, Debian, Mint, Arch and more", icon: "store", shortcut: "Ctrl+4", keywords: "download iso image installer ubuntu fedora debian windows update"},
             {key: "testvm", title: "Create diskless test VM", detail: "Firmware-only fixture", icon: "plus", enabled: backend.connected && !backend.busy, keywords: "fixture sandbox"},
             {key: "networks", title: "Open Networks", detail: "Connections and virtual switches", icon: "network", shortcut: "Ctrl+3"},
             {key: "activity", title: "Show activity history", detail: "Recent operations, including previous sessions", icon: "history"},
-            {key: "appearance", title: "Settings", detail: "Text size, reduced motion, theme, AI agents and what happens to VMs on close", icon: "settings", keywords: "appearance accessibility preferences close quit ai agents claude mcp"},
+            {key: "appearance", title: "Settings", detail: "Text size, theme, updates and AI agents", icon: "settings", keywords: "appearance accessibility preferences close quit ai agents claude mcp"},
             {key: "resumeall", title: "Resume all paused VMs", detail: backend.domains.filter(function(row) { return row.owned && row.stateCode === 3 }).length + " paused", icon: "play", enabled: backend.connected && !backend.busy && backend.domains.some(function(row) { return row.owned && row.stateCode === 3 }), keywords: "unpause continue wake bulk"},
             {key: "pauseall", title: "Pause all running VMs", detail: backend.domains.filter(function(row) { return row.owned && row.stateCode === 1 }).length + " running", icon: "pause", enabled: backend.connected && !backend.busy && backend.domains.some(function(row) { return row.owned && row.stateCode === 1 }), keywords: "suspend freeze bulk"},
             {key: "reconnect", title: "Reconnect local VM session", detail: "Refresh the backend connection", icon: "refresh", enabled: !backend.busy}
         ]
+        for (const t of helpCenter.topics) result.push({key: "help:" + t.id, title: "Help: " + t.title, detail: t.group, icon: "help", keywords: "help guide how wiki docs " + t.id.replace(/[-\/]/g, " ")})
+        for (const t of themeCommands) result.push(t)
         for (let machine of backend.domains) result.push({key: "vm:" + machine.uuid, title: "Open " + vmLabel(machine), detail: machine.state, icon: "monitor", target: machine.uuid})
         return result
     }
+    function setTheme(key) { theme.setMode(key); preferences.set("theme", key) }
+    // The command prompt's theme entries. Rebuilt only when the list of themes changes, not on every
+    // theme change, so the prompt's list isn't recreated while it is being laid out.
+    property var themeCommands: []
+    function syncThemeCommands() {
+        const next = theme.themes.map(function(t) { return {key: "theme:" + t.key, title: "Theme: " + t.title, detail: t.detail, icon: t.key === "omarchy" ? "monitor" : t.light ? "sun" : "palette", keywords: "appearance palette colors theme " + t.key.replace(/-/g, " ")} })
+        if (next.map(function(c) { return c.key }).join("|") !== themeCommands.map(function(c) { return c.key }).join("|")) themeCommands = next
+    }
+    Connections { target: theme; function onChanged() { root.syncThemeCommands() } }
     function runCommand(command) {
         if (command.enabled === false) return
+        if (command.key.indexOf("theme:") === 0) { setTheme(command.key.slice(6)); return }
+        if (command.key.indexOf("help:") === 0) { helpCenter.show(command.key.slice(5)); return }
         if (command.uuid && command.uuid !== selectedUuid) { operationError = "The selected VM changed. Open Actions and choose again."; return }
         if (command.target) { navigation = "library"; selectedUuid = command.target; detailsOpen = false; return }
         switch (command.key) {
@@ -298,7 +320,6 @@ ApplicationWindow {
         case "monitor": navigation = "monitor"; break
         case "log": logOpen = !logOpen; break
         case "keys": keyMap.open(); break
-        case "theme:omarchy": case "theme:dark": case "theme:light": case "theme:hacker": { const mode = command.key.split(":")[1]; theme.setMode(mode); preferences.set("theme", mode); break }
         case "testvm": if (backend.connected && !backend.busy) backend.createTest(); break
         case "isos": openShop(); break
         case "updates": openUpdates(true); break
@@ -417,7 +438,9 @@ ApplicationWindow {
     Shortcut { sequence: "Ctrl+Shift+P"; enabled: !display.captured; onActivated: actionPalette.open() }
     Shortcut { sequence: "Ctrl+K"; enabled: !display.captured; onActivated: root.focusSearch() }
     Shortcut { sequence: ":"; enabled: !display.captured; onActivated: actionPalette.open() }
-    Shortcut { sequences: ["?", "F1"]; enabled: !display.captured; onActivated: keyMap.open() }
+    Shortcut { sequences: ["?"]; enabled: !display.captured; onActivated: keyMap.open() }
+    Shortcut { sequences: ["F1"]; enabled: !display.captured; onActivated: helpCenter.show("") }
+    HelpCenter { id: helpCenter; guide: preferences }
     Shortcut { sequence: "Ctrl+`"; enabled: !display.captured; onActivated: root.logOpen = !root.logOpen }
     Shortcut { sequence: "Ctrl+1"; enabled: !display.captured; onActivated: root.navigation = "library" }
     Shortcut { sequence: "Ctrl+B"; enabled: !display.captured; onActivated: root.setSidebarRail(!root.sidebarRail) }
@@ -800,6 +823,7 @@ ApplicationWindow {
                         visible: !root.sidebarRail
                         Layout.fillWidth: true; spacing: 2
                         AppButton { objectName: "openSettings"; text: "Settings"; tone: "quiet"; leftPadding: 0; rightPadding: 2; implicitWidth: 74; font.pixelSize: Math.round((11) * theme.textScale); hint: theme.status; onClicked: appearanceInfo.open() }
+                        AppButton { objectName: "openHelp"; text: "Help"; tone: "quiet"; leftPadding: 2; rightPadding: 2; implicitWidth: 48; font.pixelSize: Math.round((11) * theme.textScale); hint: "Everything OmaWare can do · F1"; onClicked: helpCenter.show("") }
                         Item { Layout.fillWidth: true }
                         AppButton {
                             objectName: "checkUpdates"
@@ -811,16 +835,12 @@ ApplicationWindow {
                             onClicked: root.openUpdates(true)
                             Rectangle { visible: parent.waiting; width: 7; height: 7; radius: 4; color: theme.colors.accent; anchors.right: parent.right; anchors.top: parent.top; anchors.margins: 5 }
                         }
-                        Repeater {
-                            model: [{label: "Follow Omarchy", mode: "omarchy", icon: "monitor"}, {label: "Dark appearance", mode: "dark", icon: "moon"}, {label: "Light appearance", mode: "light", icon: "sun"}, {label: "Hacker appearance · green on black", mode: "hacker", icon: "terminal"}].filter(function(m) { return m.mode !== "omarchy" || theme.omarchyAvailable })
-                            AppButton {
-                                required property var modelData
-                                implicitWidth: 32; implicitHeight: 34; leftPadding: 7; rightPadding: 7
-                                iconName: modelData.icon; tone: "quiet"; checked: theme.mode === modelData.mode
-                                ink: checked ? theme.colors.accent : theme.colors.muted
-                                hint: modelData.label
-                                onClicked: { theme.setMode(modelData.mode); preferences.set("theme", modelData.mode) }
-                            }
+                        AppButton {
+                            objectName: "themeButton"
+                            implicitWidth: 32; implicitHeight: 34; leftPadding: 7; rightPadding: 7
+                            iconName: "palette"; tone: "quiet"; ink: theme.colors.muted
+                            hint: "Theme: " + (theme.themes.find(function(t) { return t.key === theme.mode }) || {title: theme.mode}).title + " · change it in Settings"
+                            onClicked: appearanceInfo.open()
                         }
                     }
                     RowLayout {
@@ -1045,7 +1065,7 @@ ApplicationWindow {
                     Layout.fillWidth: true
                     spacing: 8
                     AppIcon { name: "info"; width: 14; height: 14; color: theme.colors.muted }
-                    Label { text: root.selected && root.selected.diskless ? "This test VM has no OS. A “no bootable device” message is expected." : "Closing OmaWare keeps your virtual machines running."; font.pixelSize: Math.round((11) * theme.textScale); color: theme.colors.muted; Layout.fillWidth: true; wrapMode: Text.WordWrap }
+                    Label { visible: text !== ""; text: root.selected && root.selected.diskless ? "This test VM has no OS. A “no bootable device” message is expected." : ""; font.pixelSize: Math.round((11) * theme.textScale); color: theme.colors.muted; Layout.fillWidth: true; wrapMode: Text.WordWrap }
                 }
             }
             MonitorPage {
@@ -1479,7 +1499,7 @@ ApplicationWindow {
     Popup {
         id: appearanceInfo; objectName: "appearanceInfo"
         x: 18; y: Math.max(10, root.height - height - 40)
-        width: 320
+        width: Math.min(400, root.width - 36)
         // Scrolls when it doesn't fit (large text in a small window), instead of being squeezed.
         height: Math.min(implicitHeight, root.height - 50)
         padding: 16
@@ -1491,13 +1511,21 @@ ApplicationWindow {
             implicitHeight: settingsColumn.implicitHeight
             ScrollBar.vertical: AppScrollBar { policy: ScrollBar.AsNeeded }
             ColumnLayout { id: settingsColumn; width: settingsScroll.availableWidth; spacing: 12
-                Label { text: "Settings"; font.weight: Font.DemiBold; Layout.fillWidth: true; wrapMode: Text.WordWrap }
+                RowLayout {
+                    Layout.fillWidth: true
+                    Label { text: "Settings"; font.weight: Font.DemiBold; Layout.fillWidth: true; wrapMode: Text.WordWrap }
+                    HelpButton { topic: "settings-and-themes"; onClicked: appearanceInfo.close() }
+                }
                 Label { text: "Text size" }
                 AppSelect { objectName: "textSize"; Accessible.name: "Interface text size"; Layout.fillWidth: true; model: ["Standard · 100%", "Larger · 115%", "Largest · 130%"]
                     currentIndex: theme.textScale > 1.2 ? 2 : theme.textScale > 1.05 ? 1 : 0
                     onActivated: { const scale = [1, 1.15, 1.3][currentIndex]; theme.setTextScale(scale); preferences.set("textScale", scale) }
                 }
                 AppCheckBox { objectName: "reducedMotion"; text: "Reduce motion"; checked: theme.reducedMotion; Layout.fillWidth: true; onToggled: { theme.setReducedMotion(checked); preferences.set("reducedMotion", checked) } }
+                Label { text: "Theme" }
+                ThemePicker { Layout.fillWidth: true; onPicked: function(key) { root.setTheme(key) } }
+                // Only when the Omarchy palette can't be used.
+                Label { objectName: "themeStatus"; visible: theme.mode === "omarchy" && !theme.status.startsWith("Following"); text: theme.status; color: theme.colors.warning; Layout.fillWidth: true; wrapMode: Text.WordWrap; font.pixelSize: Math.round(10 * theme.textScale) }
                 Label { text: "Storage" }
                 RowLayout {
                     Layout.fillWidth: true; spacing: 6
@@ -1528,24 +1556,22 @@ ApplicationWindow {
                     }
                     AppCheckBox {
                         objectName: "autoUpdateCheck"; visible: !updater.development
-                        text: "Check automatically"
+                        text: "Check daily"
                         Layout.fillWidth: true
                         checked: root.autoUpdate
                         onToggled: { root.autoUpdate = checked; preferences.set("autoUpdateCheck", checked) }
                     }
-                    Label { visible: !updater.development; text: "Once a day, OmaWare asks GitHub whether a new version is out."; color: theme.colors.muted; Layout.fillWidth: true; wrapMode: Text.WordWrap; font.pixelSize: Math.round(10 * theme.textScale) }
                 }
-                Label { text: "When OmaWare closes" }
-                Label { objectName: "closeNote"; text: "Running VMs are paused, including when OmaWare restarts for an update. Paused VMs keep their memory and continue exactly where they were when you resume them, but not after the computer restarts."; color: theme.colors.muted; Layout.fillWidth: true; wrapMode: Text.WordWrap; font.pixelSize: Math.round((11) * theme.textScale) }
-                Label { text: "AI agents" }
+                RowLayout {
+                    Layout.fillWidth: true
+                    Label { text: "AI agents"; Layout.fillWidth: true }
+                    HelpButton { topic: "ai-agents-and-labs"; onClicked: appearanceInfo.close() }
+                }
                 ColumnLayout {
                     objectName: "agentSettings"
                     Layout.fillWidth: true; spacing: 6
                     AppCheckBox { objectName: "agentAccess"; text: "Let AI agents use OmaWare"; Layout.fillWidth: true; checked: agent.enabled; onToggled: agent.enabled = checked }
-                    Label {
-                        text: "Agents such as Claude Code can then see OmaWare's VMs, use their screens, run commands in lab VMs and propose labs. You approve every lab, set its password here, and confirm anything that deletes."
-                        color: theme.colors.muted; Layout.fillWidth: true; wrapMode: Text.WordWrap; font.pixelSize: Math.round(10 * theme.textScale)
-                    }
+                    Label { text: "You approve every lab and anything that deletes."; color: theme.colors.muted; Layout.fillWidth: true; wrapMode: Text.WordWrap; font.pixelSize: Math.round(10 * theme.textScale) }
                     Label { visible: agent.enabled; text: "Connect Claude Code by running:"; font.pixelSize: Math.round(11 * theme.textScale) }
                     RowLayout {
                         visible: agent.enabled
@@ -1557,8 +1583,8 @@ ApplicationWindow {
                     }
                     Label { visible: agent.error !== ""; text: agent.error; color: theme.colors.danger; Layout.fillWidth: true; wrapMode: Text.WordWrap; font.pixelSize: Math.round(10 * theme.textScale) }
                 }
-                Label { text: theme.status; color: theme.colors.muted; Layout.fillWidth: true; wrapMode: Text.WordWrap; font.pixelSize: Math.round((12) * theme.textScale)}
-                Label { text: ": opens the command prompt. ? shows every shortcut."; color: theme.colors.muted; Layout.fillWidth: true; wrapMode: Text.WordWrap; font.pixelSize: Math.round((11) * theme.textScale)}
+
+                Label { text: "F1 help  ·  : commands  ·  ? shortcuts"; color: theme.colors.muted; Layout.fillWidth: true; wrapMode: Text.WordWrap; font.pixelSize: Math.round((11) * theme.textScale)}
                 Label { objectName: "appVersion"; text: "OmaWare" + (Qt.application.version ? " " + Qt.application.version : ""); color: theme.colors.muted; Layout.fillWidth: true; font.pixelSize: Math.round((11) * theme.textScale)}
             }
         }

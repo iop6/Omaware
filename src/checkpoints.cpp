@@ -926,8 +926,12 @@ bool volumeReferences(virConnectPtr connection, QString path, QSet<QString> &pat
     auto backing = doc.documentElement().firstChildElement("backingStore").firstChildElement("path").text();
     return backing.isEmpty() || volumeReferences(connection, backing, paths, seen);
 }
-bool references(virConnectPtr connection, QSet<QString> &paths, QString &error) {
+// `ignoreUuid`: a VM being deleted. Its own snapshot records only point at each other and at its own
+// files, so they don't count as something else still needing them.
+bool references(virConnectPtr connection, QSet<QString> &paths, QString &error, const QString &ignoreUuid = {}) {
     QSet<QString> activePaths, checkedImages;
+    const auto ignored = rootPath(ignoreUuid);
+    const auto own = [&](const QString &path) { return !ignored.isEmpty() && QDir::cleanPath(path).startsWith(ignored + "/"); };
     auto images = [&](virConnectPtr c, QString xml) {
         QDomDocument doc; if (!doc.setContent(xml)) return true;
         bool ok = true;
@@ -978,13 +982,17 @@ bool references(virConnectPtr connection, QSet<QString> &paths, QString &error) 
     }
     QDirIterator records(app + "/checkpoints", {"restore.json"}, QDir::Files, QDirIterator::Subdirectories);
     while (records.hasNext()) {
-        auto record = read(records.next());
+        const auto recordPath = records.next();
+        if (own(recordPath)) continue;
+        auto record = read(recordPath);
         for (auto key : {"beforeXml", "afterXml"}) { const auto xml = record[key].toString(); xmlReferences(xml, paths); if (!images(connection, xml)) ok = false; }
         for (auto key : {"id", "safetyId"}) if (!QUuid(record[key].toString()).isNull() && !QUuid(record["uuid"].toString()).isNull()) paths.insert(rootPath(record["uuid"].toString()) + "/" + record[key].toString() + "/manifest.json");
     }
     QDirIterator checkpoints(app + "/checkpoints", {"manifest.json", "building.json"}, QDir::Files | QDir::NoSymLinks, QDirIterator::Subdirectories);
     while (checkpoints.hasNext()) {
-        const auto path = checkpoints.next(); auto record = read(path);
+        const auto path = checkpoints.next();
+        if (own(path)) continue;
+        auto record = read(path);
         const auto directory = QFileInfo(path).dir();
         const auto expectedId = directory.dirName(), expectedUuid = QFileInfo(directory.absolutePath()).dir().dirName();
         const auto uuid = record["uuid"].toString(), base = record["baseId"].toString();
@@ -1161,4 +1169,4 @@ QString Checkpoints::clone(virConnectPtr connection, QString uuid, QString id, Q
     if (!domain) { error = lastError("Create VM from checkpoint"); QDir(QFileInfo(tpmState(newUuid)).absolutePath() + "/..").removeRecursively(); return {}; }
     virDomainFree(domain); rollback.dismiss(); QFile::remove(destination + "/building.json"); return newUuid;
 }
-bool Checkpoints::references(virConnectPtr connection, QSet<QString> &paths, QString &error) { return ::references(connection, paths, error); }
+bool Checkpoints::references(virConnectPtr connection, QSet<QString> &paths, QString &error, const QString &ignoreUuid) { return ::references(connection, paths, error, ignoreUuid); }

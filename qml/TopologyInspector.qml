@@ -170,7 +170,7 @@ Rectangle {
                         onClicked: panel.map.selected = modelData.id
                     }
                 }
-                Line { visible: panel.networks.length === 0; text: "No shared networks yet. Each VM can still use its own private internet connection."; color: theme.colors.muted; font.pixelSize: Math.round(11 * theme.textScale) }
+                Line { visible: panel.networks.length === 0; text: "No shared networks yet."; color: theme.colors.muted; font.pixelSize: Math.round(11 * theme.textScale) }
                 AppButton { objectName: "inspectorNewNetwork"; text: "New network"; iconName: "plus"; tone: "primary"; Layout.topMargin: 4; onClicked: panel.map.createNetwork("nat", []) }
             }
 
@@ -212,7 +212,7 @@ Rectangle {
                     model: vmSection.mine
                     CableRow { required property var modelData; owner: panel; cable: modelData }
                 }
-                Line { visible: vmSection.mine.length === 0; text: "Not connected to anything. Drag the ● on top of the VM onto a network, or use Connect to."; color: theme.colors.muted; font.pixelSize: Math.round(11 * theme.textScale) }
+                Line { visible: vmSection.mine.length === 0; text: "Not connected. Drag its + onto a network."; color: theme.colors.muted; font.pixelSize: Math.round(11 * theme.textScale) }
                 Flow {
                     Layout.fillWidth: true; spacing: 6; Layout.topMargin: 6
                     AppButton { text: "Open"; iconName: "terminal"; tone: "primary"; hint: "Open the VM's console"; onClicked: panel.map.openVm(panel.node.uuid) }

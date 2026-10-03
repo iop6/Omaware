@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "workspace.h"
+#include <QFile>
 #include <QClipboard>
 #include <QGuiApplication>
 #include <QStandardPaths>
@@ -46,4 +47,9 @@ QVariantMap Workspace::mediaFiles(QString folder) {
     result["items"] = items;
     if (it.hasNext()) result["notice"] = "This folder is very large. Showing ISOs from the first 20,000 files; choose a smaller folder to see the rest.";
     return result;
+}
+QString Workspace::guide(QString name) const {
+    if (name != "USER-GUIDE.md" && name != "NETWORKS.md") return {};
+    QFile file(":/docs/" + name);
+    return file.open(QIODevice::ReadOnly) ? QString::fromUtf8(file.readAll()) : QString();
 }

@@ -52,6 +52,9 @@ Canvas {
         case "collapse": line([3, 9, 9, 9, 9, 3]); line([15, 3, 15, 9, 21, 9]); line([3, 15, 9, 15, 9, 21]); line([15, 21, 15, 15, 21, 15]); break
         case "keyboard": box(2, 5, 20, 14); for (let x of [6, 10, 14, 18]) { line([x, 9, x + .3, 9]); line([x, 12, x + .3, 12]) } line([8, 16, 16, 16]); break
         case "sun": circle(12, 12, 4); for (let a = 0; a < 8; ++a) { let t = a * Math.PI / 4; line([12 + 7 * Math.cos(t), 12 + 7 * Math.sin(t), 12 + 10 * Math.cos(t), 12 + 10 * Math.sin(t)]) } break
+        case "help": circle(12, 12, 9); ctx.beginPath(); ctx.arc(12, 9.5, 2.6, Math.PI * 1.05, Math.PI * 2.35); ctx.lineTo(12, 13.6); ctx.stroke(); ctx.beginPath(); ctx.arc(12, 17, .9, 0, Math.PI * 2); ctx.fill(); break
+        case "palette": ctx.beginPath(); ctx.moveTo(12, 3); ctx.bezierCurveTo(4, 3, 2, 10, 3.5, 14.5); ctx.bezierCurveTo(5, 19, 10, 21.5, 13, 20); ctx.bezierCurveTo(15, 19, 13, 16, 15.5, 15); ctx.bezierCurveTo(18, 14, 21, 15, 21, 11); ctx.bezierCurveTo(21, 6, 17, 3, 12, 3); ctx.stroke()
+            for (const p of [[8, 9], [12.5, 7], [16.5, 9.5], [7.5, 14]]) { ctx.beginPath(); ctx.arc(p[0], p[1], 1.4, 0, Math.PI * 2); ctx.fill() } break
         case "moon": ctx.beginPath(); ctx.arc(12, 12, 9, -.5, 4.1); ctx.quadraticCurveTo(7, 15, 19.9, 7.7); ctx.stroke(); break
         case "info": circle(12, 12, 9); line([12, 11, 12, 17]); circle(12, 7, .5); break
         case "download": line([12, 3, 12, 15]); line([7, 10, 12, 15, 17, 10]); line([4, 20, 20, 20]); break

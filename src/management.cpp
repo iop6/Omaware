@@ -812,7 +812,8 @@ void VmWorker::manage(QString op, QVariantMap in) {
         if (QFileInfo(tpm).isDir() && !QFileInfo(tpm).isSymLink()) QDir(tpm).removeRecursively();
         // A disk is deleted only once no other VM uses it. If that can't be checked, everything stays.
         QSet<QString> referenced; QString failure;
-        if (!Checkpoints::references(conn_, referenced, failure)) {
+        // Its own snapshots refer to each other; only what other VMs use keeps a file.
+        if (!Checkpoints::references(conn_, referenced, failure, uuid)) {
             done(false, name + " was removed, but its disks and snapshots were kept because OmaWare couldn't check whether another VM uses them (" + failure + ").", {{"uuid", uuid}}); return;
         }
         VmFiles::exclude(plan, referenced);
