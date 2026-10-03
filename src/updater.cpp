@@ -149,8 +149,16 @@ void Updater::download() {
                         QDir(stageRoot()).removeRecursively(); set("error", "The update package contains an unexpected link, so it wasn't used."); return;
                     }
                 }
-                QFile version(dir + "/VERSION");
-                if (version.open(QIODevice::WriteOnly)) version.write((latest_ + "\n").toUtf8());
+                // Release packages carry their own VERSION, covered by their checksums; only older ones
+                // without it get one. Either way it is complete on disk before "ready": an update applied
+                // straight away restarts into this folder, and the launcher checks every file first.
+                if (!QFile::exists(dir + "/VERSION")) {
+                    QFile version(dir + "/VERSION");
+                    if (!version.open(QIODevice::WriteOnly) || version.write((latest_ + "\n").toUtf8()) < 0 || !version.flush()) {
+                        QDir(stageRoot()).removeRecursively(); set("error", "The update couldn't be prepared."); return;
+                    }
+                    version.close();
+                }
                 staged_ = dir; progress_ = 1;
                 set("ready");
             });
@@ -172,6 +180,9 @@ bool Updater::install() {
     return true;
 }
 bool Updater::restart() {
+    // The launcher refuses a folder whose files don't match their checksums; say so here instead of
+    // quitting into nothing.
+    if (!mismatches(appDir_).isEmpty()) { set("error", "The new version isn't complete, so OmaWare didn't restart. Start it yourself; your VMs are paused and can be resumed there."); return false; }
     const auto launcher = QFileInfo::exists(appDir_ + "/omaware.sh") ? appDir_ + "/omaware.sh" : appDir_ + "/omaware";
     if (!QProcess::startDetached(launcher, {"--restarted"})) { set("error", "OmaWare couldn't start again. Start it yourself; your VMs are paused and can be resumed there."); return false; }
     emit quitRequested();

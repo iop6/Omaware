@@ -1848,8 +1848,11 @@ private slots:
             const auto app = release.filePath("app"), marker = release.filePath("started");
             write(app + "/omaware", "old", true); sums(app, {"omaware"});
             const auto stage = release.filePath("build/omaware-9.9.9-linux-x86_64");
-            write(stage + "/omaware", "new", true); write(stage + "/omaware.sh", ("#!/bin/sh\necho \"$@\" > '" + marker + "'\n").toUtf8(), true);
-            sums(stage, {"omaware", "omaware.sh"});
+            // Like a real package: VERSION is listed in the checksums, and the launcher checks them all
+            // before starting, exactly as packaging/omaware.sh does.
+            write(stage + "/omaware", "new", true); write(stage + "/VERSION", "9.9.9\n");
+            write(stage + "/omaware.sh", ("#!/bin/sh\nhere=$(cd \"$(dirname \"$0\")\" && pwd)\n(cd \"$here\" && sha256sum --status -c SHA256SUMS) || { echo \"incomplete $(cd \"$here\" && sha256sum -c SHA256SUMS 2>&1 | tr '\\n' ' ')\" > '" + marker + "'; exit 1; }\necho \"$@\" > '" + marker + "'\n").toUtf8(), true);
+            sums(stage, {"VERSION", "omaware", "omaware.sh"});
             QProcess tar; tar.start("tar", {"-czf", release.filePath("omaware-9.9.9-linux-x86_64.tar.gz"), "-C", release.filePath("build"), "omaware-9.9.9-linux-x86_64"}); QVERIFY(tar.waitForFinished()); QCOMPARE(tar.exitCode(), 0);
             QFile package(release.filePath("omaware-9.9.9-linux-x86_64.tar.gz")); QVERIFY(package.open(QIODevice::ReadOnly));
             write(release.filePath("SHA256SUMS"), QCryptographicHash::hash(package.readAll(), QCryptographicHash::Sha256).toHex() + "  omaware-9.9.9-linux-x86_64.tar.gz\n");
