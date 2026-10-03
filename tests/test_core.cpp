@@ -406,7 +406,8 @@ private slots:
         // The new release, packaged like a GitHub Release.
         const auto stage = dir.filePath("build/omaware-1.0.1-linux-x86_64");
         write(stage + "/omaware", "new", true); write(stage + "/lib/libvncclient.so.0.9.15", "lib"); write(stage + "/omaware.sh", "#!/bin/sh\n", true);
-        sums(stage, {"omaware", "lib/libvncclient.so.0.9.15", "omaware.sh"});
+        write(stage + "/VERSION", "1.0.1\n");
+        sums(stage, {"VERSION", "omaware", "lib/libvncclient.so.0.9.15", "omaware.sh"});
         QProcess tar; tar.start("tar", {"-czf", dir.filePath("omaware-1.0.1-linux-x86_64.tar.gz"), "-C", dir.filePath("build"), "omaware-1.0.1-linux-x86_64"}); QVERIFY(tar.waitForFinished()); QCOMPARE(tar.exitCode(), 0);
         auto publish = [&](const QByteArray &packageHash) {
             write(dir.filePath("SHA256SUMS"), packageHash + "  omaware-1.0.1-linux-x86_64.tar.gz\n");
@@ -425,7 +426,13 @@ private slots:
         QFile package(dir.filePath("omaware-1.0.1-linux-x86_64.tar.gz")); QVERIFY(package.open(QIODevice::ReadOnly));
         publish(QCryptographicHash::hash(package.readAll(), QCryptographicHash::Sha256).toHex());
         updater.check(); QTRY_COMPARE(updater.status(), QString("available"));
+        // "Update now" with no VMs to pause installs and restarts the moment the package is ready, so
+        // every file must already be complete on disk then: the new launcher checks them all.
+        QStringList atReady{"not checked"};
+        auto watch = connect(&updater, &Updater::changed, this, [&] { if (updater.status() == "ready" && atReady == QStringList{"not checked"}) atReady = Updater::mismatches(QDir(app + ".update").absoluteFilePath("omaware-1.0.1-linux-x86_64")); });
         updater.download(); QTRY_COMPARE_WITH_TIMEOUT(updater.status(), QString("ready"), 10000);
+        disconnect(watch);
+        QVERIFY2(atReady.isEmpty(), qPrintable("Files not complete when ready: " + atReady.join(", ")));
         QVERIFY(updater.install()); QCOMPARE(updater.status(), QString("installed"));
         QFile now(app + "/omaware"); QVERIFY(now.open(QIODevice::ReadOnly)); QCOMPARE(now.readAll(), QByteArray("new"));
         QFile version(app + "/VERSION"); QVERIFY(version.open(QIODevice::ReadOnly)); QCOMPARE(version.readAll().trimmed(), QByteArray("1.0.1"));
