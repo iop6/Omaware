@@ -7,6 +7,7 @@
 - [Using the console](#using-the-console)
 - [Details: overview, hardware and networks](#details-overview-hardware-and-networks)
 - [Changing hardware](#changing-hardware)
+- [The network map](#the-network-map)
 - [Snapshots](#snapshots)
 - [The ISO Shop](#the-iso-shop)
 - [Monitor, log and command prompt](#monitor-log-and-command-prompt)
@@ -121,6 +122,26 @@ Changes to a **running** VM are saved for its next start; it keeps its current h
 - Restarting from inside the guest is not enough: the VM must fully stop and start.
 
 Pending changes are remembered if you close OmaWare. If something else changes the VM's configuration in the meantime, OmaWare notices and asks you to review.
+
+## The network map
+
+**Networks** (Ctrl+3) shows every VM, network, this computer and the internet as a map. Cables run in straight lines with square corners; each one is colored by where it leads (amber: the internet, blue: this computer only, green: other VMs only), dashed red when pulled, and gray-dashed while it waits for the VM's next start.
+
+- **Connect and disconnect:** drag the ● on top of a VM onto a network (or onto This computer for a private internet connection). Double-click a cable's light to pull or plug it; right-click it to move or remove it. **Cut off internet** pulls every cable with a way out.
+- **Live traffic:** while a cable carries data, packets travel along it (up toward the network for uploads, down toward the VM for downloads), more and faster the busier it is, and the cable glows. Each cable shows its own adapter's traffic.
+- **Hover a cable's light** for its upload and download rates, packets per second, errors or dropped packets, and a graph of the last couple of minutes.
+- **Select a VM** to see what it can reach: its networks, the other running VMs on them, this computer and the internet light up, and everything it can't reach fades. The side panel says the same in words.
+- **Trace a ping:** right-click a VM, **Trace a ping to**, and pick the internet, this computer or another VM. An envelope walks the path one hop at a time (**Next**, **Back** or **Play**) and each step says what happens there: the virtual switch, this computer's NAT router, and so on. Where the ping would be stopped — a pulled cable, a VMs-only network, a stopped network, a VM that's off, or two networks that don't connect — it stops there and says why. It's worked out from your settings; no packet is sent.
+- **Zones:** each network and its VMs sit in a shaded, titled area such as *Internet-connected* or *Isolated · VMs only*.
+- **Getting around:** drag the background to pan, scroll or use − / + to zoom, **F** to fit, and the grid button to tidy everything up. When the map doesn't fit, a minimap in the corner shows where you are; click or drag in it to jump.
+- **Operations-center style:** the monitor button (or right-click the background) switches to a darker map where live cables glow. OmaWare remembers your choice.
+- **Export:** the download button saves the map as a **PNG** image, an **SVG** drawing or a **Mermaid** diagram (for docs and wikis), or copies it as Mermaid.
+
+### Lab files
+
+A lab can be saved as a file (TOML) and built again later or on another computer: right-click the map's background and choose **Export a lab**, or use **Export lab file…** under *Lab login* in a lab VM's Details. The file lists the lab's networks (type `internet`, `private` or `isolated`, and subnet) and VMs (operating system, CPUs, memory, disk, networks with optional fixed addresses, packages and first-boot commands). It never contains passwords or keys, and you can edit it in any text editor.
+
+**Import lab file…** (right-click the map's background) checks the file and shows the plan for review, exactly like a lab an agent proposes: you set the VMs' password and click **Build**. This works with AI agent access turned off.
 
 ## Snapshots
 

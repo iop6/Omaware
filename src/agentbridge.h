@@ -69,6 +69,11 @@ public:
     Q_INVOKABLE QVariantMap vmLab(const QString &uuid) const;
     // For "Show password" on a lab VM; empty if it can't be read.
     Q_INVOKABLE QString revealPassword(const QString &login) const;
+    // Lab files (TOML): a built lab's plan to share or keep, and one to review and build, even with
+    // agent access off. importLab returns what's wrong, or "" once the plan is shown for review.
+    Q_INVOKABLE QString labFile(const QString &slug) const;
+    Q_INVOKABLE bool exportLab(const QString &slug, const QString &url) const;
+    Q_INVOKABLE QString importLab(const QString &url);
     // Turns agent access off and disconnects agents (the banner's Stop button).
     Q_INVOKABLE void stop();
 
@@ -84,6 +89,7 @@ signals:
     void confirmationChanged();
     void buildChanged();
     void labsChanged();
+    void labImported(bool ok, QString message);
 
 private:
     using Done = std::function<void(bool ok, const QVariantMap &result)>;
@@ -101,7 +107,9 @@ private:
 
     // Tools.
     void overview(Reply reply);
-    void proposeLab(const QVariantMap &plan, Reply reply);
+    // `local` marks a plan the user imported: it's built even with agent access off, and an agent's
+    // plan can't replace it while it waits for review.
+    void proposeLab(const QVariantMap &plan, Reply reply, bool local = false);
     void labStatus(const QVariantMap &args, Reply reply);
     // Answers lab_status calls waiting on this lab.
     void wake(const QString &id);
@@ -131,6 +139,7 @@ private:
     VmWorker *agentWorker_;
     QLocalServer server_;
     bool enabled_ = false;
+    bool localLab_ = false;   // the waiting proposal or running build came from a lab file
     QString error_;
     QVariantMap screen_, proposal_, confirmation_, build_;
     QHash<QString, Done> pending_;

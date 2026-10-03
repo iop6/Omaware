@@ -413,6 +413,30 @@ Item {
         return out.join("\n") + "\n"
     }
     function exportAs(kind) { exportDialog.kind = kind; exportDialog.open() }
+    // Lab files: import one for review, or save a built lab's plan. The agent bridge builds labs.
+    readonly property var labs: typeof agent !== "undefined" && agent ? agent : null
+    function importLabFile(url) {
+        const problem = labs.importLab(url)
+        say(problem || "Checking the lab file…", !problem)
+    }
+    Connections { target: topo.labs; ignoreUnknownSignals: true; function onLabImported(ok, message) { topo.say(message, ok) } }
+    FileDialog {
+        id: labOpenDialog
+        title: "Import a lab file"
+        fileMode: FileDialog.OpenFile
+        nameFilters: ["OmaWare lab files (*.toml)", "All files (*)"]
+        onAccepted: topo.importLabFile(selectedFile.toString())
+    }
+    FileDialog {
+        id: labSaveDialog
+        property string slug: ""
+        title: "Save the lab as a file"
+        fileMode: FileDialog.SaveFile
+        defaultSuffix: "toml"
+        nameFilters: ["OmaWare lab files (*.toml)"]
+        currentFile: "file:" + slug + ".toml"
+        onAccepted: { const ok = topo.labs.exportLab(slug, selectedFile.toString()); topo.say(ok ? "Lab saved as a file." : "The lab couldn't be saved there.", ok) }
+    }
     function saveExport(url) {
         const kind = exportDialog.kind
         if (kind === "png") {
@@ -1256,6 +1280,23 @@ Item {
         AppMenuItem { text: "Fit to view"; onTriggered: topo.refit() }
         AppMenuItem { text: "Export the map…"; onTriggered: exportMenu.popup() }
         AppMenuItem { text: topo.operations ? "Standard map style" : "Operations-center style"; onTriggered: topo.setOperations(!topo.operations) }
+        MenuSeparator { contentItem: Rectangle { implicitHeight: 1; color: theme.colors.border } }
+        AppMenuItem { objectName: "importLabFile"; text: "Import lab file…"; enabled: !!topo.labs; onTriggered: labOpenDialog.open() }
+        AppMenu {
+            id: labExportMenu
+            title: "Export a lab"
+            enabled: !!topo.labs && topo.labs.labs.length > 0
+            Instantiator {
+                model: topo.labs ? topo.labs.labs : []
+                AppMenuItem {
+                    required property var modelData
+                    text: modelData.name
+                    onTriggered: { labSaveDialog.slug = modelData.slug; labSaveDialog.open() }
+                }
+                onObjectAdded: function(index, object) { labExportMenu.insertItem(index, object) }
+                onObjectRemoved: function(index, object) { labExportMenu.removeItem(object) }
+            }
+        }
         AppMenuItem { text: "Cut off internet for every VM"; onTriggered: topo.killInternet() }
     }
     AppMenu {
