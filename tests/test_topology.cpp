@@ -5,8 +5,12 @@
 #include <QQmlContext>
 #include <QQmlComponent>
 #include <QQuickWindow>
+#include <QQuickItem>
 #include <QTemporaryDir>
 #include "theme.h"
+#include <QDomDocument>
+#include <QJSValue>
+#include <QQmlExpression>
 
 class MapBackend : public QObject {
     Q_OBJECT
@@ -30,6 +34,8 @@ public:
     Q_INVOKABLE QVariant get(const QString &key, const QVariant &fallback = {}) { return values.value(key, fallback); }
     Q_INVOKABLE void set(const QString &key, const QVariant &value) { values[key] = value; }
     Q_INVOKABLE void copy(const QString &text) { copied = text; }
+    Q_INVOKABLE QString localPath(const QString &url) const { return url.startsWith("file:") ? QUrl(url).toLocalFile() : url; }
+    Q_INVOKABLE bool saveText(const QString &url, const QString &text) const { QFile f(localPath(url)); return f.open(QIODevice::WriteOnly) && f.write(text.toUtf8()) >= 0; }
 };
 
 class TopologyTest : public QObject {
@@ -160,6 +166,67 @@ private slots:
         QVERIFY(!web["nodes"].toMap().contains("vm:44444444-0000-4000-8000-000000000004")); // stopped
         map->setProperty("selected", "");
         QVERIFY(map->property("reachFocus").isNull() || !map->property("reachFocus").isValid() || map->property("reachFocus").toMap().isEmpty());
+    }
+    void exports() {
+        QVariant text; QVERIFY(QMetaObject::invokeMethod(map, "mermaid", Q_RETURN_ARG(QVariant, text)));
+        const auto mermaid = text.toString();
+        QVERIFY(mermaid.startsWith("flowchart TB\n"));
+        for (const auto &label : {"Internet", "This computer", "lab-nat", "analysis", "web", "remnux", "flare", "10.20.0.10", "pulled"}) QVERIFY2(mermaid.contains(label), label);
+        QVERIFY(mermaid.contains(" -.- ")); // FLARE's pulled cable is dotted
+        QVERIFY(QMetaObject::invokeMethod(map, "svg", Q_RETURN_ARG(QVariant, text)));
+        QDomDocument doc; QVERIFY2(doc.setContent(text.toString()), "SVG must be well-formed XML");
+        QCOMPARE(doc.documentElement().tagName(), QString("svg"));
+        QCOMPARE(doc.elementsByTagName("polyline").size(), 7);
+        QVERIFY(text.toString().contains(">remnux<")); QVERIFY(text.toString().contains("ISOLATED · VMS ONLY"));
+        // Saving goes through the same helper the app uses.
+        const auto file = dir.filePath("map.svg");
+        QVERIFY(QMetaObject::invokeMethod(map->findChild<QObject *>("", Qt::FindDirectChildrenOnly) ? map : map, "exportAs", Q_ARG(QVariant, "svg")));
+        QVERIFY(QMetaObject::invokeMethod(map, "saveExport", Q_ARG(QVariant, QUrl::fromLocalFile(file).toString())));
+        QVERIFY(QFile(file).size() > 1000);
+    }
+    void operationsStyleAndMinimap() {
+        QVERIFY(QMetaObject::invokeMethod(map, "setOperations", Q_ARG(QVariant, true)));
+        QCOMPARE(preferences.values["topologyStyle"].toString(), QString("operations"));
+        QVERIFY(shot("map-operations"));
+        // Zoomed in, the map no longer fits and the minimap appears.
+        QVERIFY(QMetaObject::invokeMethod(map, "zoomAt", Q_ARG(QVariant, 500), Q_ARG(QVariant, 500), Q_ARG(QVariant, 1.9)));
+        auto minimap = root->findChild<QObject *>("topologyMinimap"); QVERIFY(minimap);
+        QTRY_VERIFY(minimap->property("visible").toBool());
+        QVERIFY(shot("map-zoomed-minimap"));
+        QVERIFY(QMetaObject::invokeMethod(map, "setOperations", Q_ARG(QVariant, false)));
+        QVERIFY(QMetaObject::invokeMethod(map, "refit"));
+        QTRY_VERIFY(!minimap->property("visible").toBool());
+    }
+    // The ping walkthrough follows the configured path and stops, with a reason, where it would be blocked.
+    void pingWalkthrough() {
+        auto trace = [&](const QString &from, const QString &to) { QVariant r; QMetaObject::invokeMethod(map, "tracePing", Q_RETURN_ARG(QVariant, r), Q_ARG(QVariant, from), Q_ARG(QVariant, to)); return r.value<QJSValue>().toVariant().toMap(); };
+        const QString web = "vm:11111111-0000-4000-8000-000000000001", remnux = "vm:22222222-0000-4000-8000-000000000002", flare = "vm:33333333-0000-4000-8000-000000000003", old = "vm:44444444-0000-4000-8000-000000000004";
+        auto online = trace(web, "internet");
+        QVERIFY(online["reached"].toBool());
+        QStringList where; for (const auto &st : online["steps"].toList()) where << st.toMap()["node"].toString();
+        QCOMPARE(where, (QStringList{web, "bridge:omanat0001", "host", "internet", "internet"}));
+        QVERIFY(online["steps"].toList()[2].toMap()["text"].toString().contains("NAT"));
+        auto sealed = trace(remnux, "internet");
+        QVERIFY(!sealed["reached"].toBool());
+        QVERIFY(sealed["steps"].toList().last().toMap()["blocked"].toBool());
+        QVERIFY(sealed["steps"].toList().last().toMap()["text"].toString().contains("VMs-only"));
+        auto lab = trace(remnux, flare);
+        QVERIFY(lab["reached"].toBool()); QCOMPARE(lab["steps"].toList()[2].toMap()["node"].toString(), flare);
+        auto apart = trace(remnux, web);
+        QVERIFY(!apart["reached"].toBool()); QVERIFY(apart["steps"].toList().last().toMap()["text"].toString().contains("No network connects them"));
+        QVERIFY(!trace(old, "internet")["reached"].toBool());
+        // Walk through it on the map.
+        QVERIFY(QMetaObject::invokeMethod(map, "startTrace", Q_ARG(QVariant, web), Q_ARG(QVariant, "internet")));
+        auto panel = root->findChild<QObject *>("pingTrace"); QVERIFY(panel); QTRY_VERIFY(panel->property("visible").toBool());
+        QVERIFY(QMetaObject::invokeMethod(map, "stepTrace", Q_ARG(QVariant, 2)));
+        QTest::qWait(1100);
+        QVERIFY(shot("map-ping-step3"));
+        QVERIFY(QMetaObject::invokeMethod(map, "startTrace", Q_ARG(QVariant, remnux), Q_ARG(QVariant, "internet")));
+        QVERIFY(QMetaObject::invokeMethod(map, "stepTrace", Q_ARG(QVariant, 5)));
+        QTest::qWait(1100);
+        QVERIFY(shot("map-ping-blocked"));
+        map->setProperty("trace", QVariant());
+        QTRY_VERIFY(!panel->property("visible").toBool());
     }
     void hoverCard() {
         map->setProperty("hoverCable", "11111111-0000-4000-8000-000000000001/52:54:00:00:00:01");

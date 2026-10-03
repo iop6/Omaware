@@ -32,9 +32,11 @@ Rectangle {
     width: map ? map.sizes[kind][0] : 200
     height: map ? map.sizes[kind][1] : 80
     radius: kind === "internet" ? height / 2 : 8
-    color: dropTarget ? Qt.tint(theme.colors.surface, map.tint(theme.colors.success, .14)) : chosen ? Qt.tint(theme.colors.surface, map.tint(theme.colors.accent, .08)) : theme.colors.surface
+    // In the operations-center style, cards are darker and outlined in what they lead to.
+    readonly property color face: map && map.operations ? "#0a111c" : theme.colors.surface
+    color: dropTarget ? Qt.tint(face, map.tint(theme.colors.success, .14)) : chosen ? Qt.tint(face, map.tint(theme.colors.accent, .08)) : face
     border.width: chosen || dropTarget ? 2 : 1
-    border.color: dropTarget ? theme.colors.success : chosen ? theme.colors.accent : hover.hovered ? map.tint(ink, .7) : theme.colors.border
+    border.color: dropTarget ? theme.colors.success : chosen ? theme.colors.accent : hover.hovered ? map.tint(ink, .7) : map && map.operations ? map.tint(ink, .45) : theme.colors.border
     opacity: unreachable ? .28 : dimmed ? .7 : 1
     Behavior on opacity { NumberAnimation { duration: 140 } }
     z: drag.active ? 5 : chosen ? 2 : 1

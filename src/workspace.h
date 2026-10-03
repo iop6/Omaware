@@ -16,6 +16,8 @@ public:
     Q_INVOKABLE void saveVm(QString uuid, QVariantMap value);
     Q_INVOKABLE void copy(QString text);
     Q_INVOKABLE QString localPath(QString url) const;
+    // Writes text to a file the user chose (a path or file: URL), replacing it in one step.
+    Q_INVOKABLE bool saveText(QString url, QString text) const;
     static QVariantMap mediaFiles(QString folder);
 signals:
     void changed();

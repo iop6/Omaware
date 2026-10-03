@@ -3,6 +3,7 @@ import QtQml
 import QtQuick
 import QtQuick.Controls
 import QtQuick.Layouts
+import QtQuick.Dialogs
 
 // Network map in the spirit of Packet Tracer. Devices are draggable cards and every VM adapter is a
 // cable: drag from a VM's port onto a network to connect it, pull or plug cables live, and see at a
@@ -47,6 +48,11 @@ Item {
     property bool inspectorOpen: preferences.get("topologyInspector", true) !== false && preferences.get("topologyInspector", true) !== "false"
     function setInspector(open) { inspectorOpen = open; preferences.set("topologyInspector", open); if (!userView) fitLater.restart() }
     property bool userView: false      // once the user pans or zooms, stop auto-fitting
+    property bool exporting: false     // hides the controls while the map is saved as an image
+    // "Operations center" style: a darker map where live cables glow.
+    property bool operations: preferences.get("topologyStyle", "standard") === "operations"
+    function setOperations(on) { operations = on; preferences.set("topologyStyle", on ? "operations" : "standard"); cables.requestPaint() }
+    readonly property color mapBackground: operations ? "#04070c" : theme.colors.background
 
     readonly property var sizes: ({internet: [210, 60], host: [236, 72], "switch": [246, 84], vm: [224, 84]})
     readonly property var reachInfo: ({
@@ -223,6 +229,215 @@ Item {
         if (selectedCable && !graph.cableById[selectedCable]) selectedCable = ""
         cables.requestPaint()
         if (!userView) fitLater.restart()
+    }
+
+    // How a cable is drawn: color, opacity and dashes say where it leads and whether it's plugged in.
+    function cableStyle(c) {
+        const dest = graph.byId[c.to]
+        const ink = c.to === "host" ? theme.colors.warning : uplinkInk(dest ? dest.uplink : "")
+        if (c.state === "next") return {ink: theme.colors.muted, alpha: .9, dash: [6, 7], live: false}
+        if (c.state === "removing") return {ink: theme.colors.muted, alpha: .6, dash: [2, 7], live: false}
+        if (!c.up) return {ink: theme.colors.danger, alpha: .9, dash: [9, 7], live: false}
+        return {ink: ink, alpha: c.live ? 1 : .45, dash: null, live: c.live}
+    }
+    function uplinkStyle(u) {
+        const ink = u.kind === "wan" ? theme.colors.warning : uplinkInk(u.kind)
+        return {ink: u.live ? ink : theme.colors.muted, alpha: u.live ? .85 : .5, dash: u.kind === "lan" || !u.live ? [10, 8] : null, width: u.kind === "wan" ? 4 : 3, live: u.live}
+    }
+    // Each network and the VMs plugged into it share a softly tinted, titled area.
+    function zones() {
+        let list = []
+        for (const id of graph.order) {
+            const sw = graph.byId[id]
+            if (sw.kind !== "switch" || !items[id]) continue
+            const members = graph.cables.filter(function(c) { return c.to === id && c.state !== "next" }).map(function(c) { return items[c.vm] }).filter(function(it) { return !!it })
+            if (members.length === 0) continue
+            let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity
+            for (const it of members.concat([items[id]])) { x0 = Math.min(x0, it.x); y0 = Math.min(y0, it.y); x1 = Math.max(x1, it.x + it.width); y1 = Math.max(y1, it.y + it.height) }
+            const pad = 18
+            const title = sw.uplink === "none" ? (sw.sealed ? "Isolated · VMs only" : "VMs only") : sw.uplink === "host" ? "This computer only" : sw.uplink === "lan" ? "Your local network" : sw.uplink === "unknown" ? "Unknown network" : "Internet-connected"
+            list.push({id: id, x: x0 - pad, y: y0 - pad - 16, w: x1 - x0 + pad * 2, h: y1 - y0 + pad * 2 + 16, ink: uplinkInk(sw.uplink), running: sw.running, title: title.toUpperCase()})
+        }
+        return list
+    }
+    function worldBounds() {
+        let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity
+        for (const id in items) { const it = items[id]; x0 = Math.min(x0, it.x); y0 = Math.min(y0, it.y); x1 = Math.max(x1, it.x + it.width); y1 = Math.max(y1, it.y + it.height) }
+        for (const z of zones()) { x0 = Math.min(x0, z.x); y0 = Math.min(y0, z.y); x1 = Math.max(x1, z.x + z.w); y1 = Math.max(y1, z.y + z.h) }
+        return x0 === Infinity ? {x: 0, y: 0, w: 1, h: 1} : {x: x0, y: y0, w: x1 - x0, h: y1 - y0}
+    }
+
+    // ---- Ping walkthrough -----------------------------------------------------------------------
+    // Packet Tracer-style simulation of a ping from a VM, worked out from the network settings on this
+    // map; no packet is sent. Each step moves the envelope along one cable or uplink (or stays put) and
+    // explains what happens there. A blocked step says why the ping goes no further.
+    property var trace: null           // {title, steps: [{seg, node, text, blocked}], index}
+    function destinationName(dest) { return dest === "internet" ? "the internet" : dest === "host" ? "this computer" : (graph.byId[dest] || {label: "?"}).label }
+    function tracePing(fromId, dest) {
+        const g = graph, vm = g.byId[fromId]
+        let steps = []
+        const step = function(seg, node, text, blocked) { steps.push({seg: seg, node: node, text: text, blocked: !!blocked}) }
+        const title = "Ping from " + vm.label + " to " + destinationName(dest)
+        step(null, fromId, vm.label + " sends a ping (an ICMP echo request) to " + destinationName(dest) + ".")
+        if (!vm.running) { step(null, fromId, vm.label + " is turned off, so nothing is sent.", true); return {title: title, steps: steps, index: 0, reached: false} }
+        const mine = g.cables.filter(function(c) { return c.vm === fromId && c.state !== "next" })
+        const up = mine.filter(function(c) { return c.up })
+        if (mine.length === 0) { step(null, fromId, vm.label + " has no network adapter, so the ping can't leave it.", true); return {title: title, steps: steps, index: 0, reached: false} }
+        if (up.length === 0) { step({cable: mine[0].id}, fromId, "Every cable on " + vm.label + " is pulled, so the ping never leaves the VM.", true); return {title: title, steps: steps, index: 0, reached: false} }
+        const onSwitch = function(c) { return g.byId[c.to] && g.byId[c.to].kind === "switch" ? g.byId[c.to] : null }
+        const into = function(c) {
+            const sw = onSwitch(c)
+            step({cable: c.id}, c.to, "It leaves through adapter " + c.mac + (c.addresses && c.addresses.length ? " (" + c.addresses[0] + ")" : "")
+                + (sw ? " into “" + sw.label + "”, a virtual network switch." : " into its private internet connection, which this computer runs for it."))
+        }
+        if (dest === "internet" || dest === "host") {
+            const wantsInternet = dest === "internet"
+            const ok = function(c) {
+                if (c.to === "host") return true
+                const sw = onSwitch(c)
+                if (!sw || !sw.running) return false
+                return wantsInternet ? ["nat", "routed", "lan", "unknown"].indexOf(sw.uplink) >= 0 : ["nat", "routed", "host"].indexOf(sw.uplink) >= 0
+            }
+            const c = up.find(ok)
+            if (!c) {
+                const first = up[0], sw = onSwitch(first)
+                into(first)
+                step(null, first.to, !sw.running ? "“" + sw.label + "” is stopped, so it doesn't pass anything on."
+                    : sw.uplink === "none" ? "“" + sw.label + "” is a VMs-only network: it has no way out, so the ping stops here."
+                    : sw.uplink === "host" ? "“" + sw.label + "” only reaches this computer; nothing forwards the ping to the internet."
+                    : "“" + sw.label + "” has no route there, so the ping stops here.", true)
+                return {title: title, steps: steps, index: 0, reached: false}
+            }
+            into(c)
+            if (c.to === "host") step(null, "host", "This computer receives it and sends it on as if it came from this computer itself (user-mode networking).")
+            else {
+                const sw = onSwitch(c)
+                if (sw.uplink === "lan" || sw.uplink === "unknown") {
+                    step({uplink: sw.id + ">internet"}, "internet", "“" + sw.label + "” is bridged to your local network, which passes it toward the internet like any other device's traffic.")
+                    step(null, "internet", (wantsInternet ? "The internet replies" : "This computer replies") + ", and the reply comes back the same way. Ping succeeds.")
+                    return {title: title, steps: steps, index: 0, reached: true}
+                }
+                step({uplink: sw.id + ">host"}, "host", sw.uplink === "host" ? "This computer receives it on the network's bridge" + (sw.cidr ? " (" + sw.cidr.split("/")[0] + ")" : "") + "."
+                    : "This computer's virtual router receives it" + (sw.cidr ? " at " + sw.cidr.split("/")[0] : "") + (wantsInternet ? " and translates the VM's address to its own (NAT)." : "."))
+            }
+            if (wantsInternet) step({uplink: "host>internet"}, "internet", "It goes out through your computer's internet connection to the destination.")
+            step(null, wantsInternet ? "internet" : "host", (wantsInternet ? "The internet replies" : "This computer replies") + ", and the reply comes back the same way. Ping succeeds.")
+            return {title: title, steps: steps, index: 0, reached: true}
+        }
+        // To another VM: they need a running network that both have a plugged-in cable on.
+        const other = g.byId[dest]
+        const theirs = g.cables.filter(function(c) { return c.vm === dest && c.state !== "next" && c.up })
+        const shared = up.find(function(c) { const sw = onSwitch(c); return sw && theirs.some(function(t) { return t.to === c.to }) })
+        if (!shared) {
+            into(up[0])
+            const mineNames = up.map(function(c) { return c.to === "host" ? "a private internet connection" : "“" + g.byId[c.to].label + "”" })
+            const theirNames = theirs.map(function(c) { return c.to === "host" ? "a private internet connection" : "“" + g.byId[c.to].label + "”" })
+            step(null, up[0].to, "No network connects them: " + vm.label + " is on " + mineNames.join(" and ") + ", " + other.label + " is on " + (theirNames.length ? theirNames.join(" and ") : "nothing") + ". OmaWare's networks don't route to each other, so the ping is lost.", true)
+            return {title: title, steps: steps, index: 0, reached: false}
+        }
+        const sw = onSwitch(shared), back = theirs.find(function(t) { return t.to === shared.to })
+        into(shared)
+        if (!sw.running) { step(null, sw.id, "“" + sw.label + "” is stopped, so it doesn't pass anything on.", true); return {title: title, steps: steps, index: 0, reached: false} }
+        step({cable: back.id, reverse: true}, dest, "The switch delivers it to " + other.label + "'s adapter" + (back.addresses && back.addresses.length ? " (" + back.addresses[0] + ")" : "") + ".")
+        if (!other.running) { step(null, dest, other.label + " is turned off, so nobody answers.", true); return {title: title, steps: steps, index: 0, reached: false} }
+        step(null, dest, other.label + " replies, and the reply comes back through “" + sw.label + "”. Ping succeeds — if " + other.label + "'s firewall allows pings.")
+        return {title: title, steps: steps, index: 0, reached: true}
+    }
+    function startTrace(fromId, dest) { selected = ""; selectedCable = ""; trace = tracePing(fromId, dest) }
+    function stepTrace(delta) { if (trace) trace = Object.assign({}, trace, {index: Math.max(0, Math.min(trace.steps.length - 1, trace.index + delta))}) }
+    function segmentGeometry(seg) {
+        if (!seg) return null
+        if (seg.cable) { const c = graph.cableById[seg.cable]; return c ? geometry(c) : null }
+        const u = graph.uplinks.find(function(x) { return x.id === seg.uplink })
+        return u ? uplinkGeometry(u) : null
+    }
+
+    // ---- Export -------------------------------------------------------------------------------
+    function esc(text) { return String(text).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;") }
+    function hex(c) { const q = Qt.lighter(c, 1); const h = function(v) { return ("0" + Math.round(v * 255).toString(16)).slice(-2) }; return "#" + h(q.r) + h(q.g) + h(q.b) }
+    // The whole map as a standalone SVG drawing, in the map's own coordinates.
+    function svg() {
+        const b = worldBounds(), pad = 30, x = Math.floor(b.x - pad), y = Math.floor(b.y - pad), w = Math.ceil(b.w + pad * 2), h = Math.ceil(b.h + pad * 2)
+        const line = function(g, st, width) {
+            if (!g) return ""
+            return '<polyline fill="none" points="' + g.pts.map(function(q) { return q.x.toFixed(1) + "," + q.y.toFixed(1) }).join(" ") + '" stroke="' + hex(st.ink) + '" stroke-opacity="' + st.alpha
+                + '" stroke-width="' + width + '" stroke-linejoin="miter"' + (st.dash ? ' stroke-dasharray="' + st.dash.join(" ") + '"' : "") + "/>"
+        }
+        let out = ['<svg xmlns="http://www.w3.org/2000/svg" width="' + w + '" height="' + h + '" viewBox="' + [x, y, w, h].join(" ") + '" font-family="sans-serif">',
+                   '<rect x="' + x + '" y="' + y + '" width="' + w + '" height="' + h + '" fill="' + hex(mapBackground) + '"/>']
+        for (const z of zones()) {
+            out.push('<rect x="' + z.x + '" y="' + z.y + '" width="' + z.w + '" height="' + z.h + '" rx="16" fill="' + hex(z.ink) + '" fill-opacity="0.05" stroke="' + hex(z.ink) + '" stroke-opacity="0.25"/>')
+            out.push('<text x="' + (z.x + 14) + '" y="' + (z.y + 17) + '" font-size="10" font-weight="bold" letter-spacing="1" fill="' + hex(z.ink) + '">' + esc(z.title) + "</text>")
+        }
+        for (const u of graph.uplinks) { const st = uplinkStyle(u); out.push(line(uplinkGeometry(u), st, st.width)) }
+        for (const c of graph.cables) out.push(line(geometry(c), cableStyle(c), 2.6))
+        for (const id of graph.order) {
+            const it = items[id]
+            if (!it) continue
+            const ink = hex(it.ink), rx = it.kind === "internet" ? it.height / 2 : 8
+            out.push('<g opacity="' + (it.dimmed ? .7 : 1) + '"><rect x="' + it.x + '" y="' + it.y + '" width="' + it.width + '" height="' + it.height + '" rx="' + rx + '" fill="' + hex(theme.colors.surface) + '" stroke="' + hex(theme.colors.border) + '"/>')
+            if (it.kind !== "internet") out.push('<rect x="' + (it.x + 1) + '" y="' + (it.y + 1) + '" width="4" height="' + (it.height - 2) + '" rx="2" fill="' + ink + '"/>')
+            out.push('<text x="' + (it.x + 18) + '" y="' + (it.y + it.height / 2 - 3) + '" font-size="13" font-weight="bold" fill="' + hex(theme.colors.foreground) + '">' + esc(graph.byId[id].label) + "</text>")
+            out.push('<text x="' + (it.x + 18) + '" y="' + (it.y + it.height / 2 + 13) + '" font-size="10" fill="' + hex(theme.colors.muted) + '">' + esc(it.subtitle) + "</text></g>")
+        }
+        out.push("</svg>")
+        return out.join("\n") + "\n"
+    }
+    // The map as a Mermaid flowchart, for docs and wikis.
+    function mermaid() {
+        let ids = {}, n = 0
+        const key = function(id) { if (!(id in ids)) ids[id] = "n" + (n++); return ids[id] }
+        const quote = function(text) { return '"' + String(text).replace(/"/g, "#quot;") + '"' }
+        let out = ["flowchart TB"]
+        for (const id of graph.order) {
+            const node = graph.byId[id]
+            const label = node.kind === "switch" ? node.label + "<br/>" + kindText(node) + (node.cidr ? " · " + node.cidr : "")
+                : node.kind === "vm" ? node.label + (node.ip ? "<br/>" + node.ip : "") + (node.running ? "" : "<br/>(stopped)") : node.label
+            out.push("    " + key(id) + (node.kind === "internet" ? "((" + quote(label) + "))" : node.kind === "host" ? "[/" + quote(label) + "/]" : node.kind === "switch" ? "{{" + quote(label) + "}}" : "[" + quote(label) + "]"))
+        }
+        for (const u of graph.uplinks) out.push("    " + key(u.from) + (u.live ? " --- " : " -.- ") + key(u.to))
+        for (const c of graph.cables) {
+            if (c.state === "next") continue
+            const label = !c.up ? "pulled" : c.addresses && c.addresses.length ? c.addresses[0] : ""
+            out.push("    " + key(c.vm) + (c.up ? " --- " : " -.- ") + (label ? "|" + quote(label) + "| " : "") + key(c.to))
+        }
+        out.push("    classDef internet fill:#3b2f12,stroke:#e0a83a,color:#f6e7c8")
+        out.push("    classDef local fill:#12233b,stroke:#6ea8fe,color:#dbe8ff")
+        out.push("    classDef isolated fill:#10301f,stroke:#5cc98a,color:#d4f4e1")
+        for (const id of graph.order) {
+            const node = graph.byId[id]
+            const cls = node.kind === "internet" || node.kind === "host" ? "internet" : node.kind === "switch" ? (node.uplink === "none" ? "isolated" : node.uplink === "host" ? "local" : "internet")
+                : node.reach === "internet" || node.reach === "lan" ? "internet" : node.reach === "host" ? "local" : "isolated"
+            out.push("    class " + key(id) + " " + cls)
+        }
+        return out.join("\n") + "\n"
+    }
+    function exportAs(kind) { exportDialog.kind = kind; exportDialog.open() }
+    function saveExport(url) {
+        const kind = exportDialog.kind
+        if (kind === "png") {
+            exporting = true
+            Qt.callLater(function() {
+                viewport.grabToImage(function(result) {
+                    const ok = result.saveToFile(preferences.localPath(url))
+                    exporting = false
+                    say(ok ? "Map saved as an image." : "The image couldn't be saved there.", ok)
+                })
+            })
+            return
+        }
+        const ok = preferences.saveText(url, kind === "svg" ? svg() : mermaid())
+        say(ok ? (kind === "svg" ? "Map saved as an SVG drawing." : "Map saved as a Mermaid diagram.") : "The file couldn't be saved there.", ok)
+    }
+    FileDialog {
+        id: exportDialog
+        property string kind: "png"
+        title: kind === "png" ? "Save the map as an image" : kind === "svg" ? "Save the map as an SVG drawing" : "Save the map as a Mermaid diagram"
+        fileMode: FileDialog.SaveFile
+        defaultSuffix: kind === "mermaid" ? "mmd" : kind
+        nameFilters: kind === "png" ? ["PNG image (*.png)"] : kind === "svg" ? ["SVG drawing (*.svg)"] : ["Mermaid diagram (*.mmd *.md)"]
+        currentFile: "file:network-map." + (kind === "mermaid" ? "mmd" : kind)
+        onAccepted: topo.saveExport(selectedFile.toString())
     }
 
     // ---- Layout -------------------------------------------------------------------------------
@@ -482,7 +697,7 @@ Item {
         anchors.left: parent.left; anchors.top: parent.top; anchors.bottom: parent.bottom
         anchors.right: inspector.visible ? inspector.left : parent.right
         anchors.rightMargin: inspector.visible ? 12 : 0
-        color: theme.colors.background
+        color: topo.mapBackground
         border.color: theme.colors.border
         radius: 10
         clip: true
@@ -526,26 +741,18 @@ Item {
                 // Dot grid that pans and zooms with the map.
                 const step = 26 * z
                 if (step > 8) {
-                    ctx.fillStyle = topo.tint(theme.colors.muted, .18)
+                    ctx.fillStyle = topo.operations ? topo.tint(theme.colors.accent, .16) : topo.tint(theme.colors.muted, .18)
                     for (let x = ((topo.panX % step) + step) % step; x < width; x += step)
                         for (let y = ((topo.panY % step) + step) % step; y < height; y += step) ctx.fillRect(x, y, 1.5, 1.5)
                 }
                 ctx.save()
                 ctx.translate(topo.panX, topo.panY); ctx.scale(z, z)
                 ctx.lineCap = "butt"; ctx.lineJoin = "miter"; ctx.miterLimit = 4
-                // Zones: each network and the VMs plugged into it share a softly tinted area.
-                for (const id of g.order) {
-                    const sw = g.byId[id]
-                    if (sw.kind !== "switch" || !topo.items[id]) continue
-                    const members = g.cables.filter(function(c) { return c.to === id && c.state !== "next" }).map(function(c) { return topo.items[c.vm] }).filter(function(it) { return !!it })
-                    if (members.length === 0) continue
-                    const all = members.concat([topo.items[id]])
-                    let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity
-                    for (const it of all) { x0 = Math.min(x0, it.x); y0 = Math.min(y0, it.y); x1 = Math.max(x1, it.x + it.width); y1 = Math.max(y1, it.y + it.height) }
-                    const pad = 18, ink = topo.uplinkInk(sw.uplink)
-                    ctx.beginPath(); ctx.roundedRect(x0 - pad, y0 - pad, x1 - x0 + pad * 2, y1 - y0 + pad * 2, 16, 16)
-                    ctx.fillStyle = topo.tint(ink, sw.running ? .05 : .025); ctx.fill()
-                    ctx.strokeStyle = topo.tint(ink, sw.running ? .22 : .1); ctx.lineWidth = 1; ctx.stroke()
+                // Zones: each network and the VMs plugged into it share a softly tinted, titled area.
+                for (const zone of topo.zones()) {
+                    ctx.beginPath(); ctx.roundedRect(zone.x, zone.y, zone.w, zone.h, 16, 16)
+                    ctx.fillStyle = topo.tint(zone.ink, zone.running ? .05 : .025); ctx.fill()
+                    ctx.strokeStyle = topo.tint(zone.ink, zone.running ? .22 : .1); ctx.lineWidth = 1; ctx.stroke()
                 }
                 const focus = topo.reachFocus
                 const onPath = focus ? Object.assign({}, focus.cables, focus.uplinks) : {}
@@ -553,31 +760,37 @@ Item {
                 for (const u of g.uplinks) {
                     const p = topo.uplinkGeometry(u)
                     if (!p) continue
-                    const ink = u.kind === "wan" ? theme.colors.warning : topo.uplinkInk(u.kind)
+                    const st = topo.uplinkStyle(u), ink = st.ink
                     ctx.globalAlpha = focus && !onPath[u.id] ? .18 : 1
                     if (onPath[u.id]) { ctx.strokeStyle = topo.tint(ink, .28); ctx.lineWidth = 14; stroke(ctx, p) }
-                    ctx.strokeStyle = u.live ? topo.tint(ink, .85) : topo.tint(theme.colors.muted, .5)
-                    ctx.lineWidth = u.kind === "wan" ? 4 : 3
-                    stroke(ctx, p, u.kind === "lan" || !u.live ? [10, 8] : null)
+                    ctx.strokeStyle = topo.tint(ink, st.alpha); ctx.lineWidth = st.width
+                    if (topo.operations && st.live) { ctx.shadowColor = ink; ctx.shadowBlur = 10 }
+                    stroke(ctx, p, st.dash)
+                    ctx.shadowBlur = 0
                 }
                 // VM cables, colored by where they lead; dashes mark pulled or not-yet-applied cables.
                 for (const c of g.cables) {
                     const p = topo.geometry(c)
                     if (!p) continue
-                    const dest = g.byId[c.to]
-                    const ink = c.to === "host" ? theme.colors.warning : topo.uplinkInk(dest ? dest.uplink : "")
+                    const st = topo.cableStyle(c), ink = st.ink
                     ctx.globalAlpha = focus && !onPath[c.id] && topo.selectedCable !== c.id ? .18 : 1
                     if (onPath[c.id] || topo.selectedCable === c.id) { ctx.strokeStyle = topo.tint(theme.colors.accent, .3); ctx.lineWidth = 12; stroke(ctx, p) }
                     // Busy cables glow, brighter the more they carry.
                     const busy = c.up ? topo.busyness(topo.nicStats(c)) : 0
                     if (busy > 0) { ctx.strokeStyle = topo.tint(ink, .1 + busy * .25); ctx.lineWidth = 6 + busy * 8; stroke(ctx, p) }
-                    ctx.lineWidth = 2.6
-                    if (c.state === "next") { ctx.strokeStyle = topo.tint(theme.colors.muted, .9); stroke(ctx, p, [6, 7]) }
-                    else if (c.state === "removing") { ctx.strokeStyle = topo.tint(theme.colors.muted, .6); stroke(ctx, p, [2, 7]) }
-                    else if (!c.up) { ctx.strokeStyle = topo.tint(theme.colors.danger, .9); stroke(ctx, p, [9, 7]) }
-                    else { ctx.strokeStyle = c.live ? ink : topo.tint(ink, .45); stroke(ctx, p) }
+                    ctx.lineWidth = 2.6; ctx.strokeStyle = topo.tint(ink, st.alpha)
+                    if (topo.operations && st.live) { ctx.shadowColor = ink; ctx.shadowBlur = 8 }
+                    stroke(ctx, p, st.dash)
+                    ctx.shadowBlur = 0
                 }
                 ctx.globalAlpha = 1
+                // Zone titles go on top of the cables, on a backing so a cable never runs through them.
+                ctx.font = "bold 10px sans-serif"
+                for (const zone of topo.zones()) {
+                    const w = ctx.measureText(zone.title).width
+                    ctx.fillStyle = String(topo.mapBackground); ctx.fillRect(zone.x + 10, zone.y + 6, w + 8, 15)
+                    ctx.fillStyle = topo.tint(zone.ink, zone.running ? .75 : .4); ctx.fillText(zone.title, zone.x + 14, zone.y + 17)
+                }
                 if (topo.wire) {
                     const a = topo.topOf(topo.wire.from)
                     ctx.strokeStyle = topo.wire.over ? theme.colors.success : theme.colors.accent; ctx.lineWidth = 2.6
@@ -741,6 +954,28 @@ Item {
                 }
             }
 
+            // Ping walkthrough: the envelope travels the current step's cable or uplink, or waits at a device.
+            Item {
+                id: envelope
+                objectName: "pingEnvelope"
+                readonly property var step: topo.trace ? topo.trace.steps[topo.trace.index] : null
+                readonly property var geo: step && topo.layoutStamp >= 0 && topo.registry >= 0 ? topo.segmentGeometry(step.seg) : null
+                readonly property var node: step ? topo.items[step.node] || null : null
+                property real t: 1
+                readonly property var at: geo && step && step.seg ? topo.point(geo, step.seg.reverse ? 1 - t : t)
+                    : node ? {x: node.x + node.width / 2, y: node.y - 4} : ({x: 0, y: 0})
+                visible: !!step
+                x: at.x - 14; y: at.y - 10; z: 30
+                Rectangle {
+                    width: 28; height: 20; radius: 3
+                    color: envelope.step && envelope.step.blocked ? theme.colors.danger : theme.colors.accent
+                    border.color: "white"; border.width: 1.5
+                    Label { anchors.centerIn: parent; text: "✉"; color: "white"; font.pixelSize: 14 }
+                }
+                onStepChanged: { envelopeMove.stop(); t = 0; if (geo) envelopeMove.restart(); else t = 1 }
+                NumberAnimation { id: envelopeMove; target: envelope; property: "t"; from: 0; to: envelope.step && envelope.step.blocked ? .35 : 1; duration: 950; easing.type: Easing.InOutQuad }
+            }
+
             Item {
                 id: wireEnd
                 x: topo.wire ? topo.wire.x : 0; y: topo.wire ? topo.wire.y : 0
@@ -749,6 +984,7 @@ Item {
 
         // ---- HUD ----
         Chip {
+            visible: !topo.exporting
             anchors.left: parent.left; anchors.top: parent.top; anchors.margins: 12
             implicitWidth: zoomRow.implicitWidth + 10; implicitHeight: zoomRow.implicitHeight + 8
             RowLayout {
@@ -759,11 +995,14 @@ Item {
                 Rectangle { width: 1; height: 18; color: theme.colors.border }
                 AppButton { objectName: "topologyFit"; iconName: "expand"; tone: "quiet"; implicitWidth: 30; implicitHeight: 30; leftPadding: 6; rightPadding: 6; hint: "Fit to view · F"; onClicked: topo.refit() }
                 AppButton { objectName: "topologyArrange"; iconName: "grid"; tone: "quiet"; implicitWidth: 30; implicitHeight: 30; leftPadding: 6; rightPadding: 6; hint: "Tidy up: arrange everything automatically"; onClicked: topo.arrange() }
+                AppButton { id: exportButton; objectName: "topologyExport"; iconName: "download"; tone: "quiet"; implicitWidth: 30; implicitHeight: 30; leftPadding: 6; rightPadding: 6; hint: "Export the map as an image, SVG drawing or Mermaid diagram"; onClicked: exportMenu.popup(exportButton, 0, exportButton.height) }
+                AppButton { objectName: "topologyStyle"; iconName: "monitor"; tone: "quiet"; implicitWidth: 30; implicitHeight: 30; leftPadding: 6; rightPadding: 6; checked: topo.operations; hint: topo.operations ? "Standard map style" : "Operations-center style: dark map, glowing live cables"; onClicked: topo.setOperations(!topo.operations) }
                 AppButton { objectName: "topologyInspectorToggle"; iconName: "info"; tone: "quiet"; implicitWidth: 30; implicitHeight: 30; leftPadding: 6; rightPadding: 6; checked: topo.inspectorOpen; hint: topo.inspectorOpen ? "Hide the side panel" : "Show the side panel"; onClicked: topo.setInspector(!topo.inspectorOpen) }
             }
         }
         AppButton {
             objectName: "killInternet"
+            visible: !topo.exporting
             anchors.right: parent.right; anchors.top: parent.top; anchors.margins: 12
             text: "Cut off internet"; iconName: "unplug"; tone: "danger"
             hint: "Pull every cable that leads to the internet or your local network, on running and stopped VMs"
@@ -818,7 +1057,7 @@ Item {
             id: tip
             objectName: "topologyTip"
             property bool dismissed: preferences.get("topologyTipDismissed", false) === true || preferences.get("topologyTipDismissed", false) === "true"
-            visible: !dismissed && topo.graph.order.some(function(id) { return topo.graph.byId[id].kind === "vm" })
+            visible: !dismissed && !topo.exporting && topo.graph.order.some(function(id) { return topo.graph.byId[id].kind === "vm" })
             anchors.horizontalCenter: parent.horizontalCenter; anchors.top: parent.top; anchors.topMargin: 58 + (topo.notice !== "" ? noticeText.implicitHeight + 26 : 0)
             width: Math.min(viewport.width - 40, 560); implicitHeight: tipRow.implicitHeight + 18
             border.color: topo.tint(theme.colors.accent, .5)
@@ -833,6 +1072,99 @@ Item {
                 AppButton { iconName: "close"; tone: "quiet"; implicitWidth: 24; implicitHeight: 24; leftPadding: 4; rightPadding: 4; topPadding: 2; bottomPadding: 2; hint: "Got it"; onClicked: { tip.dismissed = true; preferences.set("topologyTipDismissed", true) } }
             }
         }
+        // Minimap: the whole map with the visible part outlined. Shown while the map doesn't fit; click or drag to move.
+        Chip {
+            id: minimap
+            objectName: "topologyMinimap"
+            readonly property var bounds: topo.registry >= 0 && topo.layoutStamp >= 0 ? topo.worldBounds() : ({x: 0, y: 0, w: 1, h: 1})
+            readonly property real scale: Math.min((width - 12) / Math.max(1, bounds.w), (height - 12) / Math.max(1, bounds.h))
+            readonly property bool overflowing: bounds.w * topo.zoom > viewport.width - 40 || bounds.h * topo.zoom > viewport.height - 40
+                || topo.panX + bounds.x * topo.zoom < 0 || topo.panY + bounds.y * topo.zoom < 0
+                || topo.panX + (bounds.x + bounds.w) * topo.zoom > viewport.width || topo.panY + (bounds.y + bounds.h) * topo.zoom > viewport.height
+            visible: overflowing && !topo.exporting && viewport.width > 640
+            anchors.right: parent.right; anchors.bottom: legendChip.top; anchors.margins: 12; anchors.bottomMargin: 8
+            width: 190; height: 120
+            function toWorld(px, py) { return {x: bounds.x + (px - 6) / scale, y: bounds.y + (py - 6) / scale} }
+            function centerOn(px, py) {
+                const w = toWorld(px, py)
+                topo.userView = true; topo.panX = viewport.width / 2 - w.x * topo.zoom; topo.panY = viewport.height / 2 - w.y * topo.zoom
+            }
+            Canvas {
+                id: miniCanvas
+                anchors.fill: parent
+                onPaint: {
+                    const ctx = getContext("2d"); ctx.reset()
+                    const m = minimap, w = m.bounds
+                    for (const id in topo.items) {
+                        const it = topo.items[id]
+                        ctx.fillStyle = topo.tint(it.ink, .8)
+                        ctx.fillRect(6 + (it.x - w.x) * m.scale, 6 + (it.y - w.y) * m.scale, Math.max(2, it.width * m.scale), Math.max(2, it.height * m.scale))
+                    }
+                    // The part of the map in view.
+                    const vx = (-topo.panX / topo.zoom - w.x) * m.scale + 6, vy = (-topo.panY / topo.zoom - w.y) * m.scale + 6
+                    ctx.strokeStyle = String(theme.colors.accent); ctx.lineWidth = 1.5
+                    ctx.strokeRect(vx, vy, viewport.width / topo.zoom * m.scale, viewport.height / topo.zoom * m.scale)
+                }
+                Connections {
+                    target: topo
+                    function onPanXChanged() { miniCanvas.requestPaint() }
+                    function onPanYChanged() { miniCanvas.requestPaint() }
+                    function onZoomChanged() { miniCanvas.requestPaint() }
+                    function onLayoutStampChanged() { miniCanvas.requestPaint() }
+                    function onRegistryChanged() { miniCanvas.requestPaint() }
+                }
+                onVisibleChanged: if (visible) requestPaint()
+            }
+            MouseArea {
+                anchors.fill: parent
+                cursorShape: Qt.PointingHandCursor
+                onPressed: function(mouse) { minimap.centerOn(mouse.x, mouse.y) }
+                onPositionChanged: function(mouse) { if (pressed) minimap.centerOn(mouse.x, mouse.y) }
+            }
+        }
+        // Ping walkthrough controls: one step at a time, or play them all.
+        Chip {
+            id: tracePanel
+            objectName: "pingTrace"
+            property bool playing: false
+            readonly property int count: topo.trace ? topo.trace.steps.length : 0
+            readonly property var step: topo.trace ? topo.trace.steps[topo.trace.index] : null
+            visible: !!topo.trace && !topo.exporting
+            onVisibleChanged: if (!visible) playing = false
+            z: 25
+            anchors.horizontalCenter: parent.horizontalCenter; anchors.bottom: parent.bottom; anchors.bottomMargin: 12
+            width: Math.min(viewport.width - 40, 580); implicitHeight: traceColumn.implicitHeight + 22
+            border.color: tracePanel.step && tracePanel.step.blocked ? theme.colors.danger : theme.colors.accent
+            ColumnLayout {
+                id: traceColumn
+                anchors.left: parent.left; anchors.right: parent.right; anchors.top: parent.top; anchors.margins: 11
+                spacing: 6
+                RowLayout {
+                    Layout.fillWidth: true
+                    Label { textFormat: Text.PlainText; text: topo.trace ? topo.trace.title : ""; font.weight: Font.DemiBold; elide: Text.ElideRight; Layout.fillWidth: true }
+                    Label { text: topo.trace ? "Step " + (topo.trace.index + 1) + " of " + tracePanel.count : ""; color: theme.colors.muted; font.pixelSize: Math.round(11 * theme.textScale) }
+                    AppButton { iconName: "close"; tone: "quiet"; implicitWidth: 26; implicitHeight: 26; leftPadding: 4; rightPadding: 4; hint: "End the walkthrough · Esc"; onClicked: topo.trace = null }
+                }
+                Label {
+                    objectName: "pingTraceText"
+                    textFormat: Text.PlainText; Layout.fillWidth: true; wrapMode: Text.WordWrap
+                    text: tracePanel.step ? (tracePanel.step.blocked ? "✕ " : "") + tracePanel.step.text : ""
+                    color: tracePanel.step && tracePanel.step.blocked ? theme.colors.danger : theme.colors.foreground
+                }
+                RowLayout {
+                    Layout.fillWidth: true; spacing: 6
+                    AppButton { text: "Back"; iconName: "previous"; tone: "quiet"; enabled: !!topo.trace && topo.trace.index > 0; onClicked: { tracePanel.playing = false; topo.stepTrace(-1) } }
+                    AppButton { objectName: "pingTraceNext"; text: "Next"; iconName: "next"; enabled: !!topo.trace && topo.trace.index < tracePanel.count - 1; onClicked: { tracePanel.playing = false; topo.stepTrace(1) } }
+                    AppButton { text: tracePanel.playing ? "Pause" : "Play"; iconName: tracePanel.playing ? "pause" : "play"; tone: "quiet"; enabled: !!topo.trace && (tracePanel.playing || topo.trace.index < tracePanel.count - 1); onClicked: tracePanel.playing = !tracePanel.playing }
+                    Item { Layout.fillWidth: true }
+                    Label { text: "Simulated from your network settings · no packet is sent"; color: theme.colors.muted; font.pixelSize: Math.round(10 * theme.textScale) }
+                }
+            }
+            Timer {
+                interval: 1600; repeat: true; running: tracePanel.playing
+                onTriggered: { if (topo.trace && topo.trace.index < tracePanel.count - 1) topo.stepTrace(1); else tracePanel.playing = false }
+            }
+        }
         // Traffic card for the cable under the pointer: rates, packets, errors and the last two minutes.
         Chip {
             id: trafficCard
@@ -841,7 +1173,7 @@ Item {
             readonly property var stats: cable && topo.fleet && topo.fleet.current ? topo.nicStats(cable) : null
             readonly property var past: cable && topo.fleet && topo.fleet.history ? topo.nicHistory(cable) : null
             readonly property real ceiling: past ? Math.max(1024, Math.max.apply(null, (past.rx || []).concat(past.tx || []).map(function(v) { return v || 0 }))) : 1024
-            visible: !!cable
+            visible: !!cable && !topo.exporting
             z: 20
             width: 268; implicitHeight: cardColumn.implicitHeight + 20
             x: Math.max(8, Math.min(viewport.width - width - 8, topo.hoverAt.x + 18))
@@ -891,7 +1223,7 @@ Item {
         }
         Rectangle {
             objectName: "topologyNotice"
-            visible: topo.notice !== ""
+            visible: topo.notice !== "" && !topo.exporting
             anchors.horizontalCenter: parent.horizontalCenter; anchors.top: parent.top; anchors.topMargin: 58
             width: Math.min(viewport.width - 40, noticeText.implicitWidth + 32); height: noticeText.implicitHeight + 18
             color: theme.colors.raised; radius: 8; border.color: topo.noticeOk ? theme.colors.accent : theme.colors.danger
@@ -899,13 +1231,21 @@ Item {
         }
         Keys.onPressed: function(event) {
             if (event.key === Qt.Key_F) { topo.refit(); event.accepted = true }
-            else if (event.key === Qt.Key_Escape) { topo.wire = null; topo.selected = ""; topo.selectedCable = ""; event.accepted = true }
+            else if (event.key === Qt.Key_Escape) { topo.wire = null; topo.selected = ""; topo.selectedCable = ""; topo.trace = null; event.accepted = true }
         }
     }
 
     TopologyInspector { id: inspector; map: topo; anchors.right: parent.right; anchors.top: parent.top; anchors.bottom: parent.bottom; width: Math.min(340, parent.width * .34); visible: topo.inspectorOpen && topo.width > 760 }
 
     // ---- Menus ----
+    AppMenu {
+        id: exportMenu
+        objectName: "topologyExportMenu"
+        AppMenuItem { text: "Image (PNG)…"; onTriggered: topo.exportAs("png") }
+        AppMenuItem { text: "SVG drawing…"; onTriggered: topo.exportAs("svg") }
+        AppMenuItem { text: "Mermaid diagram…"; onTriggered: topo.exportAs("mermaid") }
+        AppMenuItem { text: "Copy as Mermaid"; onTriggered: { preferences.copy(topo.mermaid()); topo.say("Mermaid diagram copied.", true) } }
+    }
     AppMenu {
         id: canvasMenu
         objectName: "topologyCanvasMenu"
@@ -914,6 +1254,8 @@ Item {
         MenuSeparator { contentItem: Rectangle { implicitHeight: 1; color: theme.colors.border } }
         AppMenuItem { text: "Tidy up"; onTriggered: topo.arrange() }
         AppMenuItem { text: "Fit to view"; onTriggered: topo.refit() }
+        AppMenuItem { text: "Export the map…"; onTriggered: exportMenu.popup() }
+        AppMenuItem { text: topo.operations ? "Standard map style" : "Operations-center style"; onTriggered: topo.setOperations(!topo.operations) }
         AppMenuItem { text: "Cut off internet for every VM"; onTriggered: topo.killInternet() }
     }
     AppMenu {
@@ -942,6 +1284,23 @@ Item {
             }
         }
         AppMenuItem { text: "New network with this VM…"; enabled: !!vmMenu.node.owned; onTriggered: topo.createNetwork("nat", [vmMenu.node.uuid]) }
+        AppMenu {
+            id: pingMenu
+            objectName: "topologyPingMenu"
+            title: "Trace a ping to"
+            AppMenuItem { text: "The internet"; onTriggered: topo.startTrace(vmMenu.node.id, "internet") }
+            AppMenuItem { text: "This computer"; onTriggered: topo.startTrace(vmMenu.node.id, "host") }
+            Instantiator {
+                model: vmMenu.node.id ? topo.graph.order.filter(function(id) { return topo.graph.byId[id].kind === "vm" && id !== vmMenu.node.id }) : []
+                AppMenuItem {
+                    required property var modelData
+                    text: topo.graph.byId[modelData] ? topo.graph.byId[modelData].label : ""
+                    onTriggered: topo.startTrace(vmMenu.node.id, modelData)
+                }
+                onObjectAdded: function(index, object) { pingMenu.insertItem(index + 2, object) }
+                onObjectRemoved: function(index, object) { pingMenu.removeItem(object) }
+            }
+        }
         MenuSeparator { contentItem: Rectangle { implicitHeight: 1; color: theme.colors.border } }
         AppMenuItem { text: "More VM actions…"; onTriggered: { const it = topo.items[vmMenu.node.id]; topo.vmActions(vmMenu.node.vm, it, it ? it.width / 2 : 0, it ? it.height / 2 : 0) } }
     }
