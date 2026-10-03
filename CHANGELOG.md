@@ -1,6 +1,6 @@
 # Changelog
 
-## 1.7.0-dev
+## 1.7.0 (2026-10-02)
 
 - Network map: cables run in straight lines with square corners, routed around devices.
 - Live traffic per cable: each cable shows its own adapter's packets and glows when busy; hover its light for upload/download rates, packets, errors and a short history graph.
