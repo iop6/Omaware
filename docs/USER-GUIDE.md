@@ -125,7 +125,7 @@ Pending changes are remembered if you close OmaWare. If something else changes t
 
 ## The network map
 
-**Networks** (Ctrl+3) shows every VM, network, this computer and the internet as a map. Cables run in straight lines with square corners; each one is colored by where it leads (amber: the internet, blue: this computer only, green: other VMs only), dashed red when pulled, and gray-dashed while it waits for the VM's next start.
+**Networks** (Ctrl+3) shows every VM, network, this computer and the internet as a map. Each cable is a straight line into its own port on the network, colored by where it leads (amber: the internet, blue: this computer only, green: other VMs only). A pulled cable hangs loose from its VM with a red unplugged plug, and a cable waiting for the VM's next start is gray and dashed. Drag devices anywhere: they snap to the map's grid when you let go, so rows and columns line up.
 
 - **Connect and disconnect:** drag the ● on top of a VM onto a network (or onto This computer for a private internet connection). Double-click a cable's light to pull or plug it; right-click it to move or remove it. **Cut off internet** pulls every cable with a way out.
 - **Live traffic:** while a cable carries data, packets travel along it (up toward the network for uploads, down toward the VM for downloads), more and faster the busier it is, and the cable glows. Each cable shows its own adapter's traffic.
