@@ -577,22 +577,43 @@ Item {
         return count
     }
     // Picks a square route from `a` (leaving upward) to `b` (arriving from below) that passes behind
-    // as few devices as possible, then the shortest. Candidates bend at a few heights or detour
-    // through the gaps beside devices. `lane` keeps parallel cables apart.
-    function route(a, b, skip, lane) {
+    // as few devices as possible, then the shortest. It prefers bending at `bend` (see slots()), then
+    // tries a few other heights and detours through the gaps beside devices.
+    function route(a, b, skip, bend) {
         if (!a || !b) return null
-        const off = (lane || 0) * 8
         let best = null, bestCost = Infinity
         const consider = function(pts) {
             const g = path(pts), cost = blocked(g.pts, skip) * 100000 + g.len
             if (cost < bestCost) { best = g; bestCost = cost }
         }
-        const climb = a.y - 22 - off, under = b.y + 22 + off
-        if (a.y - b.y >= 28) for (const y of [(a.y + b.y) / 2 + off, climb, under]) consider([a, {x: a.x, y: y}, {x: b.x, y: y}, b])
+        if (Math.abs(a.x - b.x) < 1 && a.y > b.y) consider([a, b])
+        const climb = a.y - 22, under = b.y + 22
+        if (a.y - b.y >= 28)
+            for (const y of [bend === undefined ? (a.y + b.y) / 2 : Math.max(b.y + 14, Math.min(a.y - 14, bend)), (a.y + b.y) / 2, climb, under])
+                consider([a, {x: a.x, y: y}, {x: b.x, y: y}, b])
         let xs = [a.x, b.x]
-        for (const id in items) { const it = items[id]; xs.push(it.x - 18 - off, it.x + it.width + 18 + off) }
+        for (const id in items) { const it = items[id]; xs.push(it.x - 20, it.x + it.width + 20) }
         for (const x of xs) consider([a, {x: a.x, y: climb}, {x: x, y: climb}, {x: x, y: under}, {x: b.x, y: under}, b])
         return best
+    }
+    // Rounds each corner of a square route into a smooth bend, like a subway map.
+    function rounded(g, radius) {
+        const pts = g.pts
+        if (pts.length < 3) return g
+        let out = [pts[0]]
+        for (let i = 1; i < pts.length - 1; ++i) {
+            const p0 = pts[i - 1], p1 = pts[i], p2 = pts[i + 1]
+            const l1 = Math.hypot(p1.x - p0.x, p1.y - p0.y), l2 = Math.hypot(p2.x - p1.x, p2.y - p1.y)
+            const r = Math.min(radius, l1 / 2, l2 / 2)
+            if (r < 1) { out.push(p1); continue }
+            const a = {x: p1.x - (p1.x - p0.x) / l1 * r, y: p1.y - (p1.y - p0.y) / l1 * r}, b = {x: p1.x + (p2.x - p1.x) / l2 * r, y: p1.y + (p2.y - p1.y) / l2 * r}
+            for (let k = 0; k <= 6; ++k) {
+                const t = k / 6, u = 1 - t
+                out.push({x: u * u * a.x + 2 * u * t * p1.x + t * t * b.x, y: u * u * a.y + 2 * u * t * p1.y + t * t * b.y})
+            }
+        }
+        out.push(pts[pts.length - 1])
+        return path(out)
     }
     // Routes depend on where every device is, so they are cached until something moves.
     property int layoutStamp: 0
@@ -604,14 +625,78 @@ Item {
         if (!(key in store.entries)) { store.entries[key] = make(); store.size++ }
         return store.entries[key]
     }
-    // A cable runs from the VM's port up to the bottom of its network or this computer.
-    function geometry(c) {
-        const stamp = layoutStamp + registry
-        return cached("c|" + c.id + "|" + c.lane + "|" + stamp, function() {
-            return route(topOf(c.vm, c.lane * 16), bottomOf(c.to, c.lane * 16), [c.vm, c.to], c.lane)
+    // Ports: every connection gets its own slot on the edge it plugs into, like ports on a real
+    // switch, ordered by where the other end is so cables never cross on the way in. Bends are
+    // nested: a cable that travels further sideways bends closer to the device it plugs into, so
+    // the cables fan out side by side instead of sharing one line.
+    function slots() {
+        return cached("slots|" + (layoutStamp + registry), function() {
+            const center = function(id) { const it = items[id]; return it ? it.x + it.width / 2 : 0 }
+            let into = {}, out = {}
+            const add = function(map, key, entry) { (map[key] = map[key] || []).push(entry) }
+            for (const c of graph.cables) {
+                if (!items[c.vm] || !items[c.to]) continue
+                add(out, c.vm, {id: c.id, x: center(c.to)})
+                if (c.up || c.state !== "current") add(into, c.to, {id: c.id, x: center(c.vm), from: c.vm})
+            }
+            for (const u of graph.uplinks) if (items[u.from] && items[u.to]) add(into, u.to, {id: u.id, x: center(u.from), from: u.from})
+            let r = {}
+            const spread = function(map, prefix) {
+                for (const key in map) {
+                    const it = items[key], list = map[key].sort(function(a, b) { return a.x - b.x || (a.id < b.id ? -1 : 1) })
+                    const span = Math.min(it.width - 56, (list.length - 1) * 30)
+                    list.forEach(function(e, i) { r[prefix + e.id] = it.x + it.width / 2 + (list.length === 1 ? 0 : (i / (list.length - 1) - .5) * span) })
+                }
+            }
+            spread(into, "in|"); spread(out, "out|")
+            // Nested bends for the cables coming into each device, per side.
+            for (const key in into) {
+                const it = items[key]
+                for (const side of [-1, 1]) {
+                    const list = into[key].map(function(e) { return {id: e.id, dx: (r["out|" + e.id] !== undefined ? r["out|" + e.id] : e.x) - r["in|" + e.id]} })
+                        .filter(function(e) { return side < 0 ? e.dx < 0 : e.dx >= 0 })
+                        .sort(function(a, b) { return Math.abs(b.dx) - Math.abs(a.dx) })
+                    list.forEach(function(e, i) { r["bend|" + e.id] = it.y + it.height + 22 + i * 10 })
+                }
+            }
+            return r
         })
     }
-    function uplinkGeometry(u) { return cached("u|" + u.id + "|" + (layoutStamp + registry), function() { return route(topOf(u.from), bottomOf(u.to), [u.from, u.to], 0) }) }
+    // Where a cable or uplink leaves (top of the lower device) and arrives (bottom of the upper one).
+    // Ends within 24 px of each other straighten into one clean drop.
+    function ends(fromId, toId, edge) {
+        const f = items[fromId], t = items[toId]
+        if (!f || !t) return null
+        const s = slots()
+        const a = {x: s["out|" + edge] !== undefined ? s["out|" + edge] : f.x + f.width / 2, y: f.y}
+        let b = {x: s["in|" + edge] !== undefined ? s["in|" + edge] : t.x + t.width / 2, y: t.y + t.height}
+        if (Math.abs(a.x - b.x) < 24) b.x = Math.max(t.x + 14, Math.min(t.x + t.width - 14, a.x))
+        if (Math.abs(a.x - b.x) < 24) a.x = b.x
+        return {a: a, b: b, bend: s["bend|" + edge]}
+    }
+    // A cable runs from its port on the VM up to its port on the network or this computer. A pulled
+    // cable is drawn as a short loose end hanging from the VM, turned toward where it belongs.
+    function geometry(c) {
+        return cached("c|" + c.id + "|" + c.up + "|" + c.state + "|" + (layoutStamp + registry), function() {
+            const e = ends(c.vm, c.to, c.id)
+            if (!e) return null
+            if (c.state === "current" && !c.up) {
+                const side = e.b.x < e.a.x ? -1 : 1
+                return rounded(path([e.a, {x: e.a.x, y: e.a.y - 26}, {x: e.a.x + side * 22, y: e.a.y - 26}]), 10)
+            }
+            const g = route(e.a, e.b, [c.vm, c.to], e.bend)
+            return g ? rounded(g, 14) : null
+        })
+    }
+    function uplinkGeometry(u) {
+        return cached("u|" + u.id + "|" + (layoutStamp + registry), function() {
+            const e = ends(u.from, u.to, u.id)
+            const g = e ? route(e.a, e.b, [u.from, u.to], e.bend) : null
+            return g ? rounded(g, 14) : null
+        })
+    }
+    // A pulled cable's loose end, where its plug is drawn.
+    function looseEnd(c) { return !!c && c.state === "current" && !c.up }
     function nodeAt(wx, wy) {
         for (const id in items) {
             const it = items[id]
@@ -771,7 +856,7 @@ Item {
                 }
                 ctx.save()
                 ctx.translate(topo.panX, topo.panY); ctx.scale(z, z)
-                ctx.lineCap = "butt"; ctx.lineJoin = "miter"; ctx.miterLimit = 4
+                ctx.lineCap = "round"; ctx.lineJoin = "round"
                 // Zones: each network and the VMs plugged into it share a softly tinted, titled area.
                 for (const zone of topo.zones()) {
                     ctx.beginPath(); ctx.roundedRect(zone.x, zone.y, zone.w, zone.h, 16, 16)
@@ -786,7 +871,8 @@ Item {
                     if (!p) continue
                     const st = topo.uplinkStyle(u), ink = st.ink
                     ctx.globalAlpha = focus && !onPath[u.id] ? .18 : 1
-                    if (onPath[u.id]) { ctx.strokeStyle = topo.tint(ink, .28); ctx.lineWidth = 14; stroke(ctx, p) }
+                    // A soft wide glow under a bright core; selection widens the glow.
+                    if (st.live) { ctx.strokeStyle = topo.tint(ink, onPath[u.id] ? .3 : .12); ctx.lineWidth = onPath[u.id] ? 16 : 10; stroke(ctx, p) }
                     ctx.strokeStyle = topo.tint(ink, st.alpha); ctx.lineWidth = st.width
                     if (topo.operations && st.live) { ctx.shadowColor = ink; ctx.shadowBlur = 10 }
                     stroke(ctx, p, st.dash)
@@ -798,14 +884,22 @@ Item {
                     if (!p) continue
                     const st = topo.cableStyle(c), ink = st.ink
                     ctx.globalAlpha = focus && !onPath[c.id] && topo.selectedCable !== c.id ? .18 : 1
-                    if (onPath[c.id] || topo.selectedCable === c.id) { ctx.strokeStyle = topo.tint(theme.colors.accent, .3); ctx.lineWidth = 12; stroke(ctx, p) }
-                    // Busy cables glow, brighter the more they carry.
+                    const loose = topo.looseEnd(c)
+                    if (onPath[c.id] || topo.selectedCable === c.id) { ctx.strokeStyle = topo.tint(theme.colors.accent, .3); ctx.lineWidth = 13; stroke(ctx, p) }
+                    // A soft glow under a bright core; busy cables glow wider and brighter.
                     const busy = c.up ? topo.busyness(topo.nicStats(c)) : 0
-                    if (busy > 0) { ctx.strokeStyle = topo.tint(ink, .1 + busy * .25); ctx.lineWidth = 6 + busy * 8; stroke(ctx, p) }
-                    ctx.lineWidth = 2.6; ctx.strokeStyle = topo.tint(ink, st.alpha)
+                    if (!st.dash && !loose) { ctx.strokeStyle = topo.tint(ink, (st.live ? .12 : .06) + busy * .22); ctx.lineWidth = 8 + busy * 8; stroke(ctx, p) }
+                    ctx.lineWidth = loose ? 2.4 : 2.2; ctx.strokeStyle = topo.tint(ink, st.alpha)
                     if (topo.operations && st.live) { ctx.shadowColor = ink; ctx.shadowBlur = 8 }
-                    stroke(ctx, p, st.dash)
+                    stroke(ctx, p, loose ? null : st.dash)
                     ctx.shadowBlur = 0
+                    // A pulled cable ends in an unplugged plug: a small body with two pins.
+                    if (loose) {
+                        const end = p.pts[p.pts.length - 1], prev = p.pts[p.pts.length - 2], dir = end.x >= prev.x ? 1 : -1
+                        ctx.fillStyle = topo.tint(ink, .95)
+                        ctx.beginPath(); ctx.roundedRect(dir > 0 ? end.x : end.x - 9, end.y - 4.5, 9, 9, 2, 2); ctx.fill()
+                        ctx.fillRect(dir > 0 ? end.x + 9 : end.x - 13, end.y - 3.5, 4, 1.6); ctx.fillRect(dir > 0 ? end.x + 9 : end.x - 13, end.y + 1.9, 4, 1.6)
+                    }
                 }
                 ctx.globalAlpha = 1
                 // Zone titles go on top of the cables, on a backing so a cable never runs through them.
@@ -818,7 +912,7 @@ Item {
                 if (topo.wire) {
                     const a = topo.topOf(topo.wire.from)
                     ctx.strokeStyle = topo.wire.over ? theme.colors.success : theme.colors.accent; ctx.lineWidth = 2.6
-                    stroke(ctx, topo.elbow(a, {x: topo.wire.x, y: topo.wire.y}), [8, 6])
+                    stroke(ctx, topo.rounded(topo.elbow(a, {x: topo.wire.x, y: topo.wire.y}), 14), [8, 6])
                 }
                 ctx.restore()
             }
@@ -895,19 +989,28 @@ Item {
                     readonly property var cable: topo.graph.cableById[modelData] || null
                     // geometry() reads both nodes' positions, so this follows either end while it is dragged.
                     readonly property var geo: cable && topo.registry >= 0 && topo.layoutStamp >= 0 ? topo.geometry(cable) : null
-                    readonly property var spot: geo ? topo.point(geo, .22) : ({x: 0, y: 0})
+                    // Close to the VM's end, or at the plug of a pulled cable.
+                    readonly property var spot: !geo ? ({x: 0, y: 0}) : topo.looseEnd(cable) ? topo.point(geo, .55) : topo.point(geo, Math.min(.45, 30 / geo.len))
                     readonly property real cx: spot.x
                     readonly property real cy: spot.y
                     objectName: "cable_" + modelData
                     visible: !!geo
                     x: cx - width / 2; y: cy - height / 2
-                    width: 22; height: 22; radius: 11
-                    color: theme.colors.surface
-                    border.width: topo.selectedCable === modelData ? 2 : 1
+                    // A small LED on the cable; the ring only appears on hover or selection. The whole
+                    // 18 px square stays clickable.
+                    readonly property bool ringed: lightHover.hovered || topo.selectedCable === modelData || (!!cable && cable.state === "next")
+                    width: 18; height: 18; radius: 9
+                    color: ringed ? theme.colors.surface : "transparent"
+                    border.width: !ringed ? 0 : topo.selectedCable === modelData ? 2 : 1
                     border.color: !cable ? "transparent" : topo.selectedCable === modelData ? theme.colors.accent : cable.state === "next" ? theme.colors.accent : !cable.up ? theme.colors.danger : cable.live ? theme.colors.success : theme.colors.border
                     Rectangle {
                         visible: !!light.cable && light.cable.state !== "next"
-                        anchors.centerIn: parent; width: 8; height: 8; radius: 4
+                        anchors.centerIn: parent; width: 13; height: 13; radius: 6.5; opacity: .25
+                        color: !light.cable ? "transparent" : !light.cable.up ? theme.colors.danger : light.cable.live ? theme.colors.success : theme.colors.muted
+                    }
+                    Rectangle {
+                        visible: !!light.cable && light.cable.state !== "next"
+                        anchors.centerIn: parent; width: 7; height: 7; radius: 3.5
                         color: !light.cable ? "transparent" : !light.cable.up ? theme.colors.danger : light.cable.live ? theme.colors.success : theme.colors.muted
                         SequentialAnimation on opacity {
                             running: !!light.cable && light.cable.up && topo.busyness(topo.nicStats(light.cable)) > 0
@@ -956,17 +1059,29 @@ Item {
                     opacity: topo.reachFocus && !topo.reachFocus.cables[modelData] ? .25 : 1
                     Repeater {
                         model: flow.flowing ? flow.up + flow.down : 0
-                        Rectangle {
+                        // A glowing packet with a short fading trail behind it.
+                        Item {
+                            id: packet
                             required property int index
                             property real t: 0
                             readonly property bool upstream: index < flow.up
-                            readonly property real p: upstream ? t : 1 - t
-                            width: 7; height: 7; radius: 1.5; rotation: 45
-                            color: upstream ? theme.colors.accent : theme.colors.success
-                            readonly property var at: flow.geo ? topo.point(flow.geo, p) : ({x: 0, y: 0})
-                            x: at.x - 3.5
-                            y: at.y - 3.5
-                            opacity: t < .06 || t > .94 ? 0 : 1
+                            readonly property color ink: upstream ? theme.colors.accent : theme.colors.success
+                            readonly property real step: flow.geo ? 9 / flow.geo.len : 0
+                            function at(back) { const q = Math.max(0, Math.min(1, packet.t - back * packet.step)); return flow.geo ? topo.point(flow.geo, packet.upstream ? q : 1 - q) : ({x: 0, y: 0}) }
+                            opacity: t < .08 || t > .94 ? 0 : 1
+                            Repeater {
+                                model: 3
+                                Rectangle {
+                                    required property int index
+                                    readonly property var spot: packet.at(index)
+                                    readonly property real size: index === 0 ? 6 : 5 - index
+                                    x: spot.x - size / 2; y: spot.y - size / 2
+                                    width: size; height: size; radius: size / 2
+                                    color: packet.ink; opacity: index === 0 ? 1 : .45 - index * .15
+                                    // Soft halo around the head.
+                                    Rectangle { visible: parent.index === 0; anchors.centerIn: parent; width: 14; height: 14; radius: 7; color: packet.ink; opacity: .22 }
+                                }
+                            }
                             NumberAnimation on t {
                                 from: 0; to: 1; loops: Animation.Infinite
                                 duration: Math.max(600, 3200 - flow.busy * 2600)

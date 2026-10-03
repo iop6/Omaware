@@ -115,7 +115,7 @@ private slots:
         fleet->setProperty("sample", sample(100, 1)); fleet->setProperty("sample", sample(102, 2));
         QTest::qWait(300);
     }
-    // Every cable and uplink is made of horizontal and vertical runs only.
+    // Every cable and uplink is made of horizontal and vertical runs joined by short rounded bends.
     void squareCables() {
         const auto graph = map->property("graph").toMap();
         int checked = 0;
@@ -124,7 +124,9 @@ private slots:
             if (pts.size() < 2) return false;
             for (int i = 1; i < pts.size(); ++i) {
                 const auto a = pts[i - 1].toMap(), b = pts[i].toMap();
-                if (qAbs(a["x"].toDouble() - b["x"].toDouble()) > .01 && qAbs(a["y"].toDouble() - b["y"].toDouble()) > .01) return false;
+                // Long runs are straight; corners are short rounded bends.
+                const double dx = qAbs(a["x"].toDouble() - b["x"].toDouble()), dy = qAbs(a["y"].toDouble() - b["y"].toDouble());
+                if (dx > .01 && dy > .01 && std::hypot(dx, dy) > 20) return false;
             }
             return true;
         };
