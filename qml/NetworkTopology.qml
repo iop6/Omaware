@@ -33,6 +33,10 @@ Item {
     property int registry: 0
     property string selected: ""
     property string selectedCable: ""
+    property string hoverCable: ""     // cable whose traffic card is showing
+    property point hoverAt: Qt.point(0, 0)
+    // Everything the selected VM can reach right now; the rest of the map fades.
+    readonly property var reachFocus: selected && graph.byId[selected] && graph.byId[selected].kind === "vm" ? reachOf(selected) : null
     property real zoom: 1
     property real panX: 40
     property real panY: 40
@@ -67,6 +71,28 @@ Item {
     function tint(c, a) { const q = Qt.lighter(c, 1); return Qt.rgba(q.r, q.g, q.b, a) }
     function vmName(name) { return String(name || "").replace(/^omaware-/, "") }
     function bridgeFor(uuid) { return "bridge:oma" + String(uuid).replace(/-/g, "").slice(0, 8) }
+    // A live cable's traffic: its adapter's counters, found by host tap name, else by adapter order.
+    function nicStats(c) {
+        if (!c || !c.live || c.state !== "current" || !fleet || !fleet.current[c.uuid]) return null
+        const nics = fleet.current[c.uuid].nics || []
+        return (c.tap ? nics.find(function(n) { return n.name === c.tap }) : null) || nics.find(function(n) { return n.index === c.position }) || null
+    }
+    function nicHistory(c) {
+        const n = nicStats(c), h = n && fleet.history[c.uuid] ? fleet.history[c.uuid].nics || {} : {}
+        return n ? h[fleet.nicKey(n)] || null : null
+    }
+    // 0 (idle) to 1 (very busy), on a log scale from about 1 KB/s to 100 MB/s.
+    function busyness(n) {
+        const bytes = n ? (n.rx || 0) + (n.tx || 0) : 0
+        return bytes < 64 ? 0 : Math.max(.08, Math.min(1, (Math.log(bytes) / Math.LN10 - 3) / 5))
+    }
+    function rateText(bytes) {
+        if (bytes === null || bytes === undefined) return "–"
+        const units = ["B/s", "KB/s", "MB/s", "GB/s"]
+        let v = bytes, i = 0
+        while (v >= 1000 && i < units.length - 1) { v /= 1000; ++i }
+        return (v >= 100 || i === 0 ? Math.round(v) : v.toFixed(1)) + " " + units[i]
+    }
 
     // ---- Graph model --------------------------------------------------------------------------
     function makeSwitch(id, choice, net) {
@@ -100,15 +126,17 @@ Item {
             const savedByMac = {}
             for (const nic of savedNics) savedByMac[String(nic.mac).toLowerCase()] = nic
             let seen = {}
-            for (const nic of current) {
+            current.forEach(function(nic, position) {
                 const key = String(nic.mac).toLowerCase(), saved = savedByMac[key]
                 seen[key] = true
+                // `tap` and `position` find this adapter's traffic counters (see nicStats()).
                 cables.push({id: vm.uuid + "/" + key, vm: id, uuid: vm.uuid, mac: nic.mac, to: target(nic.networkId), networkId: nic.networkId,
-                    up: !!nic.linkUp, live: live, model: nic.model, state: live && !saved ? "removing" : "current", addresses: addresses[key] || []})
+                    up: !!nic.linkUp, live: live, model: nic.model, state: live && !saved ? "removing" : "current", addresses: addresses[key] || [],
+                    tap: live ? String(nic.target || "") : "", position: position})
                 if (live && saved && saved.networkId !== nic.networkId)
                     cables.push({id: vm.uuid + "/" + key + "/next", vm: id, uuid: vm.uuid, mac: nic.mac, to: target(saved.networkId), networkId: saved.networkId,
                         up: !!saved.linkUp, live: false, model: saved.model, state: "next"})
-            }
+            })
             if (live) for (const nic of savedNics) if (!seen[String(nic.mac).toLowerCase()])
                 cables.push({id: vm.uuid + "/" + String(nic.mac).toLowerCase() + "/next", vm: id, uuid: vm.uuid, mac: nic.mac, to: target(nic.networkId),
                     networkId: nic.networkId, up: !!nic.linkUp, live: false, model: nic.model, state: "next"})
@@ -161,6 +189,31 @@ Item {
         }
         return {byId: byId, order: order, cables: cables, cableById: cableById, uplinks: uplinks, exposed: exposed, sealed: sealed}
     }
+    // What a VM can reach through cables that are plugged in now: its networks and the other running
+    // VMs plugged into them, this computer, and the internet, with the cables and uplinks on the way.
+    function reachOf(vmId) {
+        const g = graph
+        let r = {nodes: {}, cables: {}, uplinks: {}}
+        r.nodes[vmId] = true
+        const out = function(sw) {
+            if (sw.uplink === "nat" || sw.uplink === "routed") { r.uplinks[sw.id + ">host"] = true; r.uplinks["host>internet"] = true; r.nodes.host = true; r.nodes.internet = true }
+            else if (sw.uplink === "host") { r.uplinks[sw.id + ">host"] = true; r.nodes.host = true }
+            else if (sw.uplink === "lan" || sw.uplink === "unknown") { r.uplinks[sw.id + ">internet"] = true; r.nodes.internet = true }
+        }
+        for (const c of g.cables) {
+            if (c.vm !== vmId || c.state === "next" || !c.up) continue
+            r.cables[c.id] = true
+            if (c.to === "host") { r.nodes.host = true; r.nodes.internet = true; r.uplinks["host>internet"] = true; continue }
+            const sw = g.byId[c.to]
+            if (!sw || !sw.running) continue
+            r.nodes[sw.id] = true
+            out(sw)
+            for (const other of g.cables)
+                if (other.to === sw.id && other.vm !== vmId && other.state !== "next" && other.up && g.byId[other.vm].running) { r.cables[other.id] = true; r.nodes[other.vm] = true }
+        }
+        return r
+    }
+    onReachFocusChanged: cables.requestPaint()
     onGraphChanged: {
         // Keep delegates alive across refreshes: only a changed set of ids recreates them.
         if (graph.order.join("|") !== nodeIds.join("|")) nodeIds = graph.order.slice()
@@ -240,26 +293,28 @@ Item {
     // Where cables attach: the top middle of a VM, the bottom middle of anything it connects up to.
     function topOf(id, offset) { const it = items[id]; return it ? {x: it.x + it.width / 2 + (offset || 0), y: it.y} : null }
     function bottomOf(id, offset) { const it = items[id]; return it ? {x: it.x + it.width / 2 + (offset || 0), y: it.y + it.height} : null }
-    // Cables are polylines sampled from smooth curves; `cum` holds the running length for point().
+    // Cables are polylines of straight runs with square corners; `cum` holds the running length for point().
     function path(pts) {
+        // Drop repeated points so corners stay crisp and lengths stay exact.
+        let clean = []
+        for (const q of pts) if (!clean.length || Math.abs(clean[clean.length - 1].x - q.x) > .01 || Math.abs(clean[clean.length - 1].y - q.y) > .01) clean.push(q)
+        if (clean.length === 1) clean.push(clean[0])
         let cum = [0]
-        for (let i = 1; i < pts.length; ++i) cum.push(cum[i - 1] + Math.hypot(pts[i].x - pts[i - 1].x, pts[i].y - pts[i - 1].y))
-        return {pts: pts, cum: cum, len: Math.max(1, cum[cum.length - 1])}
+        for (let i = 1; i < clean.length; ++i) cum.push(cum[i - 1] + Math.abs(clean[i].x - clean[i - 1].x) + Math.abs(clean[i].y - clean[i - 1].y))
+        return {pts: clean, cum: cum, len: Math.max(1, cum[cum.length - 1])}
     }
-    function bezier(a, c1, c2, b, steps) {
-        let pts = []
-        for (let i = 0; i <= steps; ++i) {
-            const t = i / steps, u = 1 - t
-            pts.push({x: u * u * u * a.x + 3 * u * u * t * c1.x + 3 * u * t * t * c2.x + t * t * t * b.x,
-                      y: u * u * u * a.y + 3 * u * u * t * c1.y + 3 * u * t * t * c2.y + t * t * t * b.y})
-        }
-        return pts
-    }
-    // A smooth S-shaped cable between two points.
-    function curve(a, b) {
+    // A cable leaves `a` going up and arrives at `b` from below, in horizontal and vertical runs only.
+    // `bend` is the height of its horizontal run, so parallel cables can use separate lanes.
+    function elbow(a, b, bend) {
         if (!a || !b) return null
-        const bend = Math.max(40, Math.abs(a.y - b.y) * .5), up = a.y >= b.y
-        return path(bezier(a, {x: a.x, y: a.y + (up ? -bend : bend)}, {x: b.x, y: b.y + (up ? bend : -bend)}, b, 28))
+        if (Math.abs(a.x - b.x) < 1) return path([a, {x: b.x, y: b.y}])
+        if (a.y - b.y >= 28) {
+            const y = Math.max(b.y + 14, Math.min(a.y - 14, bend === undefined ? (a.y + b.y) / 2 : bend))
+            return path([a, {x: a.x, y: y}, {x: b.x, y: y}, b])
+        }
+        // The target is level with or below the start: climb, cross over, then come up into it.
+        const top = Math.min(a.y, b.y) - 24, low = Math.max(a.y, b.y) + 24, side = (a.x + b.x) / 2
+        return path([a, {x: a.x, y: top}, {x: side, y: top}, {x: side, y: low}, {x: b.x, y: low}, b])
     }
     function point(g, t) {
         const want = Math.max(0, Math.min(1, t)) * g.len
@@ -268,37 +323,56 @@ Item {
         const span = Math.max(1e-6, g.cum[i] - g.cum[i - 1]), f = (want - g.cum[i - 1]) / span
         return {x: g.pts[i - 1].x + (g.pts[i].x - g.pts[i - 1].x) * f, y: g.pts[i - 1].y + (g.pts[i].y - g.pts[i - 1].y) * f}
     }
-    // Devices a straight run between two points would pass behind.
-    function blockers(a, b, skip) {
-        let found = []
+    // How many devices a route through these points would pass behind.
+    function blocked(pts, skip) {
+        let count = 0
         for (const id in items) {
             if (skip.indexOf(id) >= 0) continue
-            const it = items[id]
-            for (let i = 1; i < 12; ++i) {
-                const x = a.x + (b.x - a.x) * i / 12, y = a.y + (b.y - a.y) * i / 12
-                if (x > it.x - 6 && x < it.x + it.width + 6 && y > it.y - 6 && y < it.y + it.height + 6) { found.push(it); break }
+            const it = items[id], x0 = it.x - 8, y0 = it.y - 8, x1 = it.x + it.width + 8, y1 = it.y + it.height + 8
+            for (let s = 1; s < pts.length; ++s) {
+                const a = pts[s - 1], b = pts[s]
+                // Runs are horizontal or vertical, so overlap is a box test.
+                if (Math.max(a.x, b.x) > x0 && Math.min(a.x, b.x) < x1 && Math.max(a.y, b.y) > y0 && Math.min(a.y, b.y) < y1) { count++; break }
             }
         }
-        return found
+        return count
     }
-    // A cable runs from the VM's port up to the bottom of its network. When another device sits in the
-    // way (VMs stacked in a column), it leaves from the VM's side and runs up a gutter instead.
+    // Picks a square route from `a` (leaving upward) to `b` (arriving from below) that passes behind
+    // as few devices as possible, then the shortest. Candidates bend at a few heights or detour
+    // through the gaps beside devices. `lane` keeps parallel cables apart.
+    function route(a, b, skip, lane) {
+        if (!a || !b) return null
+        const off = (lane || 0) * 8
+        let best = null, bestCost = Infinity
+        const consider = function(pts) {
+            const g = path(pts), cost = blocked(g.pts, skip) * 100000 + g.len
+            if (cost < bestCost) { best = g; bestCost = cost }
+        }
+        const climb = a.y - 22 - off, under = b.y + 22 + off
+        if (a.y - b.y >= 28) for (const y of [(a.y + b.y) / 2 + off, climb, under]) consider([a, {x: a.x, y: y}, {x: b.x, y: y}, b])
+        let xs = [a.x, b.x]
+        for (const id in items) { const it = items[id]; xs.push(it.x - 18 - off, it.x + it.width + 18 + off) }
+        for (const x of xs) consider([a, {x: a.x, y: climb}, {x: x, y: climb}, {x: x, y: under}, {x: b.x, y: under}, b])
+        return best
+    }
+    // Routes depend on where every device is, so they are cached until something moves.
+    property int layoutStamp: 0
+    // Mutated in place, never reassigned, so filling it inside a binding notifies nothing.
+    readonly property var routeCache: ({entries: {}, size: 0})
+    function cached(key, make) {
+        const store = routeCache
+        if (store.size > 2000) { store.entries = {}; store.size = 0 }
+        if (!(key in store.entries)) { store.entries[key] = make(); store.size++ }
+        return store.entries[key]
+    }
+    // A cable runs from the VM's port up to the bottom of its network or this computer.
     function geometry(c) {
-        const a = topOf(c.vm, c.lane * 16), b = bottomOf(c.to, c.lane * 16), vm = items[c.vm]
-        if (!a || !b || !vm) return null
-        const inWay = blockers(a, b, [c.vm, c.to])
-        if (inWay.length === 0) return curve(a, b)
-        const left = b.x <= vm.x + vm.width / 2
-        const gutter = left ? Math.min.apply(null, inWay.map(function(it) { return it.x }).concat([vm.x])) - 14 - inWay.length * 7 + c.lane * 5
-                            : Math.max.apply(null, inWay.map(function(it) { return it.x + it.width }).concat([vm.x + vm.width])) + 14 + inWay.length * 7 + c.lane * 5
-        const start = {x: left ? vm.x : vm.x + vm.width, y: vm.y + vm.height / 2 + c.lane * 8}
-        const top = Math.min.apply(null, inWay.map(function(it) { return it.y })) - 22
-        let pts = bezier(start, {x: (start.x + gutter) / 2, y: start.y}, {x: gutter, y: start.y}, {x: gutter, y: start.y - 18}, 8)
-        pts.push({x: gutter, y: Math.max(top, b.y + 30)})
-        pts = pts.concat(bezier({x: gutter, y: Math.max(top, b.y + 30)}, {x: gutter, y: b.y + 8}, {x: b.x, y: b.y + 30}, b, 14).slice(1))
-        return path(pts)
+        const stamp = layoutStamp + registry
+        return cached("c|" + c.id + "|" + c.lane + "|" + stamp, function() {
+            return route(topOf(c.vm, c.lane * 16), bottomOf(c.to, c.lane * 16), [c.vm, c.to], c.lane)
+        })
     }
-    function uplinkGeometry(u) { return curve(topOf(u.from), bottomOf(u.to)) }
+    function uplinkGeometry(u) { return cached("u|" + u.id + "|" + (layoutStamp + registry), function() { return route(topOf(u.from), bottomOf(u.to), [u.from, u.to], 0) }) }
     function nodeAt(wx, wy) {
         for (const id in items) {
             const it = items[id]
@@ -419,7 +493,7 @@ Item {
             id: cables
             anchors.fill: parent
             renderStrategy: Canvas.Cooperative
-            // Samples a cable's curve so it can be stroked solid or dashed (Canvas has no line dashes).
+            // Strokes a cable solid or dashed (Canvas has no line dashes).
             function stroke(ctx, g, dash) {
                 if (!g) return
                 const pts = g.pts
@@ -458,7 +532,7 @@ Item {
                 }
                 ctx.save()
                 ctx.translate(topo.panX, topo.panY); ctx.scale(z, z)
-                ctx.lineCap = "round"; ctx.lineJoin = "round"
+                ctx.lineCap = "butt"; ctx.lineJoin = "miter"; ctx.miterLimit = 4
                 // Zones: each network and the VMs plugged into it share a softly tinted area.
                 for (const id of g.order) {
                     const sw = g.byId[id]
@@ -473,20 +547,14 @@ Item {
                     ctx.fillStyle = topo.tint(ink, sw.running ? .05 : .025); ctx.fill()
                     ctx.strokeStyle = topo.tint(ink, sw.running ? .22 : .1); ctx.lineWidth = 1; ctx.stroke()
                 }
-                const sel = topo.selected ? g.byId[topo.selected] : null
-                const onPath = {}
-                if (sel && sel.kind === "vm")
-                    for (const c of g.cables) if (c.vm === sel.id && c.state !== "next" && c.up) {
-                        onPath[c.id] = true
-                        if (c.to === "host") onPath["host>internet"] = true
-                        const sw = g.byId[c.to]
-                        if (sw && sw.running) { onPath[c.to + ">host"] = true; onPath[c.to + ">internet"] = true; if (sw.uplink === "nat" || sw.uplink === "routed") onPath["host>internet"] = true }
-                    }
+                const focus = topo.reachFocus
+                const onPath = focus ? Object.assign({}, focus.cables, focus.uplinks) : {}
                 // Uplinks: networks to this computer, this computer to the internet.
                 for (const u of g.uplinks) {
                     const p = topo.uplinkGeometry(u)
                     if (!p) continue
                     const ink = u.kind === "wan" ? theme.colors.warning : topo.uplinkInk(u.kind)
+                    ctx.globalAlpha = focus && !onPath[u.id] ? .18 : 1
                     if (onPath[u.id]) { ctx.strokeStyle = topo.tint(ink, .28); ctx.lineWidth = 14; stroke(ctx, p) }
                     ctx.strokeStyle = u.live ? topo.tint(ink, .85) : topo.tint(theme.colors.muted, .5)
                     ctx.lineWidth = u.kind === "wan" ? 4 : 3
@@ -498,17 +566,22 @@ Item {
                     if (!p) continue
                     const dest = g.byId[c.to]
                     const ink = c.to === "host" ? theme.colors.warning : topo.uplinkInk(dest ? dest.uplink : "")
+                    ctx.globalAlpha = focus && !onPath[c.id] && topo.selectedCable !== c.id ? .18 : 1
                     if (onPath[c.id] || topo.selectedCable === c.id) { ctx.strokeStyle = topo.tint(theme.colors.accent, .3); ctx.lineWidth = 12; stroke(ctx, p) }
+                    // Busy cables glow, brighter the more they carry.
+                    const busy = c.up ? topo.busyness(topo.nicStats(c)) : 0
+                    if (busy > 0) { ctx.strokeStyle = topo.tint(ink, .1 + busy * .25); ctx.lineWidth = 6 + busy * 8; stroke(ctx, p) }
                     ctx.lineWidth = 2.6
                     if (c.state === "next") { ctx.strokeStyle = topo.tint(theme.colors.muted, .9); stroke(ctx, p, [6, 7]) }
                     else if (c.state === "removing") { ctx.strokeStyle = topo.tint(theme.colors.muted, .6); stroke(ctx, p, [2, 7]) }
                     else if (!c.up) { ctx.strokeStyle = topo.tint(theme.colors.danger, .9); stroke(ctx, p, [9, 7]) }
                     else { ctx.strokeStyle = c.live ? ink : topo.tint(ink, .45); stroke(ctx, p) }
                 }
+                ctx.globalAlpha = 1
                 if (topo.wire) {
                     const a = topo.topOf(topo.wire.from)
                     ctx.strokeStyle = topo.wire.over ? theme.colors.success : theme.colors.accent; ctx.lineWidth = 2.6
-                    stroke(ctx, topo.curve(a, {x: topo.wire.x, y: topo.wire.y}), [8, 6])
+                    stroke(ctx, topo.elbow(a, {x: topo.wire.x, y: topo.wire.y}), [8, 6])
                 }
                 ctx.restore()
             }
@@ -523,6 +596,7 @@ Item {
             function onWireChanged() { cables.requestPaint() }
             function onRegistryChanged() { cables.requestPaint() }
         }
+        Connections { target: topo.fleet; ignoreUnknownSignals: true; function onCurrentChanged() { cables.requestPaint() } }
 
         // Background: pan by dragging, zoom with the wheel, right-click for the canvas menu.
         DragHandler {
@@ -570,8 +644,8 @@ Item {
                         topo.items[modelData] = this; topo.registry++
                     }
                     Component.onDestruction: { if (topo.items[modelData] === this) { delete topo.items[modelData]; topo.registry++ } }
-                    onXChanged: cables.requestPaint()
-                    onYChanged: cables.requestPaint()
+                    onXChanged: { topo.layoutStamp++; cables.requestPaint() }
+                    onYChanged: { topo.layoutStamp++; cables.requestPaint() }
                 }
             }
 
@@ -583,7 +657,7 @@ Item {
                     required property string modelData
                     readonly property var cable: topo.graph.cableById[modelData] || null
                     // geometry() reads both nodes' positions, so this follows either end while it is dragged.
-                    readonly property var geo: cable && topo.registry >= 0 ? topo.geometry(cable) : null
+                    readonly property var geo: cable && topo.registry >= 0 && topo.layoutStamp >= 0 ? topo.geometry(cable) : null
                     readonly property var spot: geo ? topo.point(geo, .22) : ({x: 0, y: 0})
                     readonly property real cx: spot.x
                     readonly property real cy: spot.y
@@ -599,7 +673,7 @@ Item {
                         anchors.centerIn: parent; width: 8; height: 8; radius: 4
                         color: !light.cable ? "transparent" : !light.cable.up ? theme.colors.danger : light.cable.live ? theme.colors.success : theme.colors.muted
                         SequentialAnimation on opacity {
-                            running: !!light.cable && light.cable.live && light.cable.up && !!topo.fleet && !!topo.fleet.current[light.cable.uuid] && (topo.fleet.current[light.cable.uuid].rx || 0) + (topo.fleet.current[light.cable.uuid].tx || 0) > 64
+                            running: !!light.cable && light.cable.up && topo.busyness(topo.nicStats(light.cable)) > 0
                             loops: Animation.Infinite
                             NumberAnimation { to: .25; duration: 90 }
                             NumberAnimation { to: 1; duration: 140 }
@@ -607,11 +681,14 @@ Item {
                         }
                     }
                     Label { visible: !!light.cable && light.cable.state === "next"; anchors.centerIn: parent; text: "↻"; color: theme.colors.accent; font.pixelSize: 12; font.weight: Font.Bold }
-                    HoverHandler { id: lightHover; cursorShape: Qt.PointingHandCursor }
-                    ToolTip.visible: lightHover.hovered
-                    ToolTip.delay: 300
-                    ToolTip.text: !cable ? "" : (cable.state === "next" ? "Waiting for the VM's next full start · " : cable.state === "removing" ? "Removed at the next start · " : !cable.up ? "Cable pulled · " : cable.live ? "Connected · " : "Plugged in · ")
-                        + (cable.addresses && cable.addresses.length ? cable.addresses.join(", ") + " · " : "") + cable.mac + "\nDouble-click to " + (cable.up ? "pull" : "plug in") + " · right-click for more"
+                    opacity: topo.reachFocus && !topo.reachFocus.cables[modelData] && topo.selectedCable !== modelData ? .3 : 1
+                    HoverHandler {
+                        id: lightHover; cursorShape: Qt.PointingHandCursor
+                        onHoveredChanged: {
+                            if (hovered) { topo.hoverCable = light.modelData; topo.hoverAt = Qt.point(topo.panX + light.cx * topo.zoom, topo.panY + light.cy * topo.zoom) }
+                            else if (topo.hoverCable === light.modelData) topo.hoverCable = ""
+                        }
+                    }
                     TapHandler {
                         acceptedButtons: Qt.LeftButton | Qt.RightButton
                         gesturePolicy: TapHandler.ReleaseWithinBounds
@@ -624,37 +701,41 @@ Item {
                 }
             }
 
-            // Traffic: packets travel along live cables while the VM is moving data.
+            // Traffic: packets travel along each live cable while its adapter moves data. Busier cables
+            // carry more, faster packets; uploads (accent) go up toward the network, downloads (green) come down.
             Repeater {
                 model: topo.cableIds
                 Item {
                     id: flow
                     required property string modelData
                     readonly property var cable: topo.graph.cableById[modelData] || null
-                    readonly property var rate: cable && topo.fleet ? topo.fleet.current[cable.uuid] || null : null
-                    readonly property real bytes: rate ? (rate.rx || 0) + (rate.tx || 0) : 0
-                    readonly property bool flowing: !!cable && cable.live && cable.up && cable.state === "current" && bytes > 64
-                    readonly property var geo: cable && topo.registry >= 0 ? topo.geometry(cable) : null
+                    readonly property var stats: cable && topo.fleet && topo.fleet.current ? topo.nicStats(cable) : null
+                    readonly property real busy: cable && cable.up ? topo.busyness(stats) : 0
+                    readonly property bool flowing: busy > 0
+                    readonly property var geo: cable && topo.registry >= 0 && topo.layoutStamp >= 0 ? topo.geometry(cable) : null
+                    readonly property int up: !stats ? 0 : (stats.tx || 0) < 64 ? 0 : Math.max(1, Math.round(busy * 4 * (stats.tx || 0) / Math.max(1, (stats.tx || 0) + (stats.rx || 0)) + .5))
+                    readonly property int down: !stats ? 0 : (stats.rx || 0) < 64 ? 0 : Math.max(1, Math.round(busy * 4 * (stats.rx || 0) / Math.max(1, (stats.tx || 0) + (stats.rx || 0)) + .5))
                     visible: flowing && !!geo
+                    opacity: topo.reachFocus && !topo.reachFocus.cables[modelData] ? .25 : 1
                     Repeater {
-                        model: flow.flowing ? [0, 1, 2] : []
+                        model: flow.flowing ? flow.up + flow.down : 0
                         Rectangle {
                             required property int index
                             property real t: 0
-                            readonly property bool upstream: index !== 1 ? (flow.rate && (flow.rate.tx || 0) >= (flow.rate.rx || 0)) : !(flow.rate && (flow.rate.tx || 0) >= (flow.rate.rx || 0))
+                            readonly property bool upstream: index < flow.up
                             readonly property real p: upstream ? t : 1 - t
-                            width: 7; height: 7; radius: 2; rotation: 45
+                            width: 7; height: 7; radius: 1.5; rotation: 45
                             color: upstream ? theme.colors.accent : theme.colors.success
                             readonly property var at: flow.geo ? topo.point(flow.geo, p) : ({x: 0, y: 0})
                             x: at.x - 3.5
                             y: at.y - 3.5
-                            opacity: t < .12 || t > .88 ? 0 : 1
+                            opacity: t < .06 || t > .94 ? 0 : 1
                             NumberAnimation on t {
                                 from: 0; to: 1; loops: Animation.Infinite
-                                duration: Math.max(700, 2600 - Math.log(Math.max(1, flow.bytes)) / Math.LN10 * 300)
+                                duration: Math.max(600, 3200 - flow.busy * 2600)
                                 running: flow.flowing && topo.visible
                             }
-                            Component.onCompleted: t = index / 3
+                            Component.onCompleted: t = (upstream ? index / Math.max(1, flow.up) : (index - flow.up) / Math.max(1, flow.down))
                         }
                     }
                 }
@@ -750,6 +831,62 @@ Item {
                     color: theme.colors.foreground; font.pixelSize: Math.round(11 * theme.textScale)
                 }
                 AppButton { iconName: "close"; tone: "quiet"; implicitWidth: 24; implicitHeight: 24; leftPadding: 4; rightPadding: 4; topPadding: 2; bottomPadding: 2; hint: "Got it"; onClicked: { tip.dismissed = true; preferences.set("topologyTipDismissed", true) } }
+            }
+        }
+        // Traffic card for the cable under the pointer: rates, packets, errors and the last two minutes.
+        Chip {
+            id: trafficCard
+            objectName: "cableTrafficCard"
+            readonly property var cable: topo.hoverCable ? topo.graph.cableById[topo.hoverCable] || null : null
+            readonly property var stats: cable && topo.fleet && topo.fleet.current ? topo.nicStats(cable) : null
+            readonly property var past: cable && topo.fleet && topo.fleet.history ? topo.nicHistory(cable) : null
+            readonly property real ceiling: past ? Math.max(1024, Math.max.apply(null, (past.rx || []).concat(past.tx || []).map(function(v) { return v || 0 }))) : 1024
+            visible: !!cable
+            z: 20
+            width: 268; implicitHeight: cardColumn.implicitHeight + 20
+            x: Math.max(8, Math.min(viewport.width - width - 8, topo.hoverAt.x + 18))
+            y: Math.max(8, Math.min(viewport.height - height - 8, topo.hoverAt.y - height / 2))
+            ColumnLayout {
+                id: cardColumn
+                anchors.left: parent.left; anchors.right: parent.right; anchors.top: parent.top; anchors.margins: 10
+                spacing: 4
+                Label {
+                    textFormat: Text.PlainText; Layout.fillWidth: true; elide: Text.ElideRight; font.weight: Font.DemiBold; font.pixelSize: Math.round(12 * theme.textScale)
+                    text: !trafficCard.cable ? "" : topo.graph.byId[trafficCard.cable.vm].label + "  →  " + (trafficCard.cable.to === "host" ? "Private internet" : (topo.graph.byId[trafficCard.cable.to] || {label: "?"}).label)
+                }
+                Label {
+                    textFormat: Text.PlainText; Layout.fillWidth: true; wrapMode: Text.WrapAnywhere; color: theme.colors.muted; font.pixelSize: Math.round(10 * theme.textScale)
+                    text: !trafficCard.cable ? "" : (trafficCard.cable.state === "next" ? "Waiting for the VM's next full start" : trafficCard.cable.state === "removing" ? "Removed at the next start" : !trafficCard.cable.up ? "Cable pulled" : trafficCard.cable.live ? "Connected" : "Plugged in · VM off")
+                        + " · " + (trafficCard.cable.addresses && trafficCard.cable.addresses.length ? trafficCard.cable.addresses.join(", ") + " · " : "") + trafficCard.cable.mac
+                }
+                GridLayout {
+                    visible: !!trafficCard.stats
+                    columns: 2; columnSpacing: 14; rowSpacing: 1; Layout.topMargin: 4
+                    Label { text: "↑ " + topo.rateText(trafficCard.stats ? trafficCard.stats.tx : null); color: theme.colors.accent; font.pixelSize: Math.round(12 * theme.textScale); font.weight: Font.DemiBold }
+                    Label { text: "↓ " + topo.rateText(trafficCard.stats ? trafficCard.stats.rx : null); color: theme.colors.success; font.pixelSize: Math.round(12 * theme.textScale); font.weight: Font.DemiBold }
+                    Label { text: (trafficCard.stats && trafficCard.stats.txPkts !== null ? Math.round(trafficCard.stats.txPkts) : "–") + " packets/s"; color: theme.colors.muted; font.pixelSize: Math.round(10 * theme.textScale) }
+                    Label { text: (trafficCard.stats && trafficCard.stats.rxPkts !== null ? Math.round(trafficCard.stats.rxPkts) : "–") + " packets/s"; color: theme.colors.muted; font.pixelSize: Math.round(10 * theme.textScale) }
+                }
+                Item {
+                    visible: !!trafficCard.past
+                    Layout.fillWidth: true; Layout.preferredHeight: 34; Layout.topMargin: 2
+                    Rectangle { anchors.fill: parent; color: "transparent"; border.color: theme.colors.border; radius: 3 }
+                    Spark { anchors.fill: parent; anchors.margins: 2; values: trafficCard.past ? trafficCard.past.tx : []; capacity: topo.fleet ? topo.fleet.capacity : 60; ceiling: trafficCard.ceiling; ink: theme.colors.accent }
+                    Spark { anchors.fill: parent; anchors.margins: 2; values: trafficCard.past ? trafficCard.past.rx : []; capacity: topo.fleet ? topo.fleet.capacity : 60; ceiling: trafficCard.ceiling; ink: theme.colors.success }
+                }
+                Label {
+                    visible: !!trafficCard.stats; Layout.fillWidth: true
+                    text: !trafficCard.stats ? "" : (trafficCard.stats.errorsTotal > 0 ? "⚠ " + trafficCard.stats.errorsTotal + " errors or dropped packets" : "No errors or dropped packets")
+                    color: trafficCard.stats && trafficCard.stats.errorsTotal > 0 ? theme.colors.warning : theme.colors.muted; font.pixelSize: Math.round(10 * theme.textScale)
+                }
+                Label {
+                    visible: !!trafficCard.cable && !trafficCard.stats && trafficCard.cable.live && trafficCard.cable.up
+                    text: "Measuring traffic…"; color: theme.colors.muted; font.pixelSize: Math.round(10 * theme.textScale)
+                }
+                Label {
+                    Layout.fillWidth: true; wrapMode: Text.WordWrap; color: theme.colors.muted; font.pixelSize: Math.round(10 * theme.textScale); Layout.topMargin: 2
+                    text: !trafficCard.cable ? "" : "Double-click to " + (trafficCard.cable.up ? "pull" : "plug in") + " · right-click for more"
+                }
             }
         }
         Rectangle {

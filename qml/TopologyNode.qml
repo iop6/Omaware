@@ -15,6 +15,8 @@ Rectangle {
     readonly property bool chosen: !!map && map.selected === nodeId
     readonly property bool dropTarget: !!map && !!map.wire && map.wire.over === nodeId
     readonly property bool dimmed: (kind === "vm" || kind === "switch") && !node.running
+    // Faded when a selected VM can't reach this device.
+    readonly property bool unreachable: !!map && !!map.reachFocus && !map.reachFocus.nodes[nodeId]
     readonly property var reach: kind === "vm" && map ? map.reachInfo[node.reach || "none"] : null
     // The color of what this device leads to: amber internet, blue this computer, green VMs only.
     readonly property color ink: !map ? theme.colors.border
@@ -33,7 +35,8 @@ Rectangle {
     color: dropTarget ? Qt.tint(theme.colors.surface, map.tint(theme.colors.success, .14)) : chosen ? Qt.tint(theme.colors.surface, map.tint(theme.colors.accent, .08)) : theme.colors.surface
     border.width: chosen || dropTarget ? 2 : 1
     border.color: dropTarget ? theme.colors.success : chosen ? theme.colors.accent : hover.hovered ? map.tint(ink, .7) : theme.colors.border
-    opacity: dimmed ? .7 : 1
+    opacity: unreachable ? .28 : dimmed ? .7 : 1
+    Behavior on opacity { NumberAnimation { duration: 140 } }
     z: drag.active ? 5 : chosen ? 2 : 1
     Accessible.role: Accessible.Button
     Accessible.name: (node.label || "") + ", " + subtitle + (reach ? ", " + reach.text : "")

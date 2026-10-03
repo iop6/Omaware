@@ -174,7 +174,7 @@ Snapshots are not backups: they live on the same disk as the VM.
 
 - **Monitor** (Ctrl+2) is an htop-style view: host CPU and memory, then one row per VM with CPU, memory, disk and network use and uptime. Click a column heading to sort; Enter opens a VM's console.
 - **Log** (Ctrl+`) slides up a list of every operation. Type to filter, show only errors, copy lines, or open the full **activity history** (the last 200 operations, kept across restarts).
-- **Command** (`:` or Ctrl+Shift+P) searches every action and VM. Type part of a name, pick with the arrow keys and press Enter.
+- **Command prompt** (`:` or Ctrl+Shift+P; there's no sidebar button) searches every action and VM. Type part of a name, pick with the arrow keys and press Enter.
 
 ## The ISO Shop
 
