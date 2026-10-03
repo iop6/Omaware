@@ -15,6 +15,9 @@
 #include "cloudseed.h"
 #include "guestinput.h"
 #include "labs.h"
+#include "vmfiles.h"
+#include <QLocale>
+#include <QStandardPaths>
 #include <QBuffer>
 #include <QImage>
 #include <QJsonArray>
@@ -34,6 +37,7 @@
 #include <QStorageInfo>
 #include <QLockFile>
 #include <QRegularExpression>
+#include <QLocale>
 #include <QStandardPaths>
 #include <QStorageInfo>
 #include <QUuid>
@@ -764,6 +768,51 @@ void VmWorker::manage(QString op, QVariantMap in) {
         QString message;
         const bool ok = changeNetwork(uuid, in["mac"].toString(), in["networkId"].toString(), in["model"].toString(), in["linkUp"].toBool(), in["remove"].toBool(), in["revision"].toString(), message);
         done(ok, message); return;
+    }
+    if (op == "vm.delete") {
+        // Deleting is never something an agent may do, and only OmaWare's own VMs can be deleted.
+        if (in.value("agentRequest").toBool()) { done(false, "AI agents can't delete VMs."); return; }
+        if (!owned(domain.get())) { done(false, "OmaWare only deletes VMs it created; this one is read-only."); return; }
+        const auto app = QStandardPaths::writableLocation(QStandardPaths::AppDataLocation), checkpointRoot = app + "/checkpoints/" + uuid;
+        if (QUuid(uuid).isNull()) { done(false, "Invalid VM identity."); return; }
+        if (QFile::exists(checkpointRoot + "/restore.json") || QFile::exists(checkpointRoot + "/freeze.json")) { done(false, "A snapshot restore or guest freeze for this VM hasn't finished. Recover it on the Snapshots page before deleting the VM."); return; }
+        if (active) {
+            if (!in.value("powerOff").toBool()) { done(false, "Turn the VM off before deleting it."); return; }
+            emit progress("Powering the VM off…");
+            if (virDomainDestroy(domain.get()) < 0) { done(false, lastError("Power off")); return; }
+        }
+        const auto name = QString::fromUtf8(virDomainGetName(domain.get()));
+        // Restores keep the disks and firmware variables they replace, so every definition the VM has had counts.
+        QStringList definitions{xmlOf(domain.get())};
+        for (const auto &id : QDir(checkpointRoot).entryList(QDir::Dirs | QDir::NoDotAndDotDot)) {
+            QFile manifest(checkpointRoot + "/" + id + "/manifest.json");
+            if (manifest.size() < 8 * 1024 * 1024 && manifest.open(QIODevice::ReadOnly)) definitions << QJsonDocument::fromJson(manifest.readAll()).object()["xml"].toString();
+        }
+        QFile pendingChanges(app + "/pending/" + uuid + ".json");
+        if (pendingChanges.size() < 8 * 1024 * 1024 && pendingChanges.open(QIODevice::ReadOnly)) definitions << QJsonDocument::fromJson(pendingChanges.readAll()).object()["xml"].toString();
+        const auto nvramFolder = qEnvironmentVariable("XDG_CONFIG_HOME", QDir::homePath() + "/.config") + "/libvirt/qemu/nvram";
+        auto plan = VmFiles::plan(definitions, uuid, {checkpointRoot, Paths::vms() + "/" + uuid, Paths::legacyVms() + "/" + uuid}, nvramFolder);
+        emit progress("Deleting the VM…");
+        // Firmware variables (UEFI), TPM state, saved state and libvirt's snapshot records go with the definition.
+        const unsigned flags = VIR_DOMAIN_UNDEFINE_MANAGED_SAVE | VIR_DOMAIN_UNDEFINE_SNAPSHOTS_METADATA | VIR_DOMAIN_UNDEFINE_CHECKPOINTS_METADATA
+            | VIR_DOMAIN_UNDEFINE_NVRAM | VIR_DOMAIN_UNDEFINE_TPM;
+        if (virDomainUndefineFlags(domain.get(), flags) < 0) { done(false, lastError("Delete VM")); return; }
+        QFile::remove(app + "/pending/" + uuid + ".json");
+        const auto tpm = qEnvironmentVariable("XDG_CONFIG_HOME", QDir::homePath() + "/.config") + "/libvirt/qemu/swtpm/" + uuid;
+        if (QFileInfo(tpm).isDir() && !QFileInfo(tpm).isSymLink()) QDir(tpm).removeRecursively();
+        // A disk is deleted only once no other VM uses it. If that can't be checked, everything stays.
+        QSet<QString> referenced; QString failure;
+        if (!Checkpoints::references(conn_, referenced, failure)) {
+            done(false, name + " was removed, but its disks and snapshots were kept because OmaWare couldn't check whether another VM uses them (" + failure + ").", {{"uuid", uuid}}); return;
+        }
+        VmFiles::exclude(plan, referenced);
+        emit progress("Deleting its disks and snapshots…");
+        QStringList failures;
+        const auto freed = VmFiles::remove(plan, failures);
+        auto message = QString("%1 was deleted with its disks and snapshots. %2 freed.").arg(name, QLocale().formattedDataSize(freed));
+        if (!plan.kept.isEmpty()) message += " Kept (not made for this VM, or used by another VM): " + plan.kept.join(", ") + ".";
+        if (!failures.isEmpty()) message += " Couldn't delete: " + failures.join(", ") + ".";
+        done(failures.isEmpty(), message, {{"uuid", uuid}, {"freedBytes", double(freed)}, {"kept", plan.kept}}); return;
     }
     if (op == "vm.power") {
         const auto action = in["action"].toString();

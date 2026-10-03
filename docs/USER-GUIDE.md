@@ -77,6 +77,7 @@ Each row shows the VM's state (● running, ‖ paused, ○ stopped, ✕ crashed
 - **Rename & organize** sets a display name, folder, tags, notes and favorite. This is only stored in OmaWare; the VM itself keeps its real name.
 - Favorites come first, then folders (alphabetically), then everything else. Click a group heading to fold it.
 - **Remove definition** (stopped VMs only) removes the VM from libvirt. Its disk files are kept.
+- **Delete VM…** deletes the VM for good: it's powered off if needed, then its disks, all its snapshots, restored disks, pending changes, and its UEFI firmware variables and TPM state are deleted. Type the VM's name to confirm. Installation ISOs, appliance files, disks OmaWare didn't make for this VM, and any disk another VM still uses are kept, and the result says which. AI agents can't delete VMs.
 - **Ctrl+B** shrinks the sidebar to a narrow strip of icons.
 
 ### Selecting several VMs
@@ -347,4 +348,4 @@ Press `?` or F1 in OmaWare for the full list. Shortcuts are off while the consol
 - **Settings** (theme, window size, folders, tags, notes): `~/.config/Omaware/Omaware/workspace.ini`.
 - **VM definitions** are kept by libvirt, not OmaWare.
 
-Removing a VM or detaching a disk never deletes disk files. When moving to another computer, copy the data folder as well as the disks: a libvirt definition alone doesn't include the disks or snapshots.
+Removing a VM's definition or detaching a disk never deletes disk files; **Delete VM…** does. When moving to another computer, copy the data folder as well as the disks: a libvirt definition alone doesn't include the disks or snapshots.

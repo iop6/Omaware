@@ -1068,6 +1068,63 @@ private slots:
         // Restore intentionally retains the old firmware file; this file belongs only to our fixture.
         QVERIFY(QFile::remove(oldNvram));
     }
+    // Deleting removes the VM with every file OmaWare made for it and keeps the installation media.
+    void deleteVm() {
+        const bool tpm = !QStandardPaths::findExecutable("swtpm").isEmpty();
+        QFile installer(files.filePath("delete-installer.iso")); QVERIFY(installer.open(QIODevice::WriteOnly)); installer.write(QByteArray(1 << 20, 'd')); installer.close();
+        auto result = command("vm.create", {{"name", "gone-" + QUuid::createUuid().toString(QUuid::Id128).left(8)}, {"sourceMode", "iso"}, {"source", installer.fileName()},
+            {"preset", "generic"}, {"firmware", "uefi"}, {"cpus", 1}, {"memoryMiB", 256}, {"diskGiB", 1}, {"networkId", "none"}, {"location", files.path()}, {"tpm", tpm}});
+        QVERIFY2(resultOk, qPrintable(result["message"].toString())); const auto uuid = result["uuid"].toString(), folder = result["storage"].toString();
+        const auto app = QStandardPaths::writableLocation(QStandardPaths::AppDataLocation), snapshots = app + "/checkpoints/" + uuid;
+        const auto tpmFolder = qEnvironmentVariable("XDG_CONFIG_HOME", QDir::homePath() + "/.config") + "/libvirt/qemu/swtpm/" + uuid;
+        backend->action(uuid, "start"); QTRY_VERIFY_WITH_TIMEOUT(active(uuid), 15000); QTRY_VERIFY(!backend->busy());
+        result = command("snapshots.create", {{"uuid", uuid}, {"name", "With memory"}, {"memory", true}}); QVERIFY2(resultOk, qPrintable(result["message"].toString()));
+        backend->action(uuid, "force-off"); QTRY_VERIFY(!active(uuid)); QTRY_VERIFY(!backend->busy());
+        result = command("snapshots.create", {{"uuid", uuid}, {"name", "Off"}}); QVERIFY2(resultOk, qPrintable(result["message"].toString()));
+        QVariant off; for (const auto &v : Checkpoints::list(uuid)) if (v.toMap()["name"] == "Off") off = v.toMap()["id"];
+        QVERIFY(off.isValid());
+        const auto originalNvram = details(uuid)["nvram"].toString(); QVERIFY(QFile::exists(originalNvram));
+        result = command("snapshots.restore", {{"uuid", uuid}, {"id", off}}); QVERIFY2(resultOk, qPrintable(result["message"].toString()));
+        const auto info = details(uuid); const auto disk = info["disks"].toList().first().toMap()["source"].toString(), nvram = info["nvram"].toString();
+        QVERIFY(QFile::exists(disk)); QVERIFY(QFile::exists(nvram)); QVERIFY(QDir(snapshots).exists());
+        if (tpm) QVERIFY(QDir(tpmFolder).exists());
+        backend->action(uuid, "start"); QTRY_VERIFY_WITH_TIMEOUT(active(uuid), 15000); QTRY_VERIFY(!backend->busy());
+        // A running VM is only deleted when powering it off was confirmed, and never by an agent.
+        command("vm.delete", {{"uuid", uuid}}); QVERIFY(!resultOk); QVERIFY(active(uuid));
+        command("vm.delete", {{"uuid", uuid}, {"powerOff", true}, {"agentRequest", true}}); QVERIFY(!resultOk); QVERIFY(active(uuid));
+        result = command("vm.delete", {{"uuid", uuid}, {"powerOff", true}}); QVERIFY2(resultOk, qPrintable(result["message"].toString()));
+        QVERIFY(result["freedBytes"].toDouble() > 0); QVERIFY(result["kept"].toStringList().contains(installer.fileName()));
+        QVERIFY(!virDomainLookupByUUIDString(external, uuid.toUtf8().constData()));
+        for (const auto &gone : {disk, nvram, originalNvram, snapshots, app + "/vms/" + uuid, Paths::vms() + "/" + uuid, folder, tpmFolder})
+            QVERIFY2(!QFileInfo::exists(gone), qPrintable(gone));
+        QVERIFY(QFile::exists(installer.fileName()));
+        created.removeAll(uuid);
+    }
+    void deleteVmUi() {
+        const auto source = makeSource(); QVERIFY(!source.isEmpty());
+        const auto name = "gone-ui-" + QUuid::createUuid().toString(QUuid::Id128).left(8);
+        auto result = command("vm.create", {{"name", name}, {"sourceMode", "disk"}, {"source", source}, {"preset", "generic"}, {"firmware", "bios"}, {"cpus", 1}, {"memoryMiB", 256}, {"networkId", "none"}, {"location", files.path()}});
+        QVERIFY2(resultOk, qPrintable(result["message"].toString())); const auto uuid = result["uuid"].toString(), folder = result["storage"].toString();
+        Theme theme("/nonexistent/palette"); QQmlApplicationEngine engine;
+        engine.rootContext()->setContextProperty("agent", new AgentBridge(backend.get(), &engine));
+        engine.rootContext()->setContextProperty("backend", backend.get()); engine.rootContext()->setContextProperty("theme", &theme);
+        engine.load(QUrl("qrc:/qml/Main.qml")); QVERIFY(!engine.rootObjects().isEmpty());
+        auto window = qobject_cast<QQuickWindow *>(engine.rootObjects().first()); QVERIFY(window);
+        QVariantMap vm; QTRY_VERIFY_WITH_TIMEOUT([&] { for (const auto &v : backend->domains()) if (v.toMap()["uuid"] == uuid) { vm = v.toMap(); return true; } return false; }(), 10000);
+        QVERIFY(window->findChild<QObject *>("vmMenuDelete"));
+        auto dialog = window->findChild<QObject *>("deleteDialog"); QVERIFY(dialog);
+        QVERIFY(QMetaObject::invokeMethod(dialog, "openFor", Q_ARG(QVariant, vm)));
+        QTRY_VERIFY(dialog->property("opened").toBool());
+        const auto expected = dialog->property("targetName").toString(); QVERIFY(!expected.isEmpty());
+        auto field = window->findChild<QObject *>("deleteVmName"), button = window->findChild<QObject *>("confirmDelete"); QVERIFY(field && button);
+        QVERIFY(!button->property("enabled").toBool());
+        field->setProperty("text", expected + "x"); QVERIFY(!button->property("enabled").toBool());
+        field->setProperty("text", expected); QTRY_VERIFY(button->property("enabled").toBool());
+        QVERIFY(QMetaObject::invokeMethod(button, "clicked"));
+        QTRY_VERIFY_WITH_TIMEOUT(!virDomainLookupByUUIDString(external, uuid.toUtf8().constData()), 20000);
+        QTRY_VERIFY(!QFileInfo::exists(folder)); QVERIFY(QFile::exists(source));
+        created.removeAll(uuid);
+    }
     void windowsTpmVms() {
         if (QStandardPaths::findExecutable("swtpm").isEmpty()) QSKIP("swtpm isn't installed here, so VMs can't have a TPM.");
         // A Windows 11 VM: SATA disk, TPM 2.0 and UEFI (with Secure Boot when the host has it).

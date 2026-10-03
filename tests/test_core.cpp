@@ -2,6 +2,7 @@
 #include "theme.h"
 #include "console.h"
 #include "domainconfig.h"
+#include "vmfiles.h"
 #include "networkcatalog.h"
 #include "configuration.h"
 #include "workspace.h"
@@ -39,6 +40,49 @@
 class CoreTest : public QObject {
     Q_OBJECT
 private slots:
+    void vmFilesToDelete() {
+        QTemporaryDir dir; const auto uuid = QString("7afaf622-327b-41a0-bc7b-f5e469a9d383");
+        const auto snapshots = dir.filePath("checkpoints/" + uuid), restored = dir.filePath("vms/" + uuid), created = dir.filePath("vms/flare-7afaf622");
+        const auto isos = dir.filePath("isos"), other = dir.filePath("vms/ubuntu-24.04"), elsewhere = dir.filePath("external");
+        for (const auto &d : {snapshots + "/a1", restored, created, isos, other, elsewhere}) QVERIFY(QDir().mkpath(d));
+        auto make = [](const QString &path, int bytes) { QFile f(path); return f.open(QIODevice::WriteOnly) && f.write(QByteArray(bytes, 'x')) == bytes; };
+        const auto system = created + "/system.qcow2", seed = created + "/seed.iso", overlay = snapshots + "/a1/vda.qcow2", restoredDisk = restored + "/vda.qcow2";
+        const auto iso = isos + "/Windows.iso", foreign = other + "/disk.qcow2", outside = elsewhere + "/mine.qcow2";
+        for (const auto &f : {system, seed, overlay, restoredDisk, iso, foreign, outside}) QVERIFY(make(f, 8192));
+        auto disk = [](const QString &device, const QString &file) { return "<disk type='file' device='" + device + "'><source file='" + file + "'/></disk>"; };
+        // "..", a lookalike folder and library media must never count as the VM's own files.
+        const auto xml = "<domain><devices>" + disk("disk", system) + disk("cdrom", seed) + disk("disk", restoredDisk) + disk("cdrom", iso) + disk("disk", foreign)
+            + disk("disk", outside) + disk("disk", created + "/../ubuntu-24.04/disk.qcow2") + disk("disk", dir.filePath("vms/flare-7afaf6229/x.qcow2")) + "</devices></domain>";
+        auto plan = VmFiles::plan({xml}, uuid, {snapshots, restored, dir.filePath("absent")});
+        QCOMPARE(QSet<QString>(plan.files.begin(), plan.files.end()), (QSet<QString>{system, seed, restoredDisk}));
+        QCOMPARE(QSet<QString>(plan.trees.begin(), plan.trees.end()), (QSet<QString>{snapshots, restored}));
+        QCOMPARE(plan.folders, QStringList{created});
+        QVERIFY(plan.kept.contains(iso) && plan.kept.contains(foreign) && plan.kept.contains(outside) && plan.kept.contains(dir.filePath("vms/flare-7afaf6229/x.qcow2")));
+        // A file another VM still uses stays, and so does a whole snapshot folder holding one.
+        auto shared = plan; VmFiles::exclude(shared, {system, overlay});
+        QVERIFY(!shared.files.contains(system) && shared.kept.contains(system) && !shared.trees.contains(snapshots) && shared.kept.contains(snapshots));
+        QVERIFY(shared.trees.contains(restored));
+        QStringList failures; const auto freed = VmFiles::remove(plan, failures);
+        QVERIFY(failures.isEmpty()); QVERIFY(freed >= 4 * 8192);
+        for (const auto &gone : {system, seed, restoredDisk, overlay, snapshots, restored, created}) QVERIFY2(!QFileInfo::exists(gone), qPrintable(gone));
+        for (const auto &stays : {iso, foreign, outside}) QVERIFY2(QFileInfo::exists(stays), qPrintable(stays));
+        // A folder made at creation stays if something else is in it.
+        QVERIFY(QDir().mkpath(created)); QVERIFY(make(created + "/system.qcow2", 10)); QVERIFY(make(created + "/notes.txt", 10));
+        auto second = VmFiles::plan({"<domain><devices>" + disk("disk", created + "/system.qcow2") + "</devices></domain>"}, uuid, {});
+        QVERIFY(VmFiles::remove(second, failures) > 0); QVERIFY(QFileInfo::exists(created + "/notes.txt"));
+        // Nothing is owned without a valid UUID marker.
+        QVERIFY(VmFiles::plan({"<domain><devices>" + disk("disk", outside) + "</devices></domain>"}, "not-a-uuid", {}).files.isEmpty());
+        // Older definitions (snapshots) name a disk a restore replaced, and libvirt's firmware variables
+        // for this VM's name; another VM's variables are kept.
+        const auto nvram = dir.filePath("nvram"); QVERIFY(QDir().mkpath(nvram)); QVERIFY(QDir().mkpath(created));
+        QVERIFY(make(created + "/old.qcow2", 10)); QVERIFY(make(nvram + "/omaware-flare_VARS.fd", 10)); QVERIFY(make(nvram + "/omaware-other_VARS.fd", 10));
+        const auto current = "<domain><name>omaware-flare</name><os><nvram>" + nvram + "/omaware-flare_VARS.fd</nvram></os><devices>" + disk("disk", restoredDisk) + "</devices></domain>";
+        const auto older = "<domain><name>omaware-flare</name><os><nvram>" + nvram + "/omaware-other_VARS.fd</nvram></os><devices>" + disk("disk", created + "/old.qcow2") + "</devices></domain>";
+        auto history = VmFiles::plan({current, older}, uuid, {}, nvram);
+        QVERIFY(history.files.contains(created + "/old.qcow2")); QVERIFY(history.files.contains(nvram + "/omaware-flare_VARS.fd"));
+        QVERIFY(history.kept.contains(nvram + "/omaware-other_VARS.fd")); QVERIFY(!history.files.contains(nvram + "/omaware-other_VARS.fd"));
+        QCOMPARE(history.folders, QStringList{created});
+    }
     void secureBootFirmware() {
         QTemporaryDir dir; const auto user = dir.filePath("user"), etc = dir.filePath("etc"), share = dir.filePath("share");
         for (const auto &d : {user, etc, share}) QVERIFY(QDir().mkpath(d));

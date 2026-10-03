@@ -1161,3 +1161,4 @@ QString Checkpoints::clone(virConnectPtr connection, QString uuid, QString id, Q
     if (!domain) { error = lastError("Create VM from checkpoint"); QDir(QFileInfo(tpmState(newUuid)).absolutePath() + "/..").removeRecursively(); return {}; }
     virDomainFree(domain); rollback.dismiss(); QFile::remove(destination + "/building.json"); return newUuid;
 }
+bool Checkpoints::references(virConnectPtr connection, QSet<QString> &paths, QString &error) { return ::references(connection, paths, error); }
