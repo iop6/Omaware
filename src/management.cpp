@@ -270,6 +270,16 @@ void VmWorker::manage(QString op, QVariantMap in) {
                 {"state", p.value("state.state")}, {"cpuTime", p.value("cpu.time")}, {"vcpus", p.value("vcpu.current")},
                 {"rdBytes", sumOf(p, "block", "rd.bytes")}, {"wrBytes", sumOf(p, "block", "wr.bytes")},
                 {"rxBytes", sumOf(p, "net", "rx.bytes")}, {"txBytes", sumOf(p, "net", "tx.bytes")}};
+            // Each adapter's counters, so the network map can show traffic per cable. `name` is the
+            // host tap (matching the adapter's target), absent for some backends; `index` is libvirt's order.
+            QVariantList nics;
+            for (int n = 0; n < p.value("net.count").toInt(); ++n) {
+                const auto key = "net." + QString::number(n) + ".";
+                nics.append(QVariantMap{{"index", n}, {"name", p.value(key + "name").toString()}, {"rxBytes", p.value(key + "rx.bytes")}, {"txBytes", p.value(key + "tx.bytes")},
+                    {"rxPkts", p.value(key + "rx.pkts")}, {"txPkts", p.value(key + "tx.pkts")},
+                    {"errors", p.value(key + "rx.errs").toDouble() + p.value(key + "tx.errs").toDouble() + p.value(key + "rx.drop").toDouble() + p.value(key + "tx.drop").toDouble()}});
+            }
+            vm["nics"] = nics;
             for (const auto &[field, key] : std::initializer_list<std::pair<const char *, const char *>>{{"balloon.current", "balloonKiB"}, {"balloon.available", "availableKiB"}, {"balloon.unused", "unusedKiB"}, {"balloon.rss", "rssKiB"}})
                 if (p.contains(field)) vm[key] = p.value(field);
             vm["uptimeSeconds"] = uptimes.value(vm["uuid"].toString(), -1);

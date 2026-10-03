@@ -6,6 +6,7 @@
 #include <QUrl>
 #include <QDirIterator>
 #include <QFileInfo>
+#include <QSaveFile>
 #include <algorithm>
 Workspace::Workspace(QObject *parent) : QObject(parent), settings_(QStandardPaths::writableLocation(QStandardPaths::AppConfigLocation) + "/workspace.ini", QSettings::IniFormat) {}
 QVariant Workspace::get(QString key, QVariant fallback) const { return settings_.value("preferences/" + key, fallback); }
@@ -19,6 +20,12 @@ void Workspace::saveVm(QString uuid, QVariantMap value) {
 }
 void Workspace::copy(QString text) { QGuiApplication::clipboard()->setText(text); }
 QString Workspace::localPath(QString url) const { return url.startsWith("file:") ? QUrl(url).toLocalFile() : url; }
+bool Workspace::saveText(QString url, QString text) const {
+    const auto path = localPath(url);
+    if (path.isEmpty()) return false;
+    QSaveFile file(path);
+    return file.open(QIODevice::WriteOnly) && file.write(text.toUtf8()) >= 0 && file.commit();
+}
 QVariantMap Workspace::mediaFiles(QString folder) {
     const QFileInfo directory(folder);
     QVariantMap result{{"folder", folder}, {"items", QVariantList{}}};

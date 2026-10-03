@@ -2,6 +2,7 @@
 import QtQuick
 import QtQuick.Controls
 import QtQuick.Layouts
+import QtQuick.Dialogs
 
 ColumnLayout {
     id: panel
@@ -471,6 +472,21 @@ ColumnLayout {
                             Connections { target: panel; function onVmUuidChanged() { labLogin.shown = "" } }
                             SectionHeading { title: "Lab login"; caption: "Set up when the lab “" + (labLogin.lab.lab || "") + "” was built"; iconName: "keyboard" }
                             DetailRow { Layout.fillWidth: true; label: "User"; value: labLogin.lab.user || "" }
+                            AppButton {
+                                objectName: "exportLabFile"
+                                text: "Export lab file…"; iconName: "download"; tone: "quiet"; implicitHeight: 28
+                                hint: "Save this lab's networks and VMs as a file you can share and import again"
+                                onClicked: labFileDialog.open()
+                            }
+                            FileDialog {
+                                id: labFileDialog
+                                title: "Save the lab as a file"
+                                fileMode: FileDialog.SaveFile
+                                defaultSuffix: "toml"
+                                nameFilters: ["OmaWare lab files (*.toml)"]
+                                currentFile: "file:" + (labLogin.lab.slug || "lab") + ".toml"
+                                onAccepted: agent.exportLab(labLogin.lab.slug, selectedFile.toString())
+                            }
                             RowLayout {
                                 Layout.fillWidth: true; spacing: 8
                                 DetailRow { objectName: "labPassword"; Layout.fillWidth: true; label: "Password"; value: labLogin.shown || "••••••••" }

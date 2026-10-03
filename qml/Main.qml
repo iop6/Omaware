@@ -572,7 +572,6 @@ ApplicationWindow {
                         Layout.fillWidth: true; spacing: 4
                         AppButton { text: root.sidebarRail ? "" : "Virtual machines"; iconName: "monitor"; leading: !root.sidebarRail; tone: "quiet"; checked: root.navigation === "library"; Layout.fillWidth: true; hint: "Virtual machines · Ctrl+1"; onClicked: root.navigation = "library" }
                         AppButton { objectName: "monitorNav"; text: root.sidebarRail ? "" : "Monitor"; iconName: "cpu"; leading: !root.sidebarRail; tone: "quiet"; checked: root.navigation === "monitor"; Layout.fillWidth: true; hint: "Live view of every VM · Ctrl+2"; onClicked: root.navigation = "monitor" }
-                        AppButton { objectName: "openActions"; text: root.sidebarRail ? "" : "Command"; iconName: "search"; leading: !root.sidebarRail; tone: "quiet"; Layout.fillWidth: true; hint: "Run any action · : or Ctrl+Shift+P"; onClicked: actionPalette.open() }
                         AppButton { objectName: "networksNav"; text: root.sidebarRail ? "" : "Networks"; iconName: "network"; leading: !root.sidebarRail; tone: "quiet"; checked: root.navigation === "networks"; Layout.fillWidth: true; hint: "Networks · Ctrl+3"; onClicked: root.navigation = "networks" }
                         AppButton { objectName: "isoShopNav"; text: root.sidebarRail ? "" : "ISO Shop"; iconName: "store"; leading: !root.sidebarRail; tone: "quiet"; checked: root.navigation === "isos"; Layout.fillWidth: true; hint: "Download installation ISOs · Ctrl+4"; onClicked: root.openShop() }
                     }

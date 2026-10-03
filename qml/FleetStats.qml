@@ -6,8 +6,9 @@ QtObject {
     id: fleet
     property var sample: ({})
     property int capacity: 60
-    property var current: ({})   // uuid -> {cpu, memUsedMiB, memTotalMiB, rssMiB, rd, wr, rx, tx, uptime, vcpus}
-    property var history: ({})   // uuid -> {cpu: [], mem: []}
+    property var current: ({})   // uuid -> {cpu, memUsedMiB, memTotalMiB, rssMiB, rd, wr, rx, tx, uptime, vcpus, nics: [{index, name, rx, tx, rxPkts, txPkts, errors}]}
+    property var history: ({})   // uuid -> {cpu: [], mem: [], nics: {key: {rx: [], tx: []}}}; a nic's key is its tap name, or "#index"
+    function nicKey(nic) { return nic.name ? String(nic.name) : "#" + nic.index }
     property var host: ({})      // {cpu, memUsedMiB, memTotalMiB, cpus}
     property var hostCpu: []
     property var hostMem: []
@@ -37,12 +38,23 @@ QtObject {
                 memTotalMiB: (available || vm.balloonKiB || 0) / 1024,
                 rssMiB: vm.rssKiB !== undefined ? vm.rssKiB / 1024 : null,
                 rd: p ? rate(vm.rdBytes, p.rdBytes, dt) : null, wr: p ? rate(vm.wrBytes, p.wrBytes, dt) : null,
-                rx: p ? rate(vm.rxBytes, p.rxBytes, dt) : null, tx: p ? rate(vm.txBytes, p.txBytes, dt) : null
+                rx: p ? rate(vm.rxBytes, p.rxBytes, dt) : null, tx: p ? rate(vm.txBytes, p.txBytes, dt) : null,
+                nics: (vm.nics || []).map(function(n) {
+                    const q = p ? (p.nics || []).find(function(o) { return o.index === n.index && String(o.name || "") === String(n.name || "") }) : undefined
+                    return {index: n.index, name: n.name || "", rx: q ? rate(n.rxBytes, q.rxBytes, dt) : null, tx: q ? rate(n.txBytes, q.txBytes, dt) : null,
+                        rxPkts: q ? rate(n.rxPkts, q.rxPkts, dt) : null, txPkts: q ? rate(n.txPkts, q.txPkts, dt) : null,
+                        errors: q ? rate(n.errors, q.errors, dt) : null, errorsTotal: n.errors || 0}
+                })
             }
             nextCurrent[vm.uuid] = row
             const old = history[vm.uuid] || {}
             const pad = function(list) { return list || Array(times.length).fill(null) }
-            nextHistory[vm.uuid] = {cpu: append(pad(old.cpu), row.cpu), mem: append(pad(old.mem), row.memUsedMiB !== null ? row.memUsedMiB : row.rssMiB)}
+            let nics = {}
+            for (const n of row.nics) {
+                const key = nicKey(n), was = (old.nics || {})[key] || {}
+                nics[key] = {rx: append(pad(was.rx), n.rx), tx: append(pad(was.tx), n.tx)}
+            }
+            nextHistory[vm.uuid] = {cpu: append(pad(old.cpu), row.cpu), mem: append(pad(old.mem), row.memUsedMiB !== null ? row.memUsedMiB : row.rssMiB), nics: nics}
         }
         const h = s.host, ph = prev ? prev.host : null
         const busyNs = function(x) { return (x.cpu_kernel || 0) + (x.cpu_user || 0) + (x.cpu_iowait || 0) }

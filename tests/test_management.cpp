@@ -1125,6 +1125,49 @@ private slots:
         QTRY_VERIFY(!QFileInfo::exists(folder)); QVERIFY(QFile::exists(source));
         created.removeAll(uuid);
     }
+    // stats.all reports each adapter's counters, so the network map can show traffic per cable.
+    void perAdapterStats() {
+        const auto source = makeSource(); QVERIFY(!source.isEmpty());
+        auto result = command("vm.create", {{"name", "nics-" + QUuid::createUuid().toString(QUuid::Id128).left(8)}, {"sourceMode", "disk"}, {"source", source}, {"preset", "generic"}, {"firmware", "bios"}, {"cpus", 1}, {"memoryMiB", 256}, {"networkId", "user"}, {"location", files.path()}});
+        QVERIFY2(resultOk, qPrintable(result["message"].toString())); const auto uuid = result["uuid"].toString();
+        backend->action(uuid, "start"); QTRY_VERIFY_WITH_TIMEOUT(active(uuid), 15000); QTRY_VERIFY(!backend->busy());
+        result = command("stats.all", {});
+        QVariantMap mine; for (const auto &v : result["vms"].toList()) if (v.toMap()["uuid"] == uuid) mine = v.toMap();
+        QVERIFY(!mine.isEmpty());
+        const auto nics = mine["nics"].toList(); QCOMPARE(nics.size(), 1);
+        const auto nic = nics.first().toMap(); QCOMPARE(nic["index"].toInt(), 0); QVERIFY(nic.contains("rxBytes")); QVERIFY(nic.contains("txBytes")); QVERIFY(nic.contains("errors"));
+        // The tap name, when the backend has one, matches the adapter's target in the live definition.
+        const auto live = details(uuid, true)["interfaces"].toList(); QCOMPARE(live.size(), 1);
+        qInfo() << "adapter tap" << nic["name"] << "target" << live.first().toMap()["target"];
+        if (!nic["name"].toString().isEmpty()) QCOMPARE(nic["name"].toString(), live.first().toMap()["target"].toString());
+        QCOMPARE(mine["rxBytes"].toDouble(), nic["rxBytes"].toDouble());
+        backend->action(uuid, "force-off"); QTRY_VERIFY(!active(uuid)); QTRY_VERIFY(!backend->busy());
+    }
+    // A lab file is checked and shown for review even with AI agent access turned off.
+    void labFileImport() {
+        AgentBridge bridge(backend.get());
+        bridge.setEnabled(false); QVERIFY(!bridge.enabled());
+        const auto name = "file-" + QUuid::createUuid().toString(QUuid::Id128).left(6);
+        QFile file(files.filePath("lab.toml")); QVERIFY(file.open(QIODevice::WriteOnly));
+        file.write(("name = \"" + name + "\"\nuser = \"analyst\"\n[[networks]]\nname = \"lan\"\ntype = \"isolated\"\n[[vms]]\nname = \"box\"\nos = \"ubuntu\"\nnetworks = [\"lan\"]\n").toUtf8()); file.close();
+        QSignalSpy imported(&bridge, &AgentBridge::labImported);
+        QCOMPARE(bridge.importLab(QUrl::fromLocalFile(file.fileName()).toString()), QString());
+        QTRY_VERIFY_WITH_TIMEOUT(imported.size() == 1, 20000);
+        QVERIFY2(imported.first()[0].toBool(), qPrintable(imported.first()[1].toString()));
+        const auto proposal = bridge.proposal();
+        QCOMPARE(proposal["plan"].toMap()["name"].toString(), name); QVERIFY(proposal["local"].toBool());
+        QCOMPARE(proposal["plan"].toMap()["vms"].toList().size(), 1);
+        bridge.decline(proposal["id"].toString()); QVERIFY(bridge.proposal().isEmpty());
+        // A broken file says where it's broken.
+        // Problems the checks find come back worded for a person, not an agent.
+        QVERIFY(file.open(QIODevice::WriteOnly)); file.write("name = \"nouser\"\n[[vms]]\nname = \"box\"\n"); file.close();
+        QCOMPARE(bridge.importLab(QUrl::fromLocalFile(file.fileName()).toString()), QString());
+        QTRY_VERIFY_WITH_TIMEOUT(imported.size() == 2, 20000);
+        QVERIFY(!imported.last()[0].toBool()); QVERIFY(imported.last()[1].toString().contains("user name")); QVERIFY(!imported.last()[1].toString().contains("Ask the user"));
+        QVERIFY(bridge.proposal().isEmpty());
+        QVERIFY(file.open(QIODevice::WriteOnly)); file.write("name = \"x\"\n[[vms\n"); file.close();
+        QVERIFY(bridge.importLab(QUrl::fromLocalFile(file.fileName()).toString()).contains("line"));
+    }
     void windowsTpmVms() {
         if (QStandardPaths::findExecutable("swtpm").isEmpty()) QSKIP("swtpm isn't installed here, so VMs can't have a TPM.");
         // A Windows 11 VM: SATA disk, TPM 2.0 and UEFI (with Secure Boot when the host has it).

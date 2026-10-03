@@ -6,6 +6,7 @@
 #include "cloudseed.h"
 #include "labplan.h"
 #include "labs.h"
+#include "labfile.h"
 #include "logins.h"
 #include "paths.h"
 #include "mcpserver.h"
@@ -22,6 +23,8 @@
 #include <QSettings>
 #include <QStandardPaths>
 #include <QTimer>
+#include <QSaveFile>
+#include <QUrl>
 #include <QUuid>
 #include <memory>
 
@@ -101,7 +104,7 @@ void AgentBridge::setEnabled(bool on) {
         // again later. Decline while enabled_ is false so callbacks cannot dispatch.
         const auto questions = questions_.keys();
         for (const auto &id : questions) answer(id, false);
-        if (!proposal_.isEmpty()) decline(proposal_["id"].toString());
+        if (!proposal_.isEmpty() && !localLab_) decline(proposal_["id"].toString());
         server_.close();
         QLocalServer::removeServer(socketPath());
         for (auto socket : findChildren<QLocalSocket *>()) socket->abort();
@@ -146,7 +149,7 @@ void AgentBridge::markScreen(const QString &uuid, const QString &name) {
 
 // ---- Calls into OmaWare -----------------------------------------------------------------------
 void AgentBridge::call(const QString &op, QVariantMap input, Done done, int attempt) {
-    if (!enabled_) { done(false, {{"message", "AI agent access was turned off."}}); return; }
+    if (!enabled_ && !localLab_) { done(false, {{"message", "AI agent access was turned off."}}); return; }
     input["agentRequest"] = true;
     const auto tag = QUuid::createUuid().toString(QUuid::WithoutBraces);
     input["requestTag"] = tag;
@@ -308,10 +311,12 @@ void AgentBridge::overview(Reply reply) {
     });
 }
 
-void AgentBridge::proposeLab(const QVariantMap &plan, Reply reply) {
+void AgentBridge::proposeLab(const QVariantMap &plan, Reply reply, bool local) {
     if (!current_.id.isEmpty()) { reply(failure("A lab is being built right now. Wait for it to finish (lab_status), then propose the next one.")); return; }
-    auto go = [this, plan, reply] {
-        call("networks.list", {}, [this, plan, reply](bool ok, const QVariantMap &r) {
+    if (!local && localLab_ && !proposal_.isEmpty()) { reply(failure("The user is reviewing a lab of their own. Try again once they've finished.")); return; }
+    if (local) localLab_ = true;
+    auto go = [this, plan, reply, local] {
+        call("networks.list", {}, [this, plan, reply, local](bool ok, const QVariantMap &r) {
             if (!ok) { reply(failure(r["message"].toString())); return; }
             LabPlan::Host host;
             host.cpus = host_.value("cpus", 1).toInt(); host.memoryMiB = host_.value("memoryMiB").toLongLong();
@@ -337,7 +342,8 @@ void AgentBridge::proposeLab(const QVariantMap &plan, Reply reply) {
                 const auto local = CloudImages::local(os);
                 images.append(QVariantMap{{"os", os}, {"ready", !local.isEmpty()}, {"name", local.value("name", os)}});
             }
-            proposal_ = {{"id", id}, {"plan", normalized}, {"warnings", check["warnings"]}, {"images", images}, {"login", normalized["name"]}, {"user", normalized["user"]}};
+            proposal_ = {{"id", id}, {"plan", normalized}, {"warnings", check["warnings"]}, {"images", images}, {"login", normalized["name"]}, {"user", normalized["user"]}, {"local", local}};
+            localLab_ = local;
             states_[id] = {{"state", "waiting"}, {"name", normalized["name"]}, {"message", "Waiting for the user to review the plan in OmaWare."}};
             emit proposalChanged();
             note("proposed the lab “" + normalized["name"].toString() + "”");
@@ -582,6 +588,7 @@ void AgentBridge::decline(const QString &id) {
     states_[id] = {{"state", "declined"}, {"name", proposal_["plan"].toMap()["name"]}, {"message", "The user declined the plan."}};
     note("lab “" + proposal_["plan"].toMap()["name"].toString() + "” declined", false);
     proposal_.clear();
+    localLab_ = false;
     emit proposalChanged();
     wake(id);
 }
@@ -775,9 +782,37 @@ void AgentBridge::finishBuild(bool ok, const QString &message) {
     build_ = {{"id", id}, {"name", current_.lab["name"]}, {"state", ok ? "ready" : "failed"}, {"message", states_[id]["message"]}};
     note(ok ? "lab “" + current_.lab["name"].toString() + "” built" : "building “" + current_.lab["name"].toString() + "” failed: " + message, ok);
     current_ = {};
+    localLab_ = false;
     emit buildChanged();
     emit labsChanged();
     wake(id);
+}
+
+// ---- Lab files --------------------------------------------------------------------------------
+QString AgentBridge::labFile(const QString &slug) const {
+    const auto lab = Labs::load(slug);
+    return lab.isEmpty() || lab["plan"].toMap().isEmpty() ? QString() : LabFile::write(lab["plan"].toMap());
+}
+bool AgentBridge::exportLab(const QString &slug, const QString &url) const {
+    const auto text = labFile(slug);
+    if (text.isEmpty()) return false;
+    QSaveFile file(url.startsWith("file:") ? QUrl(url).toLocalFile() : url);
+    return file.open(QIODevice::WriteOnly) && file.write(text.toUtf8()) >= 0 && file.commit();
+}
+QString AgentBridge::importLab(const QString &url) {
+    QFile file(url.startsWith("file:") ? QUrl(url).toLocalFile() : url);
+    if (!file.open(QIODevice::ReadOnly) || file.size() > 256 * 1024) return "The lab file couldn't be read.";
+    QString error;
+    const auto plan = LabFile::read(QString::fromUtf8(file.readAll()), error);
+    if (plan.isEmpty()) return error;
+    if (!current_.id.isEmpty()) return "A lab is being built right now. Import this one when it's finished.";
+    proposeLab(plan, [this](const QVariantMap &r) {
+        const bool ok = r["ok"].toBool();
+        if (!ok) localLab_ = !proposal_.isEmpty() && proposal_.value("local").toBool();
+        // The checks are worded for agents; a person importing a file fixes it themselves.
+        emit labImported(ok, ok ? "Review the lab, set its password and click Build." : r["error"].toString().replace(" Ask the user what they want.", "").replace(", or delete_lab it first", ", or delete that lab first"));
+    }, true);
+    return {};
 }
 
 // ---- For the interface ------------------------------------------------------------------------

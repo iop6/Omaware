@@ -3,6 +3,7 @@
 #include "console.h"
 #include "domainconfig.h"
 #include "vmfiles.h"
+#include "labfile.h"
 #include "networkcatalog.h"
 #include "configuration.h"
 #include "workspace.h"
@@ -40,6 +41,24 @@
 class CoreTest : public QObject {
     Q_OBJECT
 private slots:
+    // A built lab's plan survives the round trip through a lab file, and checks out the same.
+    void labFiles() {
+        LabPlan::Host host; host.cpus = 16; host.memoryMiB = 65536; host.images = {"ubuntu", "debian"};
+        const QVariantMap input{{"name", "Web lab"}, {"user", "alex"},
+            {"networks", QVariantList{QVariantMap{{"name", "dmz"}, {"type", "internet"}, {"subnet", "10.20.0.0/24"}}, QVariantMap{{"name", "lab"}, {"type", "isolated"}}}},
+            {"vms", QVariantList{QVariantMap{{"name", "web1"}, {"os", "ubuntu"}, {"cpus", 2}, {"memory_mib", 2048}, {"disk_gib", 20},
+                                             {"networks", QVariantList{"dmz", QVariantMap{{"network", "lab"}, {"ip", "172.30.1.5"}}}}, {"packages", QStringList{"nginx"}}, {"setup", QStringList{"echo hi > /tmp/x"}}},
+                                 QVariantMap{{"name", "client"}, {"os", "debian"}, {"networks", QVariantList{"lab"}}}}}};
+        const auto first = LabPlan::check(input, host); QVERIFY2(first["ok"].toBool(), qPrintable(first["problems"].toStringList().join(" ")));
+        const auto text = LabFile::write(first["plan"].toMap());
+        QVERIFY(text.startsWith("# OmaWare lab file")); QVERIFY(text.contains("memory_mib = 2048")); QVERIFY(!text.contains("password"));
+        QString error; const auto read = LabFile::read(text, error); QVERIFY2(!read.isEmpty(), qPrintable(error));
+        const auto second = LabPlan::check(read, host); QVERIFY2(second["ok"].toBool(), qPrintable(second["problems"].toStringList().join(" ")));
+        auto strip = [](QVariantMap plan) { return QJsonDocument::fromVariant(plan).toJson(QJsonDocument::Compact); };
+        QCOMPARE(strip(second["plan"].toMap()), strip(first["plan"].toMap()));
+        QVERIFY(LabFile::read("name = \"x\"\n[[vms]\n", error).isEmpty()); QVERIFY(error.contains("line"));
+        QVERIFY(LabFile::read("name = \"empty\"\n", error).isEmpty()); QVERIFY(error.contains("no VMs"));
+    }
     void vmFilesToDelete() {
         QTemporaryDir dir; const auto uuid = QString("7afaf622-327b-41a0-bc7b-f5e469a9d383");
         const auto snapshots = dir.filePath("checkpoints/" + uuid), restored = dir.filePath("vms/" + uuid), created = dir.filePath("vms/flare-7afaf622");
