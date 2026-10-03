@@ -1,5 +1,15 @@
 # Changelog
 
+## 1.8.0 (2026-10-03)
+
+- Network map cables run like circuit-board traces: straight runs with rounded corners, a port of their own at both ends, nested so they don't cross, and never through another device. Ports have link lights that flicker with traffic.
+- Fixed the diagonal line from This computer to its network, and the whole map shifting when you clicked or dragged a device.
+- Network map look: outlined, glowing cables, shaded zones with title tabs, hover highlights and breathing power lights. Drag the **+** on a VM's side onto a network to connect it.
+- 15 built-in themes, including Tokyo Night, Catppuccin, Nord, Gruvbox, Rosé Pine, Dracula, Everforest, Kanagawa, Solarized Light, Synthwave and Graphite, chosen from previews in Settings. Follow Omarchy now uses your Omarchy theme's own colors for errors, warnings and running VMs.
+- Built-in Help: press F1, click Help in the sidebar or a **?** button, or type `help` in the command prompt. The screens themselves have much less text.
+- Deleting a VM whose snapshots build on each other now deletes its snapshots too; before, their folder was kept.
+- Fixed a crash on Qt 6.4 (Ubuntu 24.04) when the theme changed while the window was resizing.
+
 ## 1.7.1 (2026-10-02)
 
 - Network map cables look cleaner: each is a straight line into its own port on its network (no more cables merging into one line), pulled cables hang loose with an unplugged plug instead of a dashed line across the map, cable lights are small LEDs, and traffic packets glow with short trails.
