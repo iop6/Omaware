@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
+#include <cmath>
 #include "theme.h"
 #include "console.h"
 #include "domainconfig.h"
@@ -752,6 +753,61 @@ private slots:
         QCOMPARE(theme.colors()["accentText"].toString(), "#000000");
         theme.setMode("omarchy");
         QCOMPARE(theme.colors()["accent"].toString(), "#ffbb88");
+    }
+
+    // Every built-in theme keeps text readable, and switching themes changes the colors QML sees.
+    void builtInThemes() {
+        auto lum = [](const QColor &c) { auto f = [](double v) { return v <= .04045 ? v / 12.92 : std::pow((v + .055) / 1.055, 2.4); }; return .2126 * f(c.redF()) + .7152 * f(c.greenF()) + .0722 * f(c.blueF()); };
+        auto ratio = [&](const QVariant &a, const QVariant &b) { const double x = lum(QColor(a.toString())), y = lum(QColor(b.toString())); return (std::max(x, y) + .05) / (std::min(x, y) + .05); };
+        QTemporaryDir dir; Theme theme(dir.filePath("absent.toml"));
+        const auto keys = Theme::keys();
+        QVERIFY(keys.size() >= 15);
+        for (auto key : {"omarchy", "dark", "light", "hacker", "tokyo-night", "catppuccin", "nord", "gruvbox", "synthwave"}) QVERIFY2(keys.contains(key), key);
+        QStringList accents;
+        for (const auto &key : keys) {
+            if (key == "omarchy") continue;
+            theme.setMode(key);
+            QCOMPARE(theme.mode(), key);
+            const auto c = theme.colors();
+            for (auto name : {"background", "foreground", "accent", "accentText", "surface", "raised", "field", "sidebar", "muted", "border", "subtle", "line", "accentSoft", "success", "warning", "danger", "dangerSoft"})
+                QVERIFY2(QColor(c[name].toString()).isValid(), qPrintable(key + ": " + name));
+            QVERIFY2(ratio(c["foreground"], c["background"]) >= 7, qPrintable(key));
+            QVERIFY2(ratio(c["foreground"], c["surface"]) >= 7, qPrintable(key));
+            QVERIFY2(ratio(c["muted"], c["surface"]) >= 4.5, qPrintable(key));
+            for (auto name : {"success", "warning", "danger"}) QVERIFY2(ratio(c[name], c["surface"]) >= 3.2, qPrintable(key + ": " + name));
+            QVERIFY2(ratio(c["accentText"], c["accent"]) >= 4.5, qPrintable(key + ": accentText"));
+            accents << c["accent"].toString();
+        }
+        QCOMPARE(QSet<QString>(accents.begin(), accents.end()).size(), accents.size());
+        QCOMPARE(theme.texture(), QString("none"));       // Graphite, the last one
+        theme.setMode("hacker"); QCOMPARE(theme.texture(), QString("scanlines"));
+        theme.setMode("no-such-theme"); QCOMPARE(theme.mode(), QString("hacker"));
+        // Without an Omarchy palette the picker doesn't offer it.
+        QVERIFY(!theme.omarchyAvailable());
+        for (const auto &t : theme.themes()) QVERIFY(t.toMap()["key"] != "omarchy");
+        QCOMPARE(theme.themes().size(), keys.size() - 1);
+    }
+    // Omarchy palettes with more than three colors: their own status colors, muted text and surfaces.
+    void richOmarchyPalette() {
+        QTemporaryDir dir; const auto path = dir.filePath("colors.toml");
+        QFile f(path); QVERIFY(f.open(QIODevice::WriteOnly));
+        f.write("accent = \"#7d82d9\"\nselection = \"#252e56\"\nmuted = \"#6d7db6\"\nbackground = \"#060B1E\"\ndark_background = \"#040816\"\n"
+                "lighter_background = \"#131a3a\"\nforeground = \"#ffcead\"\nred = \"#ED5B5A\"\nyellow = \"#E9BB4F\"\ngreen = \"#92a593\"\n");
+        f.close();
+        Theme theme(path);
+        QCOMPARE(theme.mode(), QString("omarchy"));
+        const auto c = theme.colors();
+        QCOMPARE(c["warning"].toString(), QString("#e9bb4f"));
+        QCOMPARE(c["danger"].toString(), QString("#ed5b5a"));
+        QCOMPARE(c["sidebar"].toString(), QString("#040816"));
+        QVERIFY(c["surface"].toString() != c["background"].toString());
+        // Too-dim muted text from the palette is lifted until it's readable.
+        QVERIFY(c["muted"].toString() != QString("#6d7db6"));
+        // The picker shows the live palette even while another theme is on.
+        theme.setMode("nord");
+        const auto first = theme.themes().first().toMap();
+        QCOMPARE(first["key"].toString(), QString("omarchy"));
+        QCOMPARE(first["swatches"].toList()[0].toString(), QString("#060b1e"));
     }
 
     void guestKeyboard() {

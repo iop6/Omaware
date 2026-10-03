@@ -21,6 +21,7 @@ bool cleanup(virConnectPtr connection, QString uuid, QString key, QString &error
 bool recover(virConnectPtr connection, virDomainPtr domain, QString &error);
 QString clone(virConnectPtr connection, QString uuid, QString id, QString name, const std::atomic_bool &cancel, Progress progress, QString &error);
 QString undoId(QString uuid);
-// Every disk file (with backing chains) that a defined VM still uses.
-bool references(virConnectPtr connection, QSet<QString> &paths, QString &error);
+// Every file a VM, pending change or snapshot record still needs. `ignoreUuid` leaves out that VM's
+// own snapshot records (for deleting it).
+bool references(virConnectPtr connection, QSet<QString> &paths, QString &error, const QString &ignoreUuid = {});
 }

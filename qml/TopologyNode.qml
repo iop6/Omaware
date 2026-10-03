@@ -31,12 +31,12 @@ Rectangle {
     objectName: "topologyNode_" + nodeId
     width: map ? map.sizes[kind][0] : 200
     height: map ? map.sizes[kind][1] : 80
-    radius: kind === "internet" ? height / 2 : 8
+    radius: kind === "internet" ? height / 2 : 10
     // In the operations-center style, cards are darker and outlined in what they lead to.
     readonly property color face: map && map.operations ? "#0a111c" : theme.colors.surface
     color: dropTarget ? Qt.tint(face, map.tint(theme.colors.success, .14)) : chosen ? Qt.tint(face, map.tint(theme.colors.accent, .08)) : face
     border.width: chosen || dropTarget ? 2 : 1
-    border.color: dropTarget ? theme.colors.success : chosen ? theme.colors.accent : hover.hovered ? map.tint(ink, .7) : map && map.operations ? map.tint(ink, .45) : theme.colors.border
+    border.color: dropTarget ? theme.colors.success : chosen ? theme.colors.accent : hover.hovered ? map.tint(ink, .7) : map && map.operations ? map.tint(ink, .45) : Qt.tint(theme.colors.border, map ? map.tint(ink, .18) : "transparent")
     opacity: unreachable ? .28 : dimmed ? .7 : 1
     Behavior on opacity { NumberAnimation { duration: 140 } }
     z: drag.active ? 5 : chosen ? 2 : 1
@@ -44,17 +44,50 @@ Rectangle {
     Accessible.name: (node.label || "") + ", " + subtitle + (reach ? ", " + reach.text : "")
     Behavior on border.color { enabled: !theme.reducedMotion; ColorAnimation { duration: 120 } }
 
+    gradient: Gradient {
+        GradientStop { position: 0; color: box.map && box.map.operations ? Qt.lighter(box.color, 1.25) : Qt.lighter(box.color, 1.06) }
+        GradientStop { position: 1; color: box.color }
+    }
     // Soft shadow, so devices sit above the cables.
     Rectangle {
-        z: -1; anchors.fill: parent; anchors.topMargin: 3; anchors.leftMargin: 1; anchors.rightMargin: -1; anchors.bottomMargin: -3
-        radius: parent.radius; color: "#000000"; opacity: .18
+        z: -2; anchors.fill: parent; anchors.topMargin: 5; anchors.leftMargin: 2; anchors.rightMargin: -2; anchors.bottomMargin: -6
+        radius: parent.radius + 2; color: "#000000"; opacity: .22
     }
-    // Colored edge showing what this device leads to.
+    // Halo in what the device leads to when it is selected, hovered or a place to drop a cable.
+    Rectangle {
+        z: -1
+        anchors.fill: parent; anchors.margins: box.chosen || box.dropTarget ? -6 : -3
+        radius: parent.radius + (box.chosen || box.dropTarget ? 6 : 3)
+        color: "transparent"
+        border.width: box.chosen || box.dropTarget ? 4 : 2
+        border.color: box.dropTarget ? theme.colors.success : box.chosen ? theme.colors.accent : box.ink
+        opacity: box.dropTarget ? .5 : box.chosen ? .3 : hover.hovered ? .18 : 0
+        Behavior on opacity { enabled: !theme.reducedMotion; NumberAnimation { duration: 140 } }
+        SequentialAnimation on opacity {
+            running: box.dropTarget && !theme.reducedMotion
+            loops: Animation.Infinite
+            NumberAnimation { to: .2; duration: 420 }
+            NumberAnimation { to: .6; duration: 420 }
+        }
+    }
+    // Thin highlight along the top, as if lit from above.
+    Rectangle {
+        anchors.top: parent.top; anchors.left: parent.left; anchors.right: parent.right
+        anchors.topMargin: 1; anchors.leftMargin: box.radius; anchors.rightMargin: box.radius
+        height: 1; color: "#ffffff"; opacity: box.map && box.map.operations ? .07 : .05
+    }
+    // Colored edge showing what this device leads to, with a soft glow on running devices.
     Rectangle {
         visible: box.kind !== "internet"
         anchors.left: parent.left; anchors.top: parent.top; anchors.bottom: parent.bottom; anchors.margins: 1
-        width: 4; radius: 2
-        color: box.ink; opacity: box.dimmed ? .5 : 1
+        anchors.topMargin: 6; anchors.bottomMargin: 6
+        width: 3; radius: 1.5
+        color: box.ink; opacity: box.dimmed ? .45 : 1
+        Rectangle {
+            visible: !box.dimmed
+            anchors.centerIn: parent; width: 9; height: parent.height + 4; radius: 4.5
+            color: box.ink; opacity: .14
+        }
     }
 
     RowLayout {
@@ -63,20 +96,53 @@ Rectangle {
         anchors.topMargin: 8; anchors.bottomMargin: 8
         spacing: 11
         Rectangle {
-            Layout.preferredWidth: 38; Layout.preferredHeight: 38; radius: box.kind === "internet" ? 19 : 8
-            color: box.map ? box.map.tint(box.ink, .14) : "transparent"
+            id: tile
+            Layout.preferredWidth: 40; Layout.preferredHeight: 40; radius: box.kind === "internet" ? 20 : 9
+            color: box.map ? box.map.tint(box.ink, box.dimmed ? .08 : .15) : "transparent"
+            border.width: 1; border.color: box.map ? box.map.tint(box.ink, box.dimmed ? .15 : .35) : "transparent"
             AppIcon {
                 anchors.centerIn: parent; width: 22; height: 22
                 name: box.kind === "internet" ? "globe" : box.kind === "host" ? "router" : box.kind === "switch" ? "switch" : "monitor"
                 color: box.ink
             }
-            // Power light on VMs and networks.
+            // The internet's orbit turns while any running VM can reach it.
+            Canvas {
+                id: orbit
+                visible: box.kind === "internet"
+                anchors.centerIn: parent; width: 52; height: 52
+                readonly property bool active: box.kind === "internet" && !!box.node.exposed
+                onPaint: {
+                    const ctx = getContext("2d"); ctx.reset()
+                    ctx.strokeStyle = String(box.ink); ctx.lineWidth = 1.5; ctx.lineCap = "round"
+                    ctx.globalAlpha = active ? .85 : .3
+                    ctx.beginPath(); ctx.arc(26, 26, 24, -Math.PI / 2, Math.PI * .35); ctx.stroke()
+                    ctx.globalAlpha = active ? .35 : .15
+                    ctx.beginPath(); ctx.arc(26, 26, 24, Math.PI * .55, Math.PI * 1.3); ctx.stroke()
+                    if (active) { ctx.globalAlpha = 1; ctx.fillStyle = String(box.ink); ctx.beginPath(); ctx.arc(26 + 24 * Math.cos(Math.PI * .35), 26 + 24 * Math.sin(Math.PI * .35), 2.6, 0, Math.PI * 2); ctx.fill() }
+                }
+                onActiveChanged: requestPaint()
+                RotationAnimation on rotation { from: 0; to: 360; duration: 6000; loops: Animation.Infinite; running: orbit.active && orbit.visible && !theme.reducedMotion }
+                Connections { target: theme; function onChanged() { orbit.requestPaint() } }
+            }
+            // Power light on VMs and networks; it breathes while the device runs.
             Rectangle {
+                id: power
                 visible: box.kind === "vm" || box.kind === "switch"
-                x: parent.width - 7; y: -3; width: 11; height: 11; radius: 6
-                border.width: 2; border.color: theme.colors.surface
+                readonly property bool on: box.kind === "switch" ? !!box.node.running : box.node.stateCode === 1
+                x: parent.width - 8; y: -4; width: 12; height: 12; radius: 6
+                border.width: 2; border.color: box.face
                 color: box.kind === "switch" ? (!box.node.running ? theme.colors.muted : box.node.usable ? theme.colors.success : theme.colors.warning)
                     : box.node.stateCode === 1 ? theme.colors.success : box.node.stateCode === 3 ? theme.colors.warning : theme.colors.muted
+                Rectangle {
+                    z: -1; anchors.centerIn: parent; width: 20; height: 20; radius: 10; color: power.color
+                    visible: power.on
+                    SequentialAnimation on opacity {
+                        running: power.on && !theme.reducedMotion && power.visible
+                        loops: Animation.Infinite
+                        NumberAnimation { from: .05; to: .35; duration: 1400; easing.type: Easing.InOutSine }
+                        NumberAnimation { from: .35; to: .05; duration: 1400; easing.type: Easing.InOutSine }
+                    }
+                }
             }
         }
         ColumnLayout {
@@ -123,10 +189,15 @@ Rectangle {
         }
     }
 
-    HoverHandler { id: hover }
+    HoverHandler {
+        id: hover
+        onHoveredChanged: if (box.map) { if (hovered) box.map.hoverNode = box.nodeId; else if (box.map.hoverNode === box.nodeId) box.map.hoverNode = "" }
+    }
     DragHandler {
         id: drag
         target: box
+        // Takes the drag from the map's own pan handler, so only this device moves.
+        grabPermissions: PointerHandler.CanTakeOverFromAnything
         onActiveChanged: if (!active) box.map.remember(box.nodeId, box); else box.map.selected = box.nodeId
     }
     TapHandler {
@@ -144,19 +215,22 @@ Rectangle {
         }
     }
 
-    // Cable port: drag it onto a network (or this computer, for a private internet connection).
+    // Connector on the VM's right side: drag it onto a network (or this computer, for a private
+    // internet connection). It shows on hover, so cables' own ports stay uncluttered.
     Rectangle {
         id: port
         objectName: "port_" + box.nodeId
         visible: box.kind === "vm" && !!box.node.owned
-        anchors.horizontalCenter: parent.horizontalCenter
-        y: -height / 2
-        width: 16; height: 16; radius: 8
-        color: portDrag.active ? theme.colors.accent : theme.colors.surface
+        anchors.verticalCenter: parent.verticalCenter
+        x: parent.width - width / 2
+        width: 18; height: 18; radius: 9
+        color: portDrag.active ? theme.colors.accent : box.face
         border.width: 2; border.color: portDrag.containsMouse || portDrag.active ? theme.colors.accent : box.map ? box.map.tint(box.ink, .9) : theme.colors.muted
-        scale: portDrag.containsMouse ? 1.3 : 1
+        opacity: hover.hovered || portDrag.containsMouse || portDrag.active || box.chosen ? 1 : .55
+        scale: portDrag.containsMouse ? 1.25 : 1
         Behavior on scale { enabled: !theme.reducedMotion; NumberAnimation { duration: 90 } }
-        Rectangle { anchors.centerIn: parent; width: 6; height: 6; radius: 3; color: portDrag.active ? theme.colors.accentText : box.map ? box.map.tint(box.ink, .9) : theme.colors.muted }
+        Behavior on opacity { enabled: !theme.reducedMotion; NumberAnimation { duration: 120 } }
+        Label { anchors.centerIn: parent; anchors.verticalCenterOffset: -1; text: "+"; font.pixelSize: 14; font.weight: Font.Bold; color: portDrag.active ? theme.colors.accentText : box.map ? box.map.tint(box.ink, .95) : theme.colors.muted }
         ToolTip.visible: portDrag.containsMouse && !portDrag.pressed
         ToolTip.delay: 400
         ToolTip.text: "Drag onto a network to connect " + (box.node.label || "this VM")

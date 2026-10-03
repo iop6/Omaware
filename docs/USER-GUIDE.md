@@ -43,9 +43,11 @@ Running it again reinstalls; `--dry-run` shows what it would do. Updates come th
 
 ## The window at a glance
 
-- **Sidebar (left):** navigation (Virtual machines, Monitor, Command, Networks), the VM list, **Create VM**, theme buttons and **Settings**.
+- **Sidebar (left):** navigation (Virtual machines, Monitor, Command, Networks), the VM list, **Create VM**, **Settings**, **Help** and the theme button.
 - **Workspace (right):** the selected VM with three tabs: **Console**, **Details** and **Snapshots**.
 - **Status line (bottom):** current mode, connection state, host CPU and memory, number of running VMs, snapshot jobs, the log and the time.
+
+**Help** (F1) shows this guide and the networks guide inside OmaWare, as searchable topics. The **?** buttons around the app open the topic about what's next to them, and typing `help` in the command prompt finds any topic.
 
 OmaWare works with VMs in your own libvirt session (`qemu:///session`). It only changes VMs it created itself. Other VMs in the session are shown read-only.
 
@@ -125,11 +127,11 @@ Pending changes are remembered if you close OmaWare. If something else changes t
 
 ## The network map
 
-**Networks** (Ctrl+3) shows every VM, network, this computer and the internet as a map. Each cable is a straight line into its own port on the network, colored by where it leads (amber: the internet, blue: this computer only, green: other VMs only). A pulled cable hangs loose from its VM with a red unplugged plug, and a cable waiting for the VM's next start is gray and dashed. Drag devices anywhere: they snap to the map's grid when you let go, so rows and columns line up.
+**Networks** (Ctrl+3) shows every VM, network, this computer and the internet as a map. Cables run like traces on a circuit board, from a port on the VM to a port of their own on the network, without crossing through other devices, and are colored by where they lead (amber: the internet, blue: this computer only, green: other VMs only). Each port has a link light. A pulled cable hangs loose from its VM with a red unplugged plug, and a cable waiting for the VM's next start is gray and dashed. Drag devices anywhere: they snap to the map's grid when you let go, so rows and columns line up.
 
-- **Connect and disconnect:** drag the ● on top of a VM onto a network (or onto This computer for a private internet connection). Double-click a cable's light to pull or plug it; right-click it to move or remove it. **Cut off internet** pulls every cable with a way out.
+- **Connect and disconnect:** drag the + on the side of a VM onto a network (or onto This computer for a private internet connection). Double-click a cable's port on the VM to pull or plug it; right-click it to move or remove it. **Cut off internet** pulls every cable with a way out.
 - **Live traffic:** while a cable carries data, packets travel along it (up toward the network for uploads, down toward the VM for downloads), more and faster the busier it is, and the cable glows. Each cable shows its own adapter's traffic.
-- **Hover a cable's light** for its upload and download rates, packets per second, errors or dropped packets, and a graph of the last couple of minutes.
+- **Hover a cable's port on the VM** for its upload and download rates, packets per second, errors or dropped packets, and a graph of the last couple of minutes.
 - **Select a VM** to see what it can reach: its networks, the other running VMs on them, this computer and the internet light up, and everything it can't reach fades. The side panel says the same in words.
 - **Trace a ping:** right-click a VM, **Trace a ping to**, and pick the internet, this computer or another VM. An envelope walks the path one hop at a time (**Next**, **Back** or **Play**) and each step says what happens there: the virtual switch, this computer's NAT router, and so on. Where the ping would be stopped — a pulled cable, a VMs-only network, a stopped network, a VM that's off, or two networks that don't connect — it stops there and says why. It's worked out from your settings; no packet is sent.
 - **Zones:** each network and its VMs sit in a shaded, titled area such as *Internet-connected* or *Isolated · VMs only*.
@@ -320,16 +322,17 @@ The **download button** at the bottom of the sidebar checks GitHub for a new ver
 
 ## Settings and themes
 
-The theme buttons at the bottom of the sidebar switch between **following Omarchy** (when installed), **dark**, **light** and **hacker** (green on black). **Settings** has:
+**Settings** (or the palette button at the bottom of the sidebar) has:
 
 - Text size: 100%, 115% or 130%.
+- **Reduce motion**, which turns off animations.
+- **Theme:** every theme as a small preview in its own colors; click one to switch. **Follow Omarchy** (when Omarchy is installed) uses your desktop's theme. The built-in themes are Dark, Light, Hacker (green on black, with scanlines), Tokyo Night, Catppuccin Mocha, Catppuccin Latte, Nord, Gruvbox, Rosé Pine, Dracula, Everforest, Kanagawa, Solarized Light, Synthwave (with a neon grid) and Graphite. Every theme keeps text, warnings and errors readable. Themes are also in the command prompt: type `theme`.
 - **Storage:** where your VMs and ISOs are, with a button to open the folder.
 - **Updates:** your version, **Check for updates**, and whether OmaWare checks GitHub automatically (once a day). See [Updating OmaWare](#updating-omaware).
-- **Reduce motion**, which turns off animations.
 - **When OmaWare closes**: a reminder that running VMs are always paused.
 - The OmaWare version.
 
-When following Omarchy, OmaWare reads the current Omarchy theme's colors and updates as soon as you change themes. It only reads the theme; it never changes anything in Omarchy.
+When following Omarchy, OmaWare reads the current Omarchy theme's colors, including its own reds, yellows and greens for errors, warnings and "running", and updates as soon as you change themes. It only reads the theme; it never changes anything in Omarchy.
 
 ## Closing OmaWare
 
@@ -344,10 +347,12 @@ Only one OmaWare can be open at a time. Opening it again while it's already open
 
 ## Keyboard shortcuts
 
-Press `?` or F1 in OmaWare for the full list. Shortcuts are off while the console has your input; Ctrl+Alt releases it.
+Press `?` in OmaWare for the full list, or F1 for Help. Shortcuts are off while the console has your input; Ctrl+Alt releases it.
 
 | Keys | Action |
 | --- | --- |
+| F1 | Help |
+| `?` | All shortcuts |
 | `:` or Ctrl+Shift+P | Command prompt |
 | Ctrl+K or Ctrl+F | Search VMs |
 | Ctrl+1 / 2 / 3 / 4 | VMs, Monitor, Networks, ISO Shop |

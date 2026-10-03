@@ -560,8 +560,9 @@ private slots:
         auto snapshotPage = window->findChild<QObject *>("snapshotsPage"); QVERIFY(snapshotPage);
         QTRY_VERIFY(snapshotPage->property("ready").toBool());
         QVERIFY(capture("snapshot-empty"));
-        QVERIFY(click(vmDetails, "snapshotPageMore")); QVERIFY(click(vmDetails, "snapshotHelp")); auto snapshotHelp = window->findChild<QObject *>("snapshotHelpDialog"); QVERIFY(snapshotHelp);
-        QTRY_VERIFY(snapshotHelp->property("visible").toBool()); QVERIFY(capture("snapshot-help")); QVERIFY(QMetaObject::invokeMethod(snapshotHelp, "reject"));
+        QVERIFY(click(vmDetails, "snapshotPageMore")); QVERIFY(click(vmDetails, "snapshotHelp")); auto snapshotHelp = window->findChild<QObject *>("helpCenter"); QVERIFY(snapshotHelp);
+        QTRY_VERIFY(snapshotHelp->property("visible").toBool()); QCOMPARE(snapshotHelp->property("current").toString(), QString("snapshots"));
+        QVERIFY(capture("snapshot-help")); QVERIFY(QMetaObject::invokeMethod(snapshotHelp, "close")); QTRY_VERIFY(!snapshotHelp->property("visible").toBool());
         command("snapshots.create", {{"uuid", uuid}, {"name", "Ready to install"}, {"notes", "Hardware and network configured"}}); QVERIFY(resultOk);
         QTRY_VERIFY(backend->management().contains("snapshots.list")); QVERIFY(capture("checkpoints"));
         backend->action(uuid, "start"); QTRY_VERIFY_WITH_TIMEOUT(active(uuid), 15000); QTRY_VERIFY(!backend->busy());
@@ -1098,6 +1099,24 @@ private slots:
         for (const auto &gone : {disk, nvram, originalNvram, snapshots, app + "/vms/" + uuid, Paths::vms() + "/" + uuid, folder, tpmFolder})
             QVERIFY2(!QFileInfo::exists(gone), qPrintable(gone));
         QVERIFY(QFile::exists(installer.fileName()));
+        created.removeAll(uuid);
+    }
+    // A VM whose snapshots build on each other is deleted with its whole snapshot folder: its own
+    // snapshots referring to each other don't count as another VM still using them.
+    void deleteVmWithSnapshotChain() {
+        auto source = makeSource(); QVERIFY(!source.isEmpty());
+        auto result = command("vm.create", {{"name", "gone-chain-" + QUuid::createUuid().toString(QUuid::Id128).left(8)}, {"sourceMode", "disk"}, {"source", source},
+            {"preset", "generic"}, {"firmware", "bios"}, {"cpus", 1}, {"memoryMiB", 256}, {"networkId", "none"}, {"location", files.path()}});
+        QVERIFY2(resultOk, qPrintable(result["message"].toString())); const auto uuid = result["uuid"].toString();
+        const auto snapshots = QStandardPaths::writableLocation(QStandardPaths::AppDataLocation) + "/checkpoints/" + uuid;
+        backend->action(uuid, "start"); QTRY_VERIFY(active(uuid)); QTRY_VERIFY(!backend->busy()); QTest::qWait(1000);
+        result = command("snapshots.create", {{"uuid", uuid}, {"name", "Base"}, {"incremental", true}}); QVERIFY2(resultOk, qPrintable(result["message"].toString()));
+        QTest::qWait(400);
+        result = command("snapshots.create", {{"uuid", uuid}, {"name", "On top"}, {"incremental", true}}); QVERIFY2(resultOk, qPrintable(result["message"].toString()));
+        QVERIFY(!Checkpoints::list(uuid).last().toMap()["baseId"].toString().isEmpty());
+        result = command("vm.delete", {{"uuid", uuid}, {"powerOff", true}}); QVERIFY2(resultOk, qPrintable(result["message"].toString()));
+        for (const auto &kept : result["kept"].toStringList()) QVERIFY2(!kept.startsWith(snapshots), qPrintable("kept " + kept));
+        QVERIFY2(!QFileInfo::exists(snapshots), qPrintable(result["message"].toString()));
         created.removeAll(uuid);
     }
     void deleteVmUi() {

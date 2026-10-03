@@ -71,8 +71,8 @@ Item {
                 Label { text: "Clipboard"; font.weight: Font.DemiBold; Layout.fillWidth: true }
                 Label { objectName: "clipboardStatus"; text: toolbar.clipboardStatus; color: theme.colors.muted; font.pixelSize: Math.round(11 * theme.textScale) }
             }
-            Label { visible: !toolbar.clipboardConfigured; text: "Enable the clipboard channel in Details → Hardware, then fully shut down and start the VM. Install spice-vdagent inside the guest."; Layout.fillWidth: true; wrapMode: Text.WordWrap; color: theme.colors.muted }
-            Label { visible: toolbar.clipboardConfigured; text: "Sharing requires spice-vdagent running inside the guest."; Layout.fillWidth: true; wrapMode: Text.WordWrap; color: theme.colors.muted; font.pixelSize: Math.round(11 * theme.textScale) }
+            Label { visible: !toolbar.clipboardConfigured; text: "Turn it on in Details → Hardware, restart the VM, and install spice-vdagent in it."; Layout.fillWidth: true; wrapMode: Text.WordWrap; color: theme.colors.muted }
+            Label { visible: toolbar.clipboardConfigured; text: "Needs spice-vdagent in the guest."; Layout.fillWidth: true; wrapMode: Text.WordWrap; color: theme.colors.muted; font.pixelSize: Math.round(11 * theme.textScale) }
             ButtonGroup { id: clipboardDirection }
             AppRadioButton { objectName: "clipboardOff"; text: "Off"; checked: toolbar.guestDisplay.clipboardMode === "off"; ButtonGroup.group: clipboardDirection; onClicked: toolbar.guestDisplay.clipboardMode = "off" }
             AppRadioButton { objectName: "clipboardToGuest"; text: "To guest"; checked: toolbar.guestDisplay.clipboardMode === "toGuest"; enabled: toolbar.clipboardConfigured && toolbar.guestDisplay.connected; ButtonGroup.group: clipboardDirection; onClicked: toolbar.guestDisplay.clipboardMode = "toGuest" }
@@ -87,7 +87,7 @@ Item {
         width: Math.min(480, parent ? parent.width - 40 : 480)
         contentItem: ColumnLayout { spacing: 14
             Label { text: toolbar.guestDisplay.status; Layout.fillWidth: true; wrapMode: Text.WordWrap }
-            Label { text: "Ctrl+Alt releases keyboard and mouse input.\n\nDisplay size requests require a compatible guest display driver. Closing OmaWare keeps your VMs running."; color: theme.colors.muted; Layout.fillWidth: true; wrapMode: Text.WordWrap }
+            Label { text: "Ctrl+Alt releases the keyboard and mouse."; color: theme.colors.muted; Layout.fillWidth: true; wrapMode: Text.WordWrap }
         }
     }
 }

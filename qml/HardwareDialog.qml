@@ -75,7 +75,7 @@ EditorDialog {
         visible: !dialog.reviewing && dialog.configurationPage === 2; Layout.fillWidth: true; spacing: 12
         SectionHeading { title: "Guest integration"; iconName: "clipboard" }
         AppCheckBox { id: clipboard; text: "Enable guest clipboard channel" }
-        Label { text: "Clipboard sharing also needs spice-vdagent inside the guest and an explicit sharing direction in the console menu."; color: theme.colors.muted; font.pixelSize: Math.round((11) * theme.textScale); Layout.fillWidth: true; wrapMode: Text.WordWrap }
+        Label { text: "The guest also needs spice-vdagent."; color: theme.colors.muted; font.pixelSize: Math.round((11) * theme.textScale); Layout.fillWidth: true; wrapMode: Text.WordWrap }
     }
     ColumnLayout {
         visible: dialog.reviewing; Layout.fillWidth: true; spacing: 8

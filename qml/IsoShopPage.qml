@@ -78,10 +78,11 @@ ColumnLayout {
             Layout.fillWidth: true; spacing: 4
             Label { text: "ISO Shop"; font.pixelSize: Math.round(28 * theme.textScale); font.weight: Font.DemiBold }
             Label {
-                text: "Official installer images and appliance links. Automatic ISO downloads are checksum-verified. Add your own ISO, OVA or QCOW2 with Add files or drag and drop; verify appliances with their publisher first."
+                text: "Official installers, checksum-verified. Drop in your own ISO, OVA or QCOW2."
                 color: theme.colors.muted; font.pixelSize: Math.round(12 * theme.textScale); Layout.fillWidth: true; wrapMode: Text.WordWrap
             }
         }
+        HelpButton { topic: "the-iso-shop" }
         AppButton { objectName: "isoCheck"; text: page.library && page.library.checking ? "Checking…" : "Check for updates"; iconName: "refresh"; enabled: !!page.library && !page.library.checking; onClicked: page.library.check() }
         AppButton { objectName: "addMedia"; text: "Add files…"; enabled: !!page.library && !page.library.importing; onClicked: mediaPicker.open() }
         AppButton { objectName: "isoOpenFolder"; text: "Open folder"; iconName: "folder"; hint: page.library ? page.library.folder : ""; onClicked: Qt.openUrlExternally("file://" + page.library.folder) }

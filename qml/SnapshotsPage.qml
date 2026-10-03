@@ -173,13 +173,14 @@ ColumnLayout {
         ColumnLayout {
             Layout.fillWidth: true; spacing: 3
             Label { text: "Snapshots"; font.pixelSize: Math.round((page.compact ? 23 : 27) * theme.textScale); font.weight: Font.DemiBold; Layout.fillWidth: true }
-            Label { text: page.ready ? page.snapshots.length + " saved · Right-click a snapshot for actions" : "Loading saved moments…"; color: theme.colors.muted; font.pixelSize: Math.round((11) * theme.textScale); Layout.fillWidth: true; elide: Text.ElideRight }
+            Label { text: page.ready ? page.snapshots.length + " saved" : "Loading…"; color: theme.colors.muted; font.pixelSize: Math.round((11) * theme.textScale); Layout.fillWidth: true; elide: Text.ElideRight }
         }
         RowLayout {
             Layout.alignment: Qt.AlignRight; spacing: 4
-            AppButton { objectName: "newSnapshot"; text: "Take snapshot"; iconName: "snapshot"; tone: "primary"; enabled: page.canCapture; hint: "Save memory and disks for a running VM, or disks for a stopped VM"; onClicked: page.captureNow() }
+            AppButton { objectName: "newSnapshot"; text: "Take snapshot"; iconName: "snapshot"; tone: "primary"; enabled: page.canCapture; hint: "Save this moment"; onClicked: page.captureNow() }
             AppButton { objectName: "snapshotOptions"; iconName: "chevron"; hint: "Name and capture options"; enabled: page.canCapture; onClicked: editor.openFor("create", {}) }
             AppButton { id: pageTools; objectName: "snapshotPageMore"; iconName: "more"; tone: "quiet"; hint: "Undo, storage and help"; onClicked: pageMenu.openBelow(pageTools) }
+            HelpButton { topic: "snapshots" }
         }
     }
     Label { text: page.snapshotData.blocker || ""; visible: text !== ""; color: theme.colors.warning; Layout.fillWidth: true; wrapMode: Text.WordWrap }
@@ -240,7 +241,7 @@ ColumnLayout {
         AppMenuItem { objectName: "checkpointStorage"; text: "Snapshot storage…"; onTriggered: storageDialog.open() }
         AppMenuItem { text: "Refresh"; enabled: !backend.busy; onTriggered: page.refresh() }
         MenuSeparator {}
-        AppMenuItem { objectName: "snapshotHelp"; text: "How snapshots work…"; onTriggered: snapshotHelp.open() }
+        AppMenuItem { objectName: "snapshotHelp"; text: "How snapshots work"; onTriggered: helpCenter.show("snapshots") }
     }
     AppDialog {
         id: snapshotDetails; objectName: "snapshotDetailsDialog"
@@ -259,21 +260,6 @@ ColumnLayout {
                 DetailRow { Layout.fillWidth: true; label: "Verification"; value: snapshotDetails.snapshot.health || "Not verified" }
                 DetailRow { visible: !!snapshotDetails.snapshot.notes; Layout.fillWidth: true; label: "Notes"; value: snapshotDetails.snapshot.notes || "" }
                 DetailRow { visible: !!snapshotDetails.snapshot.tags; Layout.fillWidth: true; label: "Tags"; value: snapshotDetails.snapshot.tags || "" }
-                Label { text: "Stored size includes this snapshot's files. Shared files needed by other snapshots may remain after deletion."; color: theme.colors.muted; Layout.fillWidth: true; wrapMode: Text.WordWrap; font.pixelSize: Math.round(11 * theme.textScale) }
-            }
-        }
-    }
-    AppDialog {
-        id: snapshotHelp; objectName: "snapshotHelpDialog"
-        heading: "Using snapshots"; headerIcon: "snapshot"
-        width: Math.min(570, parent.width - 40); height: Math.min(440, parent.height - 40)
-        contentItem: ScrollView {
-            clip: true; contentWidth: availableWidth
-            ColumnLayout { width: parent.width; spacing: 16
-                Label { text: "Take snapshot includes memory, CPU/device state and disks when the VM is running or paused. A stopped VM has no memory to save. Memory snapshots resume the captured session; disk-only snapshots need a fresh boot."; Layout.fillWidth: true; wrapMode: Text.WordWrap }
-                Label { text: "To make a branch, restore an earlier snapshot, make your changes, then take another snapshot. Existing branches stay available."; Layout.fillWidth: true; wrapMode: Text.WordWrap }
-                Label { text: "You are here marks your current VM. Selecting a saved snapshot only browses it. Restore returns to the selected snapshot. Revert returns to your current saved parent."; Layout.fillWidth: true; wrapMode: Text.WordWrap }
-                Label { text: "Current snapshot marks the saved point your VM is based on. You are here is its unsaved working state, connected by dots. All branches stay available. Drag to pan or use Fit. Right-click a saved card for Restore, Rename, Details or deletion of just that snapshot or its whole branch. Shift+F10 opens the same menu; F2 renames."; Layout.fillWidth: true; wrapMode: Text.WordWrap; color: theme.colors.muted }
             }
         }
     }
@@ -388,7 +374,7 @@ ColumnLayout {
         }
         AppCheckBox { id: incremental; objectName: "checkpointIncremental"; text: "Use incremental storage when available"; visible: editor.verb === "create" && editor.liveCapture && editor.advanced && !memory.checked }
         AppCheckBox { id: clean; objectName: "checkpointClean"; text: "Flush guest filesystems for a cleaner capture"; visible: editor.verb === "create" && editor.liveCapture && editor.advanced && !memory.checked; enabled: !!page.info.agentConnected }
-        Label { text: "Cleaner capture needs a running QEMU guest agent. Full copies are used when incremental tracking is unavailable."; visible: editor.verb === "create" && editor.liveCapture && editor.advanced && !memory.checked; color: theme.colors.muted; font.pixelSize: Math.round((11) * theme.textScale); Layout.fillWidth: true; wrapMode: Text.WordWrap }
+        Label { text: "Cleaner capture needs the QEMU guest agent running in the VM."; visible: editor.verb === "create" && editor.liveCapture && editor.advanced && !memory.checked; color: theme.colors.muted; font.pixelSize: Math.round((11) * theme.textScale); Layout.fillWidth: true; wrapMode: Text.WordWrap }
         Label { objectName: "checkpointExplanation"; visible: editor.verb !== "create" || editor.advanced; Layout.fillWidth: true; wrapMode: Text.WordWrap; color: theme.colors.muted
             text: editor.verb === "restore" || editor.verb === "undo" ? (editor.savedMemory ? "The VM jumps back to the exact moment this snapshot was taken: every program, window and byte of memory, with no reboot. The display reconnects for a moment while the saved memory loads. The VM returns " + (editor.savedPaused ? "paused." : "running.") : "This snapshot has no saved memory, so the VM boots from its saved disks. " + (editor.liveCapture ? "Current memory and unsaved work are discarded." : "The VM stays stopped.")) + " Anything since then that isn't in a snapshot is discarded. Other snapshots stay available." : editor.verb === "clone" ? "Creates a separate VM with independent disks, a new VM identity and new adapter MAC addresses. It starts stopped with its adapters disconnected. The new VM boots from disk; saved memory belongs to the original VM. Guest accounts, hostname and operating-system identity are copied; change those before connecting both VMs to the same network." : editor.verb === "verify" ? "Check image structure and checksum the snapshot and its dependencies. This can take time. You can continue browsing in the background." : editor.verb === "remove" ? "Permanently remove this snapshot. Current VM disks are retained." : editor.verb === "edit" ? "Pin protects a snapshot from deletion. Known good is your label; use Verify to check stored files." : (editor.liveCapture && memory.checked ? "Saves RAM, CPU/device state and disks together. Capture pauses while saving memory, then copies disks in the background. Restoring resumes this moment; external network connections may need to reconnect." : "Captures disks and settings only. Restore needs a fresh boot; current memory and unsaved work are not saved.")
         }

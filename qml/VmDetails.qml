@@ -315,7 +315,7 @@ ColumnLayout {
                             ColumnLayout {
                                 Layout.fillWidth: true; spacing: 3
                                 Label { text: "Live statistics start with the VM"; font.weight: Font.DemiBold; Layout.fillWidth: true; wrapMode: Text.WordWrap }
-                                Label { text: "While it runs, CPU, per-vCPU, memory, disk and network activity is sampled every " + panel.sampleInterval / 1000 + " seconds and charted here. Nothing is sampled while it is stopped."; color: theme.colors.muted; font.pixelSize: Math.round(12 * theme.textScale); Layout.fillWidth: true; wrapMode: Text.WordWrap }
+                                Label { text: "Charts appear here while it runs."; color: theme.colors.muted; font.pixelSize: Math.round(12 * theme.textScale); Layout.fillWidth: true; wrapMode: Text.WordWrap }
                             }
                         }
                     }
