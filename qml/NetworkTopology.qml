@@ -483,28 +483,29 @@ Item {
         let result = {}, cursor = 0
         // With several groups, VMs stack in single columns so the map stays narrow enough to read.
         const busy = groups.filter(function(group) { return group.vms.length > 0 || (group.key && group.key !== "host") }).length
-        const colW = sizes.vm[0] + 26, rowH = sizes.vm[1] + 34, perRow = busy >= 3 ? 1 : 2
+        // Spacing in whole grid cells, so snapping keeps every gap.
+        const colW = 280, rowH = 120, perRow = busy >= 3 ? 1 : 2
         let hostSpan = [Infinity, -Infinity]
         for (const group of groups) {
             if (group.key === "" && group.vms.length === 0) continue
             const cols = Math.max(1, Math.min(perRow, group.vms.length))
             const width = Math.max(cols * colW, sizes["switch"][0] + 26), center = cursor + width / 2
             if (group.key && group.key !== "host") {
-                result[group.key] = {x: center - sizes["switch"][0] / 2, y: 250}
+                result[group.key] = {x: center - sizes["switch"][0] / 2, y: 280}
                 if (g.byId[group.key].uplink !== "none" && g.byId[group.key].uplink !== "lan") { hostSpan[0] = Math.min(hostSpan[0], center); hostSpan[1] = Math.max(hostSpan[1], center) }
             }
             group.vms.forEach(function(id, i) {
                 const col = i % perRow, row = Math.floor(i / perRow), rowCount = Math.min(perRow, group.vms.length - row * perRow)
                 const rowStart = center - rowCount * colW / 2
-                result[id] = {x: rowStart + col * colW + (colW - sizes.vm[0]) / 2, y: (group.key === "host" ? 250 : 420) + row * rowH}
+                result[id] = {x: rowStart + col * colW + (colW - sizes.vm[0]) / 2, y: (group.key === "host" ? 280 : 440) + row * rowH}
             })
             if (group.key === "host") { hostSpan[0] = Math.min(hostSpan[0], center); hostSpan[1] = Math.max(hostSpan[1], center) }
-            cursor += width + 44
+            cursor += width + 80
         }
         const hostX = hostSpan[0] === Infinity ? cursor / 2 : (hostSpan[0] + hostSpan[1]) / 2
-        result.host = {x: hostX - sizes.host[0] / 2, y: 100}
+        result.host = {x: hostX - sizes.host[0] / 2, y: 120}
         result.internet = {x: hostX - sizes.internet[0] / 2, y: -40}
-        for (const key in result) result[key] = {x: Math.round(result[key].x / 10) * 10, y: Math.round(result[key].y / 10) * 10}
+        for (const key in result) result[key] = {x: Math.round(result[key].x / grid) * grid, y: Math.round(result[key].y / grid) * grid}
         return result
     }
     function placeOf(id) {
@@ -512,10 +513,12 @@ Item {
         const auto = autoLayout()
         return auto[id] || {x: 0, y: 0}
     }
+    // Boxes snap to this grid when dropped, so rows and columns line up by themselves.
+    readonly property int grid: 40
     function savePositions() { preferences.set("topologyLayout", JSON.stringify(positions)) }
     function remember(id, item) {
         let next = Object.assign({}, positions)
-        next[id] = {x: Math.round(item.x / 10) * 10, y: Math.round(item.y / 10) * 10}
+        next[id] = {x: Math.round(item.x / grid) * grid, y: Math.round(item.y / grid) * grid}
         item.x = next[id].x; item.y = next[id].y
         positions = next; savePositions()
     }
@@ -532,28 +535,15 @@ Item {
     // Where cables attach: the top middle of a VM, the bottom middle of anything it connects up to.
     function topOf(id, offset) { const it = items[id]; return it ? {x: it.x + it.width / 2 + (offset || 0), y: it.y} : null }
     function bottomOf(id, offset) { const it = items[id]; return it ? {x: it.x + it.width / 2 + (offset || 0), y: it.y + it.height} : null }
-    // Cables are polylines of straight runs with square corners; `cum` holds the running length for point().
+    // Cables are straight lines (a polyline for loose ends); `cum` holds the running length for point().
     function path(pts) {
         // Drop repeated points so corners stay crisp and lengths stay exact.
         let clean = []
         for (const q of pts) if (!clean.length || Math.abs(clean[clean.length - 1].x - q.x) > .01 || Math.abs(clean[clean.length - 1].y - q.y) > .01) clean.push(q)
         if (clean.length === 1) clean.push(clean[0])
         let cum = [0]
-        for (let i = 1; i < clean.length; ++i) cum.push(cum[i - 1] + Math.abs(clean[i].x - clean[i - 1].x) + Math.abs(clean[i].y - clean[i - 1].y))
+        for (let i = 1; i < clean.length; ++i) cum.push(cum[i - 1] + Math.hypot(clean[i].x - clean[i - 1].x, clean[i].y - clean[i - 1].y))
         return {pts: clean, cum: cum, len: Math.max(1, cum[cum.length - 1])}
-    }
-    // A cable leaves `a` going up and arrives at `b` from below, in horizontal and vertical runs only.
-    // `bend` is the height of its horizontal run, so parallel cables can use separate lanes.
-    function elbow(a, b, bend) {
-        if (!a || !b) return null
-        if (Math.abs(a.x - b.x) < 1) return path([a, {x: b.x, y: b.y}])
-        if (a.y - b.y >= 28) {
-            const y = Math.max(b.y + 14, Math.min(a.y - 14, bend === undefined ? (a.y + b.y) / 2 : bend))
-            return path([a, {x: a.x, y: y}, {x: b.x, y: y}, b])
-        }
-        // The target is level with or below the start: climb, cross over, then come up into it.
-        const top = Math.min(a.y, b.y) - 24, low = Math.max(a.y, b.y) + 24, side = (a.x + b.x) / 2
-        return path([a, {x: a.x, y: top}, {x: side, y: top}, {x: side, y: low}, {x: b.x, y: low}, b])
     }
     function point(g, t) {
         const want = Math.max(0, Math.min(1, t)) * g.len
@@ -561,59 +551,6 @@ Item {
         while (i < g.cum.length - 1 && g.cum[i] < want) ++i
         const span = Math.max(1e-6, g.cum[i] - g.cum[i - 1]), f = (want - g.cum[i - 1]) / span
         return {x: g.pts[i - 1].x + (g.pts[i].x - g.pts[i - 1].x) * f, y: g.pts[i - 1].y + (g.pts[i].y - g.pts[i - 1].y) * f}
-    }
-    // How many devices a route through these points would pass behind.
-    function blocked(pts, skip) {
-        let count = 0
-        for (const id in items) {
-            if (skip.indexOf(id) >= 0) continue
-            const it = items[id], x0 = it.x - 8, y0 = it.y - 8, x1 = it.x + it.width + 8, y1 = it.y + it.height + 8
-            for (let s = 1; s < pts.length; ++s) {
-                const a = pts[s - 1], b = pts[s]
-                // Runs are horizontal or vertical, so overlap is a box test.
-                if (Math.max(a.x, b.x) > x0 && Math.min(a.x, b.x) < x1 && Math.max(a.y, b.y) > y0 && Math.min(a.y, b.y) < y1) { count++; break }
-            }
-        }
-        return count
-    }
-    // Picks a square route from `a` (leaving upward) to `b` (arriving from below) that passes behind
-    // as few devices as possible, then the shortest. It prefers bending at `bend` (see slots()), then
-    // tries a few other heights and detours through the gaps beside devices.
-    function route(a, b, skip, bend) {
-        if (!a || !b) return null
-        let best = null, bestCost = Infinity
-        const consider = function(pts) {
-            const g = path(pts), cost = blocked(g.pts, skip) * 100000 + g.len
-            if (cost < bestCost) { best = g; bestCost = cost }
-        }
-        if (Math.abs(a.x - b.x) < 1 && a.y > b.y) consider([a, b])
-        const climb = a.y - 22, under = b.y + 22
-        if (a.y - b.y >= 28)
-            for (const y of [bend === undefined ? (a.y + b.y) / 2 : Math.max(b.y + 14, Math.min(a.y - 14, bend)), (a.y + b.y) / 2, climb, under])
-                consider([a, {x: a.x, y: y}, {x: b.x, y: y}, b])
-        let xs = [a.x, b.x]
-        for (const id in items) { const it = items[id]; xs.push(it.x - 20, it.x + it.width + 20) }
-        for (const x of xs) consider([a, {x: a.x, y: climb}, {x: x, y: climb}, {x: x, y: under}, {x: b.x, y: under}, b])
-        return best
-    }
-    // Rounds each corner of a square route into a smooth bend, like a subway map.
-    function rounded(g, radius) {
-        const pts = g.pts
-        if (pts.length < 3) return g
-        let out = [pts[0]]
-        for (let i = 1; i < pts.length - 1; ++i) {
-            const p0 = pts[i - 1], p1 = pts[i], p2 = pts[i + 1]
-            const l1 = Math.hypot(p1.x - p0.x, p1.y - p0.y), l2 = Math.hypot(p2.x - p1.x, p2.y - p1.y)
-            const r = Math.min(radius, l1 / 2, l2 / 2)
-            if (r < 1) { out.push(p1); continue }
-            const a = {x: p1.x - (p1.x - p0.x) / l1 * r, y: p1.y - (p1.y - p0.y) / l1 * r}, b = {x: p1.x + (p2.x - p1.x) / l2 * r, y: p1.y + (p2.y - p1.y) / l2 * r}
-            for (let k = 0; k <= 6; ++k) {
-                const t = k / 6, u = 1 - t
-                out.push({x: u * u * a.x + 2 * u * t * p1.x + t * t * b.x, y: u * u * a.y + 2 * u * t * p1.y + t * t * b.y})
-            }
-        }
-        out.push(pts[pts.length - 1])
-        return path(out)
     }
     // Routes depend on where every device is, so they are cached until something moves.
     property int layoutStamp: 0
@@ -626,9 +563,7 @@ Item {
         return store.entries[key]
     }
     // Ports: every connection gets its own slot on the edge it plugs into, like ports on a real
-    // switch, ordered by where the other end is so cables never cross on the way in. Bends are
-    // nested: a cable that travels further sideways bends closer to the device it plugs into, so
-    // the cables fan out side by side instead of sharing one line.
+    // switch, ordered by where the other end is so cables don't cross on the way in.
     function slots() {
         return cached("slots|" + (layoutStamp + registry), function() {
             const center = function(id) { const it = items[id]; return it ? it.x + it.width / 2 : 0 }
@@ -649,16 +584,6 @@ Item {
                 }
             }
             spread(into, "in|"); spread(out, "out|")
-            // Nested bends for the cables coming into each device, per side.
-            for (const key in into) {
-                const it = items[key]
-                for (const side of [-1, 1]) {
-                    const list = into[key].map(function(e) { return {id: e.id, dx: (r["out|" + e.id] !== undefined ? r["out|" + e.id] : e.x) - r["in|" + e.id]} })
-                        .filter(function(e) { return side < 0 ? e.dx < 0 : e.dx >= 0 })
-                        .sort(function(a, b) { return Math.abs(b.dx) - Math.abs(a.dx) })
-                    list.forEach(function(e, i) { r["bend|" + e.id] = it.y + it.height + 22 + i * 10 })
-                }
-            }
             return r
         })
     }
@@ -672,27 +597,25 @@ Item {
         let b = {x: s["in|" + edge] !== undefined ? s["in|" + edge] : t.x + t.width / 2, y: t.y + t.height}
         if (Math.abs(a.x - b.x) < 24) b.x = Math.max(t.x + 14, Math.min(t.x + t.width - 14, a.x))
         if (Math.abs(a.x - b.x) < 24) a.x = b.x
-        return {a: a, b: b, bend: s["bend|" + edge]}
+        return {a: a, b: b}
     }
-    // A cable runs from its port on the VM up to its port on the network or this computer. A pulled
-    // cable is drawn as a short loose end hanging from the VM, turned toward where it belongs.
+    // A cable is a straight line from its port on the VM to its port on the network or this
+    // computer. A pulled cable is a short loose end hanging from the VM, pointing where it belongs.
     function geometry(c) {
         return cached("c|" + c.id + "|" + c.up + "|" + c.state + "|" + (layoutStamp + registry), function() {
             const e = ends(c.vm, c.to, c.id)
             if (!e) return null
             if (c.state === "current" && !c.up) {
-                const side = e.b.x < e.a.x ? -1 : 1
-                return rounded(path([e.a, {x: e.a.x, y: e.a.y - 26}, {x: e.a.x + side * 22, y: e.a.y - 26}]), 10)
+                const dx = e.b.x - e.a.x, dy = e.b.y - e.a.y, len = Math.max(1, Math.hypot(dx, dy))
+                return path([e.a, {x: e.a.x + dx / len * 30, y: e.a.y + dy / len * 30}])
             }
-            const g = route(e.a, e.b, [c.vm, c.to], e.bend)
-            return g ? rounded(g, 14) : null
+            return path([e.a, e.b])
         })
     }
     function uplinkGeometry(u) {
         return cached("u|" + u.id + "|" + (layoutStamp + registry), function() {
             const e = ends(u.from, u.to, u.id)
-            const g = e ? route(e.a, e.b, [u.from, u.to], e.bend) : null
-            return g ? rounded(g, 14) : null
+            return e ? path([e.a, e.b]) : null
         })
     }
     // A pulled cable's loose end, where its plug is drawn.
@@ -848,7 +771,7 @@ Item {
                 ctx.reset()
                 const z = topo.zoom, g = topo.graph, reg = topo.registry
                 // Dot grid that pans and zooms with the map.
-                const step = 26 * z
+                const step = topo.grid * z
                 if (step > 8) {
                     ctx.fillStyle = topo.operations ? topo.tint(theme.colors.accent, .16) : topo.tint(theme.colors.muted, .18)
                     for (let x = ((topo.panX % step) + step) % step; x < width; x += step)
@@ -895,10 +818,12 @@ Item {
                     ctx.shadowBlur = 0
                     // A pulled cable ends in an unplugged plug: a small body with two pins.
                     if (loose) {
-                        const end = p.pts[p.pts.length - 1], prev = p.pts[p.pts.length - 2], dir = end.x >= prev.x ? 1 : -1
+                        const end = p.pts[p.pts.length - 1], prev = p.pts[p.pts.length - 2]
+                        ctx.save(); ctx.translate(end.x, end.y); ctx.rotate(Math.atan2(end.y - prev.y, end.x - prev.x))
                         ctx.fillStyle = topo.tint(ink, .95)
-                        ctx.beginPath(); ctx.roundedRect(dir > 0 ? end.x : end.x - 9, end.y - 4.5, 9, 9, 2, 2); ctx.fill()
-                        ctx.fillRect(dir > 0 ? end.x + 9 : end.x - 13, end.y - 3.5, 4, 1.6); ctx.fillRect(dir > 0 ? end.x + 9 : end.x - 13, end.y + 1.9, 4, 1.6)
+                        ctx.beginPath(); ctx.roundedRect(0, -4.5, 9, 9, 2, 2); ctx.fill()
+                        ctx.fillRect(9, -3.5, 4, 1.6); ctx.fillRect(9, 1.9, 4, 1.6)
+                        ctx.restore()
                     }
                 }
                 ctx.globalAlpha = 1
@@ -912,7 +837,7 @@ Item {
                 if (topo.wire) {
                     const a = topo.topOf(topo.wire.from)
                     ctx.strokeStyle = topo.wire.over ? theme.colors.success : theme.colors.accent; ctx.lineWidth = 2.6
-                    stroke(ctx, topo.rounded(topo.elbow(a, {x: topo.wire.x, y: topo.wire.y}), 14), [8, 6])
+                    stroke(ctx, topo.path([a, {x: topo.wire.x, y: topo.wire.y}]), [8, 6])
                 }
                 ctx.restore()
             }

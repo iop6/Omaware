@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.7.1 (2026-10-02)
+
+- Network map cables look cleaner: each is a straight line into its own port on its network (no more cables merging into one line), pulled cables hang loose with an unplugged plug instead of a dashed line across the map, cable lights are small LEDs, and traffic packets glow with short trails.
+- Devices on the network map snap to a 40 px grid when dropped, and Tidy up uses the same grid.
+
 ## 1.7.0 (2026-10-02)
 
 - Network map: cables run in straight lines with square corners, routed around devices.

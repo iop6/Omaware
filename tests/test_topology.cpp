@@ -10,6 +10,7 @@
 #include "theme.h"
 #include <QDomDocument>
 #include <QJSValue>
+#include <QJSValueIterator>
 #include <QQmlExpression>
 
 class MapBackend : public QObject {
@@ -115,31 +116,53 @@ private slots:
         fleet->setProperty("sample", sample(100, 1)); fleet->setProperty("sample", sample(102, 2));
         QTest::qWait(300);
     }
-    // Every cable and uplink is made of horizontal and vertical runs joined by short rounded bends.
-    void squareCables() {
+    // Every cable and uplink is one straight line between ports (a pulled cable is a short loose end),
+    // and connections into the same device use separate ports.
+    void straightCables() {
         const auto graph = map->property("graph").toMap();
-        int checked = 0;
-        auto axisAligned = [&](const QVariant &geometry) {
+        QMap<QString, QSet<int>> ports; int checked = 0;
+        auto line = [&](const QVariant &geometry, bool loose) {
             const auto pts = geometry.toMap()["pts"].toList();
-            if (pts.size() < 2) return false;
-            for (int i = 1; i < pts.size(); ++i) {
-                const auto a = pts[i - 1].toMap(), b = pts[i].toMap();
-                // Long runs are straight; corners are short rounded bends.
-                const double dx = qAbs(a["x"].toDouble() - b["x"].toDouble()), dy = qAbs(a["y"].toDouble() - b["y"].toDouble());
-                if (dx > .01 && dy > .01 && std::hypot(dx, dy) > 20) return false;
-            }
-            return true;
+            if (pts.size() != 2) return false;
+            const auto len = std::hypot(pts[0].toMap()["x"].toDouble() - pts[1].toMap()["x"].toDouble(), pts[0].toMap()["y"].toDouble() - pts[1].toMap()["y"].toDouble());
+            return loose ? len < 40 : len > 20;
         };
         for (const auto &c : graph["cables"].toList()) {
+            const auto cable = c.toMap();
             QVariant g; QVERIFY(QMetaObject::invokeMethod(map, "geometry", Q_RETURN_ARG(QVariant, g), Q_ARG(QVariant, c)));
-            QVERIFY2(axisAligned(g), qPrintable(c.toMap()["id"].toString())); ++checked;
+            const bool loose = cable["state"] == "current" && !cable["up"].toBool();
+            QVERIFY2(line(g, loose), qPrintable(cable["id"].toString())); ++checked;
+            if (!loose) { const int x = qRound(g.toMap()["pts"].toList().last().toMap()["x"].toDouble()); QVERIFY2(!ports[cable["to"].toString()].contains(x), "two cables share a port"); ports[cable["to"].toString()] << x; }
         }
         for (const auto &u : graph["uplinks"].toList()) {
             QVariant g; QVERIFY(QMetaObject::invokeMethod(map, "uplinkGeometry", Q_RETURN_ARG(QVariant, g), Q_ARG(QVariant, u)));
-            QVERIFY2(axisAligned(g), qPrintable(u.toMap()["id"].toString())); ++checked;
+            QVERIFY2(line(g, false), qPrintable(u.toMap()["id"].toString())); ++checked;
         }
         QCOMPARE(checked, 7);
+        // Internet sits right above This computer, so their link is a vertical line.
+        QVariant g; QVariantMap wan; for (const auto &u : graph["uplinks"].toList()) if (u.toMap()["id"] == "host>internet") wan = u.toMap();
+        QVERIFY(QMetaObject::invokeMethod(map, "uplinkGeometry", Q_RETURN_ARG(QVariant, g), Q_ARG(QVariant, wan)));
+        const auto pts = g.toMap()["pts"].toList(); QCOMPARE(pts[0].toMap()["x"].toDouble(), pts[1].toMap()["x"].toDouble());
         QVERIFY(shot("map-overview"));
+    }
+    // A dropped box snaps to the 40 px grid.
+    void snapping() {
+        // Map nodes are Repeater delegates, found through the map's own table.
+        const auto items = map->property("items").value<QJSValue>();
+        auto box = qobject_cast<QQuickItem *>(items.property("vm:22222222-0000-4000-8000-000000000002").toQObject()); QVERIFY(box);
+        const QPointF before(box->x(), box->y());
+        box->setX(853); box->setY(467);
+        QVERIFY(QMetaObject::invokeMethod(map, "remember", Q_ARG(QVariant, "vm:22222222-0000-4000-8000-000000000002"), Q_ARG(QVariant, QVariant::fromValue<QObject *>(box))));
+        QCOMPARE(box->x(), 840.0); QCOMPARE(box->y(), 480.0);
+        QVERIFY(QMetaObject::invokeMethod(map, "arrange"));
+        QJSValueIterator it(items); int nodes = 0;
+        while (it.hasNext()) {
+            it.next(); auto node = qobject_cast<QQuickItem *>(it.value().toQObject()); if (!node) continue;
+            QVERIFY2(qRound(node->x()) % 40 == 0 && qRound(node->y()) % 40 == 0, qPrintable(it.name())); ++nodes;
+        }
+        QCOMPARE(nodes, 8);
+        QVERIFY(shot("map-arranged"));
+        Q_UNUSED(before);
     }
     // Each cable gets its own adapter's traffic: by tap name, else by adapter order.
     void perCableTraffic() {
