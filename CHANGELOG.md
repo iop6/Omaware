@@ -1,6 +1,6 @@
 # Changelog
 
-## 1.6.0-dev
+## 1.6.0 (2026-10-02)
 
 - **Delete VM…** in a VM's right-click menu (and its Details menu) deletes the VM with its disks, all its snapshots, restored disks, pending changes and its UEFI/TPM state, after you type its name. Running VMs are powered off first. Installation media, disks OmaWare didn't make for the VM and disks another VM uses are kept. Agents can't delete VMs.
 
