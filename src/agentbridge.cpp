@@ -809,7 +809,8 @@ QString AgentBridge::importLab(const QString &url) {
     proposeLab(plan, [this](const QVariantMap &r) {
         const bool ok = r["ok"].toBool();
         if (!ok) localLab_ = !proposal_.isEmpty() && proposal_.value("local").toBool();
-        emit labImported(ok, ok ? "Review the lab, set its password and click Build." : r["error"].toString());
+        // The checks are worded for agents; a person importing a file fixes it themselves.
+        emit labImported(ok, ok ? "Review the lab, set its password and click Build." : r["error"].toString().replace(" Ask the user what they want.", "").replace(", or delete_lab it first", ", or delete that lab first"));
     }, true);
     return {};
 }

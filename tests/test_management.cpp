@@ -1149,7 +1149,7 @@ private slots:
         bridge.setEnabled(false); QVERIFY(!bridge.enabled());
         const auto name = "file-" + QUuid::createUuid().toString(QUuid::Id128).left(6);
         QFile file(files.filePath("lab.toml")); QVERIFY(file.open(QIODevice::WriteOnly));
-        file.write(("name = \"" + name + "\"\n[[networks]]\nname = \"lan\"\ntype = \"isolated\"\n[[vms]]\nname = \"box\"\nos = \"ubuntu\"\nnetworks = [\"lan\"]\n").toUtf8()); file.close();
+        file.write(("name = \"" + name + "\"\nuser = \"analyst\"\n[[networks]]\nname = \"lan\"\ntype = \"isolated\"\n[[vms]]\nname = \"box\"\nos = \"ubuntu\"\nnetworks = [\"lan\"]\n").toUtf8()); file.close();
         QSignalSpy imported(&bridge, &AgentBridge::labImported);
         QCOMPARE(bridge.importLab(QUrl::fromLocalFile(file.fileName()).toString()), QString());
         QTRY_VERIFY_WITH_TIMEOUT(imported.size() == 1, 20000);
@@ -1159,6 +1159,12 @@ private slots:
         QCOMPARE(proposal["plan"].toMap()["vms"].toList().size(), 1);
         bridge.decline(proposal["id"].toString()); QVERIFY(bridge.proposal().isEmpty());
         // A broken file says where it's broken.
+        // Problems the checks find come back worded for a person, not an agent.
+        QVERIFY(file.open(QIODevice::WriteOnly)); file.write("name = \"nouser\"\n[[vms]]\nname = \"box\"\n"); file.close();
+        QCOMPARE(bridge.importLab(QUrl::fromLocalFile(file.fileName()).toString()), QString());
+        QTRY_VERIFY_WITH_TIMEOUT(imported.size() == 2, 20000);
+        QVERIFY(!imported.last()[0].toBool()); QVERIFY(imported.last()[1].toString().contains("user name")); QVERIFY(!imported.last()[1].toString().contains("Ask the user"));
+        QVERIFY(bridge.proposal().isEmpty());
         QVERIFY(file.open(QIODevice::WriteOnly)); file.write("name = \"x\"\n[[vms\n"); file.close();
         QVERIFY(bridge.importLab(QUrl::fromLocalFile(file.fileName()).toString()).contains("line"));
     }
