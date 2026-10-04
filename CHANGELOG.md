@@ -1,5 +1,22 @@
 # Changelog
 
+## 1.9.0 (unreleased)
+
+- The ISO Shop is now the **OS Shop**, with a new look: a spotlight for updates and favourites, a shelf per category, cards in each system's colors that show how the download is checked, a details panel, a downloads tray, and a storage bar over **Your media**. Press `/` to search.
+- New in the shop: Parrot Security, Security Onion, CAINE, Tsurugi Linux, a ready-made **Kali Linux VM** (downloaded, checked and unpacked into `appliances/`, then **Import VM**), and Windows 11 Enterprise and Windows Server 2025 evaluation copies.
+- Earlier versions where the publisher still offers them (Ubuntu LTS releases, the previous Debian and Fedora, Rocky Linux and AlmaLinux 8–10, recent Mint, FreeBSD and OPNsense releases). A version you pick on purpose is kept and never offered for deletion as an older version; pin or unpin any file.
+- Downloads whose publisher gives no SHA-256 or SHA-512 checksum are labelled **Unverified**, with the reason (Microsoft's evaluation copies have none; Parrot publishes only MD5, still used to catch damaged downloads). Your media shows how each file was checked.
+- **Set it up for me** when creating a VM: Windows 11 (and the Enterprise and Server evaluation copies) and Ubuntu Server install without questions, with the user name and password you give. Ubuntu gets the QEMU guest agent and sudo; OmaWare takes out the installation media afterwards and starts the new system.
+- AI agents can list the OS Shop and download from it (`get_media`). Every download asks you first, and agents can only pick the shop's own systems.
+- AI agents: `create_vm` takes the VM's network adapters as an ordered list that can include the private internet connection (`"user"`), so a router's WAN can be its first network card in one request.
+- AI agents can start, stop, edit and delete networks OmaWare created, and choose whether they start with the computer (`manage_network`). Networks agents create now start with the computer by default, like the ones made in OmaWare.
+- An adapter change that can't apply to a running or paused VM can ask for a clean restart in the same approval. OmaWare never forces the VM off and reports a timeout when the guest doesn't shut down.
+- Allowing VMs on a network says why it failed (password prompt closed or refused, a deny rule, the network not running, the helper missing or not owned by root), and agents get the same reason as a code. A missing helper comes with the `sudo install` command for your copy of OmaWare; cmake is no longer needed.
+- `run_command` works on VMs on isolated networks through the QEMU guest agent, and says what to do when no agent is running. The overview shows addresses the guest agent reports (for VMs behind a guest router), where each address came from, and which VMs need a restart for saved changes.
+- Every change an agent makes returns the new revision; `diagnose_vm` gives hints such as a guest with no IPv4 address on any network card.
+- AI agents can use a VM's serial console as text (`serial_console`, and `type_login` over serial): routers like pfSense can be configured without a guest agent, a network or typing on the screen.
+- Optional session approval: tick **Don't ask again** on an agent's adapter change for isolated and host-only networks, and such changes stop asking until agent access is turned off (at most 8 hours). The banner shows it, with **Revoke**.
+
 ## 1.8.1 (2026-10-03)
 
 - Fixed OmaWare not starting again after an update installed from the app when no VMs were running.

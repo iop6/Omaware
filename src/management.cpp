@@ -2,6 +2,7 @@
 #include "backend.h"
 #include "applianceimport.h"
 #include "agentprovision.h"
+#include "bridgehelper.h"
 #include <QScopeGuard>
 #include <unistd.h>
 #include "paths.h"
@@ -13,6 +14,10 @@
 #include "workspace.h"
 #include "cloudimages.h"
 #include "cloudseed.h"
+#include "unattended.h"
+#include <QTimeZone>
+#include <archive.h>
+#include <archive_entry.h>
 #include "guestinput.h"
 #include "labs.h"
 #include "vmfiles.h"
@@ -76,6 +81,29 @@ bool run(QString program, QStringList args, QByteArray &output, QString &error, 
     output = process.readAllStandardOutput();
     if (process.exitStatus() != QProcess::NormalExit || process.exitCode() != 0) { error = program + ": " + QString::fromUtf8(process.readAllStandardError()).left(6000); return false; }
     return true;
+}
+// Copies one file (e.g. "casper/vmlinuz") out of an ISO image.
+bool extractFromIso(const QString &iso, const QString &entryName, const QString &target, QString &error) {
+    auto archive = archive_read_new();
+    archive_read_support_format_iso9660(archive);
+    const auto freeArchive = qScopeGuard([&] { archive_read_free(archive); });
+    if (archive_read_open_filename(archive, QFile::encodeName(iso).constData(), 1 << 20) != ARCHIVE_OK) { error = "The installation ISO couldn't be read."; return false; }
+    archive_entry *entry = nullptr;
+    while (archive_read_next_header(archive, &entry) == ARCHIVE_OK) {
+        auto name = QString::fromUtf8(archive_entry_pathname(entry));
+        if (name.startsWith("./")) name = name.mid(2);
+        if (name != entryName || archive_entry_filetype(entry) != AE_IFREG) continue;
+        if (archive_entry_size(entry) > (qint64(512) << 20)) { error = "The installer's " + entryName + " is unexpectedly large."; return false; }
+        QFile out(target);
+        if (!out.open(QIODevice::WriteOnly | QIODevice::Truncate)) { error = "Couldn't write " + target + "."; return false; }
+        out.setPermissions(QFile::ReadOwner | QFile::WriteOwner);
+        char buffer[1 << 16];
+        for (la_ssize_t n; (n = archive_read_data(archive, buffer, sizeof buffer)) > 0;)
+            if (out.write(buffer, n) != n) { error = "Couldn't write " + target + "."; return false; }
+        return true;
+    }
+    error = "The installation ISO has no " + entryName + ", so it can't be installed automatically.";
+    return false;
 }
 QDomElement child(QDomDocument &doc, QDomElement parent, QString name, QString content = {}) {
     auto e = doc.createElement(name); if (!content.isNull()) e.appendChild(doc.createTextNode(content)); parent.appendChild(e); return e;
@@ -149,24 +177,30 @@ double sumOf(const QHash<QString, QVariant> &p, const QString &prefix, const QSt
     for (int i = 0; i < p.value(prefix + ".count").toInt(); ++i) total += p.value(prefix + "." + QString::number(i) + "." + field).toDouble();
     return total;
 }
-// The bridge helper runs as root through pkexec. Accept it only when the file and every parent
-// directory are root-owned and not writable by group or others, and it is not a symlink.
-QString trustedHelper() {
-    QStringList candidates;
-#ifdef OMAWARE_HELPER_PATH
-    candidates << QStringLiteral(OMAWARE_HELPER_PATH);
-#endif
-    candidates << "/usr/local/libexec/omaware/authorize-bridge" << "/usr/libexec/omaware/authorize-bridge";
-    for (const auto &candidate : candidates) {
-        QString path = QDir::cleanPath(candidate); bool trusted = QFileInfo(path).isAbsolute();
-        for (QString current = path; trusted && current != "/"; current = QFileInfo(current).path()) {
-            struct stat info{};
-            if (lstat(current.toUtf8().constData(), &info) != 0 || S_ISLNK(info.st_mode) || info.st_uid != 0 || (info.st_mode & (S_IWGRP | S_IWOTH))) trusted = false;
-        }
-        struct stat file{};
-        if (trusted && stat(path.toUtf8().constData(), &file) == 0 && S_ISREG(file.st_mode) && (file.st_mode & S_IXUSR)) return path;
+// Runs OmaWare's root helper through pkexec for these networks. On failure, `failure` is for the
+// user (with the helper's own explanation) and `code` a stable reason for agents (BridgeHelper::classify).
+bool runHelper(const QStringList &uuids, QString &failure, QString &code) {
+    QString why;
+    const auto helper = BridgeHelper::trusted(&why);
+    if (helper.isEmpty()) {
+        code = why;
+        const auto build = QFileInfo::exists(QCoreApplication::applicationDirPath() + "/CMakeCache.txt") ? QCoreApplication::applicationDirPath() : QString{};
+        failure = (why == "helper_untrusted" ? "OmaWare won't run the network helper at " + BridgeHelper::destination() + ": it, or a folder above it, isn't safely owned by root. Reinstall it with:\n"
+                                              : "Letting your VMs join networks needs OmaWare's small administrator helper. Install it once with:\n")
+            + BridgeHelper::installCommands(BridgeHelper::script(), build).join("\nor\n");
+        return false;
     }
-    return {};
+    QProcess process; process.start("pkexec", QStringList{helper} + uuids);
+    if (!process.waitForStarted(5000)) { code = "authorization_unavailable"; failure = "Cannot start pkexec. Install polkit to let OmaWare ask for administrator authorization."; return false; }
+    // The password prompt waits for the user; give them a few minutes.
+    if (!process.waitForFinished(300000)) { process.kill(); process.waitForFinished(3000); code = "authorization_timeout"; failure = "Nobody answered the administrator password prompt in time."; return false; }
+    if (process.exitStatus() == QProcess::NormalExit && process.exitCode() == 0) return true;
+    const auto errors = process.readAllStandardError();
+    code = BridgeHelper::classify(process.exitStatus() == QProcess::NormalExit ? process.exitCode() : -1, errors);
+    if (code == "authorization_cancelled") failure = "The administrator password prompt was closed, so nothing changed.";
+    else failure = (code == "helper_failed" ? QString("The network helper failed: ") : QString()) + QString::fromUtf8(errors).trimmed().left(2000);
+    if (failure.isEmpty()) failure = BridgeHelper::agentMessage(code);
+    return false;
 }
 // One pass over /proc maps each QEMU process's -uuid to its uptime, so a fleet sample costs one scan
 // instead of one scan per VM.
@@ -363,26 +397,35 @@ void VmWorker::manage(QString op, QVariantMap in) {
             for (int i = 0; i < n; ++i) {
                 QString failure; const auto saved = xmlOf(domains[i]); auto info = DomainConfig::describe(saved, failure);
                 info["active"] = virDomainIsActive(domains[i]) == 1;
-                QVariantMap addresses;
+                QVariantMap addresses, addressSources;
                 if (info["active"].toBool()) {
                     info["liveInterfaces"] = DomainConfig::describe(xmlOf(domains[i], true), failure)["interfaces"];
                     QHash<QString, QStringList> found = leases;
+                    QHash<QString, QString> sources;   // where each MAC's addresses came from, first source wins
+                    for (auto it = leases.cbegin(); it != leases.cend(); ++it) sources[it.key()] = "dhcp_lease";
                     virDomainInterfacePtr *ifaces = nullptr; int count = virDomainInterfaceAddresses(domains[i], &ifaces, VIR_DOMAIN_INTERFACE_ADDRESSES_SRC_ARP, 0);
                     for (int j = 0; j < count; ++j) {
                         const auto mac = QString::fromUtf8(ifaces[j]->hwaddr ? ifaces[j]->hwaddr : "").toLower();
                         for (unsigned k = 0; k < ifaces[j]->naddrs; ++k)
-                            if (ifaces[j]->addrs[k].type == VIR_IP_ADDR_TYPE_IPV4 && !found[mac].contains(QString::fromUtf8(ifaces[j]->addrs[k].addr))) found[mac] << QString::fromUtf8(ifaces[j]->addrs[k].addr);
+                            if (ifaces[j]->addrs[k].type == VIR_IP_ADDR_TYPE_IPV4 && !found[mac].contains(QString::fromUtf8(ifaces[j]->addrs[k].addr))) { found[mac] << QString::fromUtf8(ifaces[j]->addrs[k].addr); if (!sources.contains(mac)) sources[mac] = "arp"; }
                         virDomainInterfaceFree(ifaces[j]);
                     }
                     free(ifaces);
                     for (const auto &nic : info["liveInterfaces"].toList()) {
                         const auto mac = nic.toMap()["mac"].toString().toLower();
-                        if (found.contains(mac)) addresses[mac] = found[mac];
+                        if (found.contains(mac) && !found[mac].isEmpty()) { addresses[mac] = found[mac]; addressSources[mac] = sources.value(mac); }
                     }
+                }
+                // Saved changes the running VM doesn't use yet (they apply on its next full start).
+                int pendingChanges = 0;
+                if (info["active"].toBool()) {
+                    char id[VIR_UUID_STRING_BUFLEN]; virDomainGetUUIDString(domains[i], id);
+                    PendingChanges pending(QString::fromUtf8(id));
+                    if (!pending.baseline().isEmpty() && !Configuration::changes(xmlOf(domains[i], true), saved).isEmpty()) pendingChanges = pending.items(saved).size();
                 }
                 // The revision lets the topology canvas rewire adapters with the same stale-edit protection as Details.
                 topology.append(QVariantMap{{"uuid", info["uuid"]}, {"name", info["name"]}, {"active", info["active"]}, {"interfaces", info["interfaces"]},
-                    {"liveInterfaces", info["liveInterfaces"]}, {"revision", DomainConfig::revision(saved)}, {"addresses", addresses}});
+                    {"liveInterfaces", info["liveInterfaces"]}, {"revision", DomainConfig::revision(saved)}, {"addresses", addresses}, {"addressSources", addressSources}, {"pendingChanges", pendingChanges}});
                 virDomainFree(domains[i]);
             }
             free(domains);
@@ -398,32 +441,25 @@ void VmWorker::manage(QString op, QVariantMap in) {
                 ids << v.toString();
             }
             if (ids.isEmpty() || ids.size() > 16) { done(false, "Choose one to sixteen networks."); return; }
-            const auto helper = trustedHelper();
-            if (helper.isEmpty()) { done(false, "Letting your VMs join networks needs OmaWare's small administrator helper. Run OmaWare's install command again to add it."); return; }
-            QByteArray output; QString failure;
-            if (!run("pkexec", QStringList{helper} + ids, output, failure)) {
+            QString failure, code;
+            if (!runHelper(ids, failure, code)) {
                 // Helpers from before 1.3 take one network at a time.
-                if (!failure.contains("one network UUID")) { done(false, failure); return; }
-                for (const auto &id : ids) if (!run("pkexec", {helper, id}, output, failure)) { done(false, failure); return; }
+                if (!failure.contains("one network UUID")) { done(false, failure, {{"code", code}, {"reason", BridgeHelper::agentMessage(code)}}); return; }
+                for (const auto &id : ids) if (!runHelper({id}, failure, code)) { done(false, failure, {{"code", code}, {"reason", BridgeHelper::agentMessage(code)}}); return; }
             }
             done(true, ids.size() == 1 ? "Your VMs can now join this network." : "Your VMs can now join these networks."); return;
         }
         const auto uuid = in["uuid"].toString();
         Network net(uuid.isEmpty() ? nullptr : virNetworkLookupByUUIDString(system.get(), uuid.toUtf8().constData()), virNetworkFree);
         QString original = net ? networkXml(net.get()) : QString{};
-        if (!uuid.isEmpty() && (!net || !managedNetwork(original))) { done(false, "Only OmaWare-created host networks can be changed here."); return; }
+        if (!uuid.isEmpty() && (!net || !managedNetwork(original))) { done(false, "Only OmaWare-created host networks can be changed here.", {{"code", "network_not_owned"}, {"reason", BridgeHelper::agentMessage("network_not_owned")}}); return; }
         QDomDocument old; old.setContent(original); auto oldRoot = old.documentElement();
         const auto oldBridge = oldRoot.firstChildElement("bridge").attribute("name"), oldName = oldRoot.firstChildElement("name").text();
         auto users = net ? usersOf(conn_, oldBridge, oldName) + usersOf(system.get(), oldBridge, oldName) : QVariantList{};
         if (net && in["revision"].toString() != DomainConfig::revision(original)) { done(false, "The network configuration changed. Refresh Networks before retrying."); return; }
         // pkexec runs this helper as root, so only a root-owned copy in a root-only directory is trusted:
         // a helper that the user (or any program running as the user) can modify would escalate to root.
-        auto authorize = [&](const QString &identity, QString &failure) {
-            const auto helper = trustedHelper();
-            if (helper.isEmpty()) { failure = "Letting your VMs join networks needs OmaWare's small administrator helper. Install it once with: sudo cmake --install <build-dir> --component helper"; return false; }
-            QByteArray output;
-            return run("pkexec", {helper, identity}, output, failure);
-        };
+        auto authorize = [&](const QString &identity, QString &failure, QString &code) { return runHelper({identity}, failure, code); };
         if (op == "networks.save") {
             if (net && (virNetworkIsActive(net.get()) == 1 || !users.isEmpty())) { done(false, "Stop this network and disconnect its VMs before editing its addresses."); return; }
             const auto identity = uuid.isEmpty() ? QUuid::createUuid().toString(QUuid::WithoutBraces) : uuid;
@@ -472,17 +508,21 @@ void VmWorker::manage(QString op, QVariantMap in) {
             if (virNetworkSetAutostart(defined.get(), settings.value("autostart", true).toBool()) < 0) { done(false, lastError("Network saved, but setting autostart failed")); return; }
             const bool started = !net && settings.value("start", true).toBool();
             if (started && virNetworkCreate(defined.get()) < 0) { done(false, lastError("Network saved, but starting it failed")); return; }
-            QVariantMap result{{"uuid", identity}, {"subnet", settings["subnet"]}, {"authorized", false}};
+            QVariantMap result{{"uuid", identity}, {"subnet", settings["subnet"]}, {"authorized", false}, {"revision", DomainConfig::revision(networkXml(defined.get()))}};
             QString message = net ? "Network saved." : "Network created.";
             if (started && settings.value("authorize", false).toBool()) {
-                QString why;
-                if (authorize(identity, why)) { result["authorized"] = true; message += " Your VMs can join it."; }
-                else message += " Your VMs can't join it yet: " + why;
+                QString why, code;
+                if (authorize(identity, why, code)) { result["authorized"] = true; message += " Your VMs can join it."; }
+                else { message += " Your VMs can't join it yet: " + why; result["code"] = code; result["reason"] = BridgeHelper::agentMessage(code); }
             }
             done(true, message, result); return;
         }
         if (!net) { done(false, "Select an existing network."); return; }
         int result = -1;
+        if (op == "networks.autostart") {
+            if (virNetworkSetAutostart(net.get(), in["autostart"].toBool() ? 1 : 0) < 0) { done(false, lastError("Set network autostart")); return; }
+            done(true, in["autostart"].toBool() ? "The network now starts with the computer." : "The network no longer starts with the computer.", {{"revision", DomainConfig::revision(networkXml(net.get()))}}); return;
+        }
         if (op == "networks.start") result = virNetworkCreate(net.get());
         else if (op == "networks.stop" || op == "networks.remove") {
             if (!users.isEmpty()) { done(false, "This network is still attached to VMs: " + [&] { QStringList names; for (auto user : users) names << user.toString(); return names.join(", "); }()); return; }
@@ -490,13 +530,13 @@ void VmWorker::manage(QString op, QVariantMap in) {
             else if (virNetworkIsActive(net.get()) == 1) { done(false, "Stop this network before removing it."); return; }
             else result = virNetworkUndefine(net.get());
         } else if (op == "networks.authorize") {
-            if (virNetworkIsActive(net.get()) != 1) { done(false, "Start the network before allowing VMs to join it."); return; }
+            if (virNetworkIsActive(net.get()) != 1) { done(false, "Start the network before allowing VMs to join it.", {{"code", "bridge_inactive"}, {"reason", BridgeHelper::agentMessage("bridge_inactive")}}); return; }
             if (!checkProvision()) return;
-            QString failure;
-            if (!authorize(uuid, failure)) { done(false, failure); return; }
-            done(true, "Your VMs can now join this network."); return;
+            QString failure, code;
+            if (!authorize(uuid, failure, code)) { done(false, failure, {{"code", code}, {"reason", BridgeHelper::agentMessage(code)}}); return; }
+            done(true, "Your VMs can now join this network.", {{"revision", DomainConfig::revision(original)}}); return;
         } else { done(false, "Unknown host network operation."); return; }
-        done(result == 0, result == 0 ? "Host network operation completed." : lastError("Update host network")); return;
+        done(result == 0, result == 0 ? "Host network operation completed." : lastError("Update host network"), {{"revision", result == 0 && op != "networks.remove" ? DomainConfig::revision(networkXml(net.get())) : QString{}}}); return;
     }
     if (op == "vm.create") {
         auto name = in["name"].toString().trimmed();
@@ -528,6 +568,15 @@ void VmWorker::manage(QString op, QVariantMap in) {
         if (!QFileInfo(source).isAbsolute() || !QFileInfo(source).isFile() || !QFileInfo(source).isReadable()) { done(false, "Choose a readable local ISO or disk image."); return; }
         // Cloud images only come from OmaWare's own image folder, where they were checked against their publisher's checksum.
         if (cloud && QFileInfo(source).canonicalPath() != QFileInfo(CloudImages::folder()).canonicalFilePath()) { done(false, "Cloud images must be in OmaWare's image folder."); return; }
+        // "Set it up for me": answers for the installer, only for ISOs that support it.
+        const auto setupIn = in.value("unattended").toMap();
+        const auto setupKind = setupIn.isEmpty() ? QString() : Unattended::kindForFile(QFileInfo(source).fileName());
+        if (!setupIn.isEmpty()) {
+            const auto password = setupIn["password"].toString();
+            if (importing || setupKind.isEmpty()) { done(false, "This ISO can't be installed automatically."); return; }
+            if (!CloudSeed::validUser(setupIn["user"].toString())) { done(false, "Choose a user name of lower-case letters, digits, dashes or underscores."); return; }
+            if (password.isEmpty() || password.size() > 127 || password.contains(QRegularExpression("[\\x00-\\x1f\\x7f]"))) { done(false, "Choose a password of 1–127 characters."); return; }
+        }
         const auto seed = in.value("seed").toMap();
         if (cloud && (seed["userData"].toByteArray().size() > 262144 || seed["metaData"].toByteArray().isEmpty() || seed["networkConfig"].toByteArray().size() > 65536)) { done(false, "The first-boot setup is missing or too large."); return; }
         auto parent = in.value("location").toString().isEmpty() ? Paths::vms() : in.value("location").toString();
@@ -552,7 +601,7 @@ void VmWorker::manage(QString op, QVariantMap in) {
         emit progress(importing ? "Copying the source disk into a new independent image…" : "Creating the VM's new disk…");
         bool diskOk = importing ? importedDisk.convert(disk, failure) : run("qemu-img", {"create", "-f", "qcow2", disk, QString::number(size) + "G"}, output, failure);
         auto seedPath = directory + "/seed.iso";
-        auto cleanup = [&] { QFile::remove(disk); QFile::remove(seedPath); QDir().rmdir(directory); };
+        auto cleanup = [&] { QFile::remove(disk); QFile::remove(seedPath); for (const auto &f : {"/setup.iso", "/installer-vmlinuz", "/installer-initrd"}) QFile::remove(directory + f); QDir().rmdir(directory); };
         if (diskOk && cloud) {
             // The image's own size is just big enough for its system; grow it to the size asked for.
             diskOk = run("qemu-img", {"resize", "-f", "qcow2", disk, QString::number(size) + "G"}, output, failure);
@@ -560,7 +609,30 @@ void VmWorker::manage(QString op, QVariantMap in) {
             if (diskOk && !CloudSeed::writeIso(seedPath, "cidata", {{"user-data", seed["userData"].toByteArray()}, {"meta-data", seed["metaData"].toByteArray()}, {"network-config", seed["networkConfig"].toByteArray()}}, seedError))
                 { diskOk = false; failure = seedError; }
         }
-        if (!diskOk) { cleanup(); done(false, failure); return; }
+        // The answers disc, and for Ubuntu its installer's kernel, which the first boot starts directly.
+        const auto answersPath = directory + "/setup.iso", kernelPath = directory + "/installer-vmlinuz", initrdPath = directory + "/installer-initrd";
+        if (diskOk && !setupKind.isEmpty()) {
+            Unattended::Settings settings;
+            settings.user = setupIn["user"].toString(); settings.password = setupIn["password"].toString();
+            settings.passwordHash = CloudSeed::hashPassword(settings.password);
+            settings.hostname = CloudSeed::hostname(in["name"].toString());
+            const auto zone = QString::fromUtf8(QTimeZone::systemTimeZoneId());
+            settings.timezone = QRegularExpression("^[A-Za-z0-9_+-]+(/[A-Za-z0-9_+-]+)*$").match(zone).hasMatch() ? zone : QString("UTC");
+            const auto locale = QLocale::system().name();
+            settings.locale = QRegularExpression("^[a-z]{2,3}_[A-Z]{2}$").match(locale).hasMatch() ? locale : QString("en_US");
+            settings.keyboard = Unattended::keyboardFor(settings.locale);
+            settings.uefi = firmware == "uefi";
+            const auto file = QFileInfo(source).fileName();
+            emit progress("Writing the answers for the installer…");
+            QString setupError;
+            bool written = false;
+            if (setupKind == "windows") written = CloudSeed::writeIso(answersPath, "OMAWARE", {{"autounattend.xml", Unattended::autounattend(settings, file)}}, setupError);
+            else written = CloudSeed::writeIso(answersPath, "cidata", {{"user-data", Unattended::subiquityUserData(settings)}, {"meta-data", Unattended::subiquityMetaData("omaware-setup-" + identity)}}, setupError)
+                && extractFromIso(source, "casper/vmlinuz", kernelPath, setupError) && extractFromIso(source, "casper/initrd", initrdPath, setupError);
+            if (!written) { diskOk = false; failure = setupError; }
+            else QFile::setPermissions(answersPath, QFile::ReadOwner | QFile::WriteOwner);
+        }
+        if (!diskOk) { cleanup(); QFile::remove(answersPath); QFile::remove(kernelPath); QFile::remove(initrdPath); done(false, failure); return; }
         QFile::setPermissions(disk, QFile::ReadOwner | QFile::WriteOwner);
         emit progress("Preparing and validating the VM definition…");
         // Windows installs without extra drivers on SATA disks, e1000e network cards and a standard VGA display.
@@ -574,6 +646,7 @@ void VmWorker::manage(QString op, QVariantMap in) {
             "--channel", "unix,target.type=virtio,target.name=org.qemu.guest_agent.0", "--noautoconsole", "--dry-run", "--print-xml", "1"};
         if (importing) args << "--import"; else args << "--cdrom" << source;
         if (cloud) args << "--disk" << "path=" + seedPath + ",device=cdrom";
+        if (!setupKind.isEmpty()) args << "--disk" << "path=" + answersPath + ",device=cdrom";
         if (disk.contains(',') || source.contains(',')) { cleanup(); done(false, "Choose paths without commas for the virt-install workflow."); return; }
         const auto boot = firmware == "uefi" ? QString("uefi") : importing ? QString("hd") : QString("cdrom,hd");
         // Secure Boot when the host has firmware for it, preferably with Microsoft's keys preloaded;
@@ -595,6 +668,24 @@ void VmWorker::manage(QString op, QVariantMap in) {
         }
         auto metadata = root.firstChildElement("metadata"); if (metadata.isNull()) metadata = child(doc, root, "metadata");
         metadata.appendChild(doc.createElementNS("https://omaware.org/xmlns/prototype/1", "omaware:managed"));
+        if (!setupKind.isEmpty()) {
+            // Still to be set up: what start() and finishSetup() need. The answers stay in the VM's private folder.
+            auto setup = doc.createElementNS(Unattended::ns, "omasetup:setup");
+            setup.setAttribute("kind", setupKind); setup.setAttribute("state", "new"); setup.setAttribute("uefi", firmware == "uefi" ? "1" : "0");
+            setup.setAttribute("answers", answersPath); setup.setAttribute("media", source);
+            if (setupKind == "subiquity") { setup.setAttribute("kernel", kernelPath); setup.setAttribute("initrd", initrdPath); }
+            metadata.appendChild(setup);
+            // The installer boots from its own disc, the first CD drive; Ubuntu boots its installer's kernel directly
+            // the first time, so it boots from the disk from then on.
+            auto os = root.firstChildElement("os");
+            for (auto b = os.firstChildElement("boot"); !b.isNull(); b = os.firstChildElement("boot")) os.removeChild(b);
+            for (const auto &dev : setupKind == "subiquity" ? QStringList{"hd", "cdrom"} : QStringList{"cdrom", "hd"}) child(doc, os, "boot").setAttribute("dev", dev);
+            auto disks = devices.elementsByTagName("disk");
+            for (int i = 0; i < disks.size(); ++i) {
+                auto e = disks.at(i).toElement();
+                if (e.attribute("device") == "cdrom" && e.firstChildElement("source").attribute("file") == answersPath) { devices.appendChild(devices.removeChild(e)); break; }
+            }
+        }
         if (const auto lab = in["lab"].toMap(); !lab.isEmpty()) {
             // Which lab built this VM and the login it was set up with (the name of a saved login, never a password).
             auto tag = doc.createElementNS(Labs::ns, "omalab:lab");
@@ -630,7 +721,9 @@ void VmWorker::manage(QString op, QVariantMap in) {
         Domain createdVm(virDomainDefineXMLFlags(conn_, doc.toString(-1).toUtf8().constData(), VIR_DOMAIN_DEFINE_VALIDATE), virDomainFree);
         if (!createdVm) { failure = lastError("Define VM"); cleanup(); done(false, failure); return; }
         emit created(identity);
-        done(true, (QStringList{"VM created. Start it to boot the selected installation media or imported disk."} + importedDisk.notes()).join(' '), {{"uuid", identity}, {"storage", directory}, {"importNotes", importedDisk.notes()}}); return;
+        const auto created = !setupKind.isEmpty() ? QString("VM created. Start it and the installer sets it up by itself, then OmaWare removes the installation media.")
+            : QString("VM created. Start it to boot the selected installation media or imported disk.");
+        done(true, (QStringList{created} + importedDisk.notes()).join(' '), {{"uuid", identity}, {"storage", directory}, {"importNotes", importedDisk.notes()}, {"unattended", setupKind}}); return;
     }
 
     const auto uuid = in["uuid"].toString();
@@ -722,7 +815,7 @@ void VmWorker::manage(QString op, QVariantMap in) {
             char *raw = virDomainQemuAgentCommand(domain.get(), "{\"execute\":\"guest-ping\"}", 2, 0);
             if (raw) { agentReady = QJsonDocument::fromJson(raw).object().contains("return"); free(raw); }
         }
-        done(true, "Readiness observed.", {{"running", running}, {"guest_agent", agentReady}}); return;
+        done(true, "Readiness observed.", {{"running", running}, {"active", active}, {"paused", state == VIR_DOMAIN_PAUSED}, {"guest_agent", agentReady}}); return;
     }
     if (op == "vm.details") {
         QString failure;
@@ -730,6 +823,8 @@ void VmWorker::manage(QString op, QVariantMap in) {
         if (!failure.isEmpty()) { done(false, failure); return; }
         auto live = active ? DomainConfig::describe(xmlOf(domain.get(), true), failure) : details;
         PendingChanges pending(uuid);
+        // After a full restart the VM runs its saved settings; nothing is pending any more.
+        if (active && !pending.baseline().isEmpty() && Configuration::changes(xmlOf(domain.get(), true), xml).isEmpty()) pending.clear();
         details["active"] = active;
         details["liveInterfaces"] = live["interfaces"];
         details["agentConnected"] = active && live["agentConnected"].toBool();
@@ -777,7 +872,9 @@ void VmWorker::manage(QString op, QVariantMap in) {
         }
         QString message;
         const bool ok = changeNetwork(uuid, in["mac"].toString(), in["networkId"].toString(), in["model"].toString(), in["linkUp"].toBool(), in["remove"].toBool(), in["revision"].toString(), message);
-        done(ok, message); return;
+        // The new revision and what still waits for a restart, so callers don't have to list again.
+        const auto saved = xmlOf(domain.get());
+        done(ok, message, {{"revision", DomainConfig::revision(saved)}, {"pending_change_count", PendingChanges(uuid).items(saved).size()}, {"active", virDomainIsActive(domain.get()) == 1}}); return;
     }
     if (op == "vm.delete") {
         // Deleting is never something an agent may do, and only OmaWare's own VMs can be deleted.
@@ -832,6 +929,49 @@ void VmWorker::manage(QString op, QVariantMap in) {
         static const QMap<QString, QString> verbs{{"start", "VM started."}, {"shutdown", "Shutdown requested; the guest decides when it stops."}, {"force-off", "VM powered off."},
             {"pause", "VM paused."}, {"resume", "VM resumed."}, {"remove", "VM removed. Its disk files were kept."}};
         done(message.isEmpty(), message.isEmpty() ? verbs.value(action) : message, {{"uuid", uuid}}); return;
+    }
+    if (op == "vm.serial") {
+        // Text on the VM's first serial console, through libvirt. SAFE opens it only when libvirt can
+        // make sure nobody else (virsh console, another agent call) has it at the same time.
+        if (!active) { done(false, "Start the VM first."); return; }
+        std::unique_ptr<virStream, decltype(&virStreamFree)> stream(virStreamNew(conn_, VIR_STREAM_NONBLOCK), virStreamFree);
+        if (!stream || virDomainOpenConsole(domain.get(), nullptr, stream.get(), VIR_DOMAIN_CONSOLE_SAFE) < 0) {
+            done(false, lastError("Open the serial console") + ". The VM needs a serial console, and nobody else may have it open (close virsh console).", {{"code", "console_unavailable"}}); return;
+        }
+        const auto closeStream = qScopeGuard([&] { virStreamAbort(stream.get()); });
+        const auto send = in["send"].toString().replace("\r\n", "\r").replace('\n', '\r').toUtf8();
+        const auto expected = in["waitFor"].toString().toUtf8();
+        const qint64 limit = std::clamp(in.value("timeout", 10).toInt(), 1, 60) * 1000LL;
+        const int maxBytes = std::clamp(in.value("maxBytes", 16384).toInt(), 1024, 65536);
+        QElapsedTimer clock; clock.start();
+        for (qsizetype sent = 0; sent < send.size();) {
+            const int n = virStreamSend(stream.get(), send.constData() + sent, size_t(std::min<qsizetype>(send.size() - sent, 4096)));
+            if (n == -2) { if (clock.elapsed() > limit) break; QThread::msleep(20); continue; }
+            if (n < 0) { done(false, lastError("Write to the serial console"), {{"code", "console_unavailable"}}); return; }
+            sent += n;
+        }
+        // Read until the expected text shows up, or (without one) the guest has been quiet for a second.
+        QByteArray output; bool matched = false, truncated = false, closed = false;
+        qint64 lastData = clock.elapsed();
+        char buffer[4096];
+        while (clock.elapsed() < limit) {
+            const int n = virStreamRecv(stream.get(), buffer, sizeof buffer);
+            if (n > 0) {
+                output.append(buffer, n); lastData = clock.elapsed();
+                if (output.size() > maxBytes) { output = output.right(maxBytes); truncated = true; }
+                if (!expected.isEmpty() && output.contains(expected)) { matched = true; break; }
+                continue;
+            }
+            if (n == 0) { closed = true; break; }
+            if (n == -1) { done(false, lastError("Read the serial console"), {{"code", "console_unavailable"}}); return; }
+            if (expected.isEmpty() && clock.elapsed() - lastData >= 1000) break;
+            QThread::msleep(30);
+        }
+        // Terminal control sequences and carriage returns are noise in text an agent reads.
+        auto text = QString::fromUtf8(output);
+        text.remove(QRegularExpression("\\x1b(\\[[0-9;?]*[ -/]*[@-~]|\\][^\\x07]*\\x07|[()][0-9A-Za-z]|[=>78DEHMc])")).remove('\r');
+        done(true, "Serial console read.", {{"output", text}, {"bytes", output.size()}, {"matched", matched}, {"timedOut", !expected.isEmpty() && !matched && !closed},
+            {"truncated", truncated}, {"closed", closed}, {"elapsedMs", clock.elapsed()}}); return;
     }
     if (op == "vm.screenshot") {
         if (!active) { done(false, "Start the VM to see its screen."); return; }
@@ -983,7 +1123,9 @@ void VmWorker::manage(QString op, QVariantMap in) {
         // IPv4 addresses for each adapter: DHCP leases of host networks, the host's neighbour table and the guest agent.
         QString ignored; const auto live = DomainConfig::describe(xmlOf(domain.get(), true), ignored);
         QHash<QString, QStringList> found;
-        auto add = [&](const QString &mac, const QString &ip) { auto &list = found[mac.toLower()]; if (!list.contains(ip)) list << ip; };
+        QHash<QString, QString> sources;   // per MAC, the first source that knew an address
+        QString source = "dhcp_lease";
+        auto add = [&](const QString &mac, const QString &ip) { auto &list = found[mac.toLower()]; if (!list.contains(ip)) list << ip; if (!sources.contains(mac.toLower())) sources[mac.toLower()] = source; };
         if (active) {
             Connection system(virConnectOpenReadOnly("qemu:///system"), virConnectClose);
             virNetworkPtr *nets = nullptr; const int count = system ? virConnectListAllNetworks(system.get(), &nets, VIR_CONNECT_LIST_NETWORKS_ACTIVE) : 0;
@@ -993,9 +1135,10 @@ void VmWorker::manage(QString op, QVariantMap in) {
                 free(leases); virNetworkFree(nets[i]);
             }
             free(nets);
-            for (const unsigned source : {unsigned(VIR_DOMAIN_INTERFACE_ADDRESSES_SRC_ARP), unsigned(VIR_DOMAIN_INTERFACE_ADDRESSES_SRC_AGENT)}) {
-                if (source == VIR_DOMAIN_INTERFACE_ADDRESSES_SRC_AGENT && !live["agentConnected"].toBool()) continue;
-                virDomainInterfacePtr *ifaces = nullptr; const int n = virDomainInterfaceAddresses(domain.get(), &ifaces, source, 0);
+            for (const unsigned from : {unsigned(VIR_DOMAIN_INTERFACE_ADDRESSES_SRC_ARP), unsigned(VIR_DOMAIN_INTERFACE_ADDRESSES_SRC_AGENT)}) {
+                if (from == VIR_DOMAIN_INTERFACE_ADDRESSES_SRC_AGENT && !live["agentConnected"].toBool()) continue;
+                source = from == VIR_DOMAIN_INTERFACE_ADDRESSES_SRC_AGENT ? "guest_agent" : "arp";
+                virDomainInterfacePtr *ifaces = nullptr; const int n = virDomainInterfaceAddresses(domain.get(), &ifaces, from, 0);
                 for (int j = 0; j < n; ++j) {
                     for (unsigned k = 0; k < ifaces[j]->naddrs; ++k)
                         if (ifaces[j]->hwaddr && ifaces[j]->addrs[k].type == VIR_IP_ADDR_TYPE_IPV4 && !QString::fromUtf8(ifaces[j]->addrs[k].addr).startsWith("127.")) add(QString::fromUtf8(ifaces[j]->hwaddr), QString::fromUtf8(ifaces[j]->addrs[k].addr));
@@ -1007,13 +1150,14 @@ void VmWorker::manage(QString op, QVariantMap in) {
         QVariantList nics;
         for (const auto &v : live["interfaces"].toList()) {
             auto nic = v.toMap();
-            nics.append(QVariantMap{{"mac", nic["mac"]}, {"type", nic["type"]}, {"source", nic["source"]}, {"linkUp", nic["linkUp"]}, {"ips", found.value(nic["mac"].toString().toLower())}});
+            const auto mac = nic["mac"].toString().toLower();
+            nics.append(QVariantMap{{"mac", nic["mac"]}, {"type", nic["type"]}, {"source", nic["source"]}, {"linkUp", nic["linkUp"]}, {"ips", found.value(mac)}, {"ipSource", found.value(mac).isEmpty() ? QString("unknown") : sources.value(mac)}});
         }
         done(true, "Addresses read.", {{"uuid", uuid}, {"active", active}, {"agent", live["agentConnected"]}, {"interfaces", nics}}); return;
     }
     if (op == "vm.restart") {
         if (const auto blocked = Containment::blocker(domain.get(), false); !blocked.isEmpty()) { done(false, blocked); return; }
-        if (!active) { int r = virDomainCreate(domain.get()); done(r == 0, r == 0 ? "VM started with its saved settings." : lastError("Start VM")); return; }
+        if (!active) { int r = start(domain.get()); done(r == 0, r == 0 ? "VM started with its saved settings." : lastError("Start VM")); return; }
         if (virDomainShutdown(domain.get()) < 0) { done(false, lastError("Request guest shutdown")); return; }
         restartUuid_ = uuid; restartTicks_ = 0;
         if (!restartTimer_) {
@@ -1024,7 +1168,7 @@ void VmWorker::manage(QString op, QVariantMap in) {
                 if (virDomainIsActive(d.get()) == 0) {
                     restartTimer_->stop(); restartUuid_.clear();
                     const auto blocked = Containment::blocker(d.get(), false);
-                    int result = owned(d.get()) && blocked.isEmpty() ? virDomainCreate(d.get()) : -1;
+                    int result = owned(d.get()) && blocked.isEmpty() ? start(d.get()) : -1;
                     refresh(); emit finished(result == 0 ? "VM started with its saved settings." : !blocked.isEmpty() ? blocked : lastError("Start VM after shutdown"), result == 0);
                 }
             });
@@ -1221,5 +1365,88 @@ void VmWorker::manage(QString op, QVariantMap in) {
         if (!pending.saved(canonical, failure)) { done(false, "Settings saved, but " + failure); return; }
         if (pending.items(canonical).isEmpty()) pending.clear();
     }
-    done(true, active ? "Settings saved for the next full shutdown and start." : "VM settings saved.");
+    done(true, active ? "Settings saved for the next full shutdown and start." : "VM settings saved.", {{"revision", DomainConfig::revision(xmlOf(saved.get()))}, {"requires_restart", active}});
+}
+
+// ---- Unattended setup (see unattended.h) -----------------------------------------------------
+namespace {
+QDomElement setupMarker(virDomainPtr d, QDomDocument &doc) {
+    char *raw = virDomainGetMetadata(d, VIR_DOMAIN_METADATA_ELEMENT, Unattended::ns, VIR_DOMAIN_AFFECT_CONFIG);
+    if (!raw) { virResetLastError(); return {}; }
+    doc.setContent(QString::fromUtf8(raw)); free(raw);
+    return doc.documentElement();
+}
+void saveMarker(virDomainPtr d, const QDomDocument &doc) {
+    virDomainSetMetadata(d, VIR_DOMAIN_METADATA_ELEMENT, doc.toString(-1).toUtf8().constData(), "omasetup", Unattended::ns, VIR_DOMAIN_AFFECT_CONFIG);
+}
+}
+int VmWorker::start(virDomainPtr d) {
+    QDomDocument marker;
+    auto setup = setupMarker(d, marker);
+    if (setup.isNull()) return virDomainCreate(d);
+    const auto kind = setup.attribute("kind");
+    const bool first = setup.attribute("state") == "new";
+    if (first) { setup.setAttribute("state", "installing"); saveMarker(d, marker); }
+    if (kind == "subiquity") {
+        // Ubuntu's installer only runs without its "Continue with autoinstall?" question when "autoinstall"
+        // is on the kernel command line: boot its kernel directly, for this run only. The saved definition
+        // stays as it is, and the installer powers the VM off when it's done.
+        QDomDocument doc; doc.setContent(xmlOf(d));
+        auto os = doc.documentElement().firstChildElement("os");
+        child(doc, os, "kernel", setup.attribute("kernel")); child(doc, os, "initrd", setup.attribute("initrd")); child(doc, os, "cmdline", "autoinstall ---");
+        auto live = virDomainCreateXML(conn_, doc.toString(-1).toUtf8().constData(), VIR_DOMAIN_NONE);
+        if (!live) return -1;
+        virDomainFree(live);
+        return 0;
+    }
+    const int result = virDomainCreate(d);
+    // Windows on UEFI asks to "Press any key to boot from CD or DVD" the first time. Enter answers that, and
+    // also picks "Windows Setup" if a later key lands on the Windows Boot Manager menu (a key stops its countdown).
+    if (result == 0 && first && kind == "windows" && setup.attribute("uefi") == "1") {
+        char uuid[VIR_UUID_STRING_BUFLEN];
+        if (virDomainGetUUIDString(d, uuid) == 0) pressKeys(QString::fromLatin1(uuid), 12);
+    }
+    return result;
+}
+void VmWorker::pressKeys(const QString &uuid, int times) {
+    if (times <= 0 || !conn_) return;
+    QTimer::singleShot(700, this, [this, uuid, times] {
+        if (!conn_) return;
+        Domain d(virDomainLookupByUUIDString(conn_, uuid.toUtf8().constData()), virDomainFree);
+        if (!d || virDomainIsActive(d.get()) != 1) return;
+        unsigned int enter = 28;   // KEY_ENTER
+        virDomainSendKey(d.get(), VIR_KEYCODE_SET_LINUX, 60, &enter, 1, 0);
+        pressKeys(uuid, times - 1);
+    });
+}
+void VmWorker::finishSetup(const QString &uuid, int detail) {
+    if (storageOnly_ || !conn_) return;
+    Domain d(virDomainLookupByUUIDString(conn_, uuid.toUtf8().constData()), virDomainFree);
+    if (!d || virDomainIsActive(d.get()) == 1 || !owned(d.get())) { virResetLastError(); return; }
+    QDomDocument marker;
+    const auto setup = setupMarker(d.get(), marker);
+    // Only when the guest itself switched off: the installer when it's done (Linux), or you shutting down a
+    // Windows VM that finished setting up. A forced stop leaves everything in place for the next start.
+    if (setup.isNull() || setup.attribute("state") != "installing" || detail != VIR_DOMAIN_EVENT_STOPPED_SHUTDOWN) return;
+    const auto kind = setup.attribute("kind"), answers = setup.attribute("answers"), media = setup.attribute("media");
+    QDomDocument doc; doc.setContent(xmlOf(d.get()));
+    auto root = doc.documentElement(), devices = root.firstChildElement("devices");
+    // Take out the answers disc and the installation media, so the VM boots its new system.
+    auto disks = devices.elementsByTagName("disk");
+    for (int i = disks.size() - 1; i >= 0; --i) {
+        auto e = disks.at(i).toElement();
+        if (e.attribute("device") != "cdrom") continue;
+        const auto file = e.firstChildElement("source").attribute("file");
+        if (file == answers) devices.removeChild(e);
+        else if (file == media) e.removeChild(e.firstChildElement("source"));
+    }
+    auto metadata = root.firstChildElement("metadata");
+    for (auto e = metadata.firstChildElement(); !e.isNull();) { auto next = e.nextSiblingElement(); if (e.namespaceURI() == Unattended::ns || e.tagName().endsWith(":setup")) metadata.removeChild(e); e = next; }
+    const auto name = QString::fromUtf8(virDomainGetName(d.get())).remove(QRegularExpression("^omaware-"));
+    Domain saved(virDomainDefineXMLFlags(conn_, doc.toString(-1).toUtf8().constData(), VIR_DOMAIN_DEFINE_VALIDATE), virDomainFree);
+    if (!saved) { emit finished(lastError("Finish the unattended setup of " + name), false); return; }
+    for (const auto &attribute : {"answers", "kernel", "initrd"}) if (!setup.attribute(attribute).isEmpty()) QFile::remove(setup.attribute(attribute));
+    if (kind == "windows") { emit finished(name + " finished setting up: OmaWare removed its answer disc and the Windows installation media.", true); return; }
+    const int started = virDomainCreate(saved.get());
+    emit finished(started == 0 ? name + " is installed and starting its new system." : lastError(name + " is installed, but starting it failed"), started == 0);
 }

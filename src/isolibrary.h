@@ -18,10 +18,12 @@ class QNetworkReply;
 class QThread;
 class QTimer;
 
-// Installation ISOs in OmaWare's data folder, and the ISO shop: the latest official releases of
-// popular operating systems. It contacts publishers only when asked: check() reads their release
-// lists, download() fetches one ISO into isos/ and keeps it only if its SHA-256 matches the
-// publisher's checksum. Compressed images are unpacked after they are verified.
+// Installation media in OmaWare's data folder, and the OS Shop: official releases of popular operating
+// systems, newest first with a few earlier versions where the publisher still offers them. It contacts
+// publishers only when asked: check() reads their release lists, download() fetches one release into
+// isos/ and keeps it only if it matches the publisher's checksum (SHA-256 or SHA-512). Releases whose
+// publisher gives no such checksum are marked unverified. Compressed images are unpacked after they are
+// checked; ready-made VM images go to appliances/.
 class IsoLibrary : public QObject {
     Q_OBJECT
     Q_PROPERTY(QString folder READ folder NOTIFY changed)
@@ -32,6 +34,8 @@ class IsoLibrary : public QObject {
     Q_PROPERTY(QStringList sourceIds READ sourceIds CONSTANT)
     Q_PROPERTY(QVariantList sources READ sources NOTIFY changed)
     Q_PROPERTY(QVariantList files READ files NOTIFY filesChanged)
+    // Free space where downloads go, in bytes (updated by rescan()).
+    Q_PROPERTY(double freeBytes READ freeBytes NOTIFY filesChanged)
     Q_PROPERTY(bool checking READ checking NOTIFY changed)
     Q_PROPERTY(bool downloading READ downloading NOTIFY changed)
     // Whether opening the shop looks up the latest releases (tests turn this off to stay offline).
@@ -51,6 +55,7 @@ public:
     QStringList sourceIds() const;
     QVariantList sources() const;
     QVariantList files() const { return files_; }
+    double freeBytes() const { return freeBytes_; }
     bool checking() const { return pending_ > 0; }
     bool downloading() const { return !jobs_.isEmpty(); }
     bool importing() const { return !!import_; }
@@ -72,24 +77,42 @@ public:
     Q_INVOKABLE QVariantMap identify(const QString &name) const;
     // Sources offered in several languages (Windows): which one to download.
     Q_INVOKABLE void setLanguage(const QString &id, const QString &language);
+    // Which version download() fetches; empty (or one the publisher no longer offers) means the newest.
+    Q_INVOKABLE void setVersion(const QString &id, const QString &version);
+    // A kept file is never offered as an "older version" to delete.
+    Q_INVOKABLE void setKept(const QString &name, bool kept);
     // Adds ISO files (paths or file:// URLs) to the folder. A file on the same disk is linked, which is
     // instant and takes no extra space; anything else is copied in the background. Other kinds of
     // files are skipped. imported() reports the result; returns false if nothing could be added.
     Q_INVOKABLE bool importFiles(const QVariantList &urls);
     Q_INVOKABLE void cancelImport();
 
-    // Fetches any URL into the folder, verified against sha256 (used by download() and tests).
-    bool fetch(const QString &id, const QUrl &url, const QString &sha256, const QString &file, qint64 size = 0);
+    // Fetches any URL into the folder, checked against its checksum (used by download() and tests).
+    // algorithm is "sha256", "sha512" or "md5"; "" downloads without a check, only for unverified sources.
+    bool fetch(const QString &id, const QUrl &url, const QString &checksum, const QString &file, qint64 size = 0, const QString &algorithm = "sha256");
 
-    struct Release { QString version, file, url, sha256; qint64 size = 0; };
+    // checksum is in hex; algorithm says which kind ("" when the publisher gives none).
+    struct Release { QString version, file, url, checksum; qint64 size = 0; QString algorithm = "sha256"; };
     // Parsers for the publishers' release lists; empty on failure.
     static QString ubuntuLtsCodename(const QByteArray &metaRelease);
-    // GNU ("hash  file") or BSD ("SHA256 (file) = hash") checksum lists.
+    // Every supported LTS codename, newest first.
+    static QStringList ubuntuLtsCodenames(const QByteArray &metaRelease);
+    // GNU ("hash  file") or BSD ("SHA256 (file) = hash") checksum lists, with SHA-256, SHA-512 or MD5
+    // hashes (the strongest one wins when a file is listed more than once). The newest match.
     static Release fromChecksums(const QByteArray &sums, const QString &pattern, const QString &base);
     static Release fedora(const QByteArray &releasesJson, const QString &variant);
+    // Every stable release of a Fedora variant, newest first.
+    static QList<Release> fedoraReleases(const QByteArray &releasesJson, const QString &variant);
+    // Security Onion's DOWNLOAD_AND_VERIFY_ISO.md: the ISO link and its SHA-256.
+    static Release securityOnion(const QByteArray &markdown);
+    // Microsoft Evaluation Center page: language code (e.g. "en-US") -> download link, for the ISO whose
+    // label contains product (and isn't LTSC).
+    static QVariantMap evaluationLinks(const QByteArray &html, const QString &product);
     static Release alpine(const QByteArray &latestReleasesYaml, const QString &flavor, const QString &base);
     // The newest numeric folder in a web server's directory listing, e.g. "10.2" or "26.7".
     static QString newestFolder(const QByteArray &listing, const QString &pattern = R"(^[0-9]+(\.[0-9]+)*$)");
+    // The newest count folders, or with perMajor the newest folder of each of the newest count major versions.
+    static QStringList newestFolders(const QByteArray &listing, const QString &pattern, int count, bool perMajor = false);
     // Microsoft's Windows download page: {version ("26H2"), edition (product edition id), languages
     // (in page order), hashes (language -> SHA-256)}. Empty if the page couldn't be read.
     static QVariantMap windowsPage(const QByteArray &html);
@@ -106,15 +129,25 @@ signals:
     void changed();
     void filesChanged();
     void finished(const QString &id, bool ok, const QString &message);
+    // A version picked on a card, so the shop can offer it again next time.
+    void versionChosen(const QString &id, const QString &version);
     // paths: the dropped ISOs as they are now in the folder (including ones that were already there).
     void imported(const QStringList &paths, bool ok, const QString &message);
 
 private:
     struct Source {
         QString id, name, description, category, color, kind = "download", pattern, preset, note, page;
-        QVariantMap lookup = {};   // how to find the newest release
+        QVariantMap lookup = {};   // how to find the releases
+        // "installer" (an ISO) or "image" (a ready-made VM disk, imported rather than installed).
+        QString media = "installer";
+        // Why downloads of this source can't be fully verified, if they can't.
+        QString trustNote = {};
         QString status = "unknown", error = {};
-        Release latest = {};
+        Release latest = {};          // the newest release
+        QList<Release> releases = {};  // newest first
+        QString chosen = {};          // the version to download; empty for the newest
+        // Microsoft evaluation copies: language code -> download link.
+        QHash<QString, QString> links = {};
         // Windows: the edition on Microsoft's page, its languages and their checksums.
         QString edition = {}, version = {}, language = {};
         QStringList languages = {};
@@ -123,12 +156,13 @@ private:
     struct Job {
         QPointer<QNetworkReply> reply;
         std::unique_ptr<QFile> out;
-        QCryptographicHash hash{QCryptographicHash::Sha256};
-        QString sha256, file;
+        std::unique_ptr<QCryptographicHash> hash;   // none for unverified downloads
+        QString checksum, algorithm, file;
         qint64 received = 0, total = 0, rate = 0, lastBytes = 0;
         QElapsedTimer sample;
         bool unpacking = false;
         QPointer<QObject> unpacker;
+        std::shared_ptr<std::atomic<bool>> stop;   // asks a running unpack thread to stop
         // Resuming after a dropped connection: where the current request started, and how many retries.
         QUrl url;
         qint64 offset = 0;
@@ -154,6 +188,16 @@ private:
     const Source *find(const QString &id) const;
     void get(const QUrl &url, Done done, int attempt = 0, const QList<QPair<QByteArray, QByteArray>> &headers = {});
     Release windowsRelease(const Source &source) const;
+    Release selected(const Source &source) const;
+    void resolveEvaluation(const QString &id);
+    void head(const QUrl &url, std::function<void(bool ok, const QUrl &finalUrl, qint64 size)> done);
+    // Settles several lookups at once: each adds its releases, the last one settles the source.
+    std::function<void(const QList<Release> &, const QString &)> gather(const QString &id, int lookups);
+    void settleAll(const QString &id, QList<Release> releases, const QString &failure);
+    void extract(const QString &id, Job *job, const QString &packed);
+    void remember(const QString &id, const QString &file, const QString &algorithm);
+    void loadMeta();
+    void saveMeta();
     void downloadWindows(const QString &id);
     void resolve(Source &source);
     void settle(const QString &id, const Release &release, const QString &failure);
@@ -165,6 +209,10 @@ private:
     QString applianceFolder_;
     QList<Source> sources_;
     QVariantList files_;
+    double freeBytes_ = 0;
+    // Kept file names, and how each download was checked (file name -> algorithm, "" if it wasn't).
+    QStringList kept_;
+    QHash<QString, QString> checked_;
     QHash<QString, Job *> jobs_;
     int pending_ = 0;
     bool autoCheck_ = true;

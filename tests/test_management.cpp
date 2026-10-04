@@ -15,6 +15,9 @@
 #include "labs.h"
 #include "logins.h"
 #include "labplan.h"
+#include "unattended.h"
+#include <archive.h>
+#include <archive_entry.h>
 #include <fcntl.h>
 #include <unistd.h>
 #include <QCryptographicHash>
@@ -23,6 +26,7 @@
 #include <QJsonObject>
 #include <QtEndian>
 #include <QtTest>
+#include <QScopeGuard>
 #include <QProcess>
 #include <QQuickStyle>
 #include <QQuickWindow>
@@ -35,6 +39,7 @@
 #include <QNetworkInterface>
 #include <QBuffer>
 #include <libvirt/libvirt-qemu.h>
+#include <libvirt/virterror.h>
 
 class ManagementTest : public QObject {
     Q_OBJECT
@@ -118,6 +123,29 @@ class ManagementTest : public QObject {
     }
     void runAgentLabOnScreen();
     void runAgentLabNetwork();
+    void runAgentNetworkWorkflow();
+    // Answers every OmaWare question for an agent with yes, keeping the question texts.
+    // With `grant`, also ticks "don't ask again" when the question offers it.
+    void approveAll(AgentBridge &agent, QStringList &asked, const bool *grant = nullptr, QStringList *offered = nullptr) {
+        connect(&agent, &AgentBridge::confirmationChanged, this, [&agent, &asked, grant, offered] {
+            const auto id = agent.confirmation().value("id").toString();
+            if (id.isEmpty()) return;
+            asked << agent.confirmation()["text"].toString();
+            if (offered) *offered << agent.confirmation().value("grant").toString();
+            const bool tick = grant && *grant;
+            QTimer::singleShot(100, &agent, [&agent, id, tick] { agent.answer(id, true, tick); });
+        });
+    }
+    // Polls provision_status until the request finishes.
+    QVariantMap provisioned(AgentBridge &agent, const QString &id, int seconds) {
+        QVariantMap state; QElapsedTimer timer; timer.start();
+        while (timer.elapsed() < seconds * 1000LL) {
+            state = tool(agent, "provision_status", {{"request_id", id}})["result"].toMap();
+            if (!QStringList{"preparing", "awaiting_approval", "running"}.contains(state["state"].toString())) break;
+            QTest::qWait(500);
+        }
+        return state;
+    }
 private slots:
     void initTestCase() {
         QVERIFY2(qEnvironmentVariable("OMAWARE_VM_TEST") == "1" && qEnvironmentVariable("OMAWARE_VM_TEST_HOST") == QSysInfo::machineHostName(),
@@ -294,7 +322,13 @@ private slots:
         QTRY_VERIFY(creator->property("opened").toBool());
         QCOMPARE(creator->findChild<QObject *>("newVmSource")->property("text").toString(), dropped);
         QTRY_COMPARE(creator->findChild<QObject *>("isoLibraryPicker")->property("currentText").toString(), QString("ubuntu-24.04.3-live-server-amd64.iso"));
-        QVERIFY(dropZone->property("message").toString().contains("Added ubuntu-24.04.3-live-server-amd64.iso"));
+        QVERIFY(dropZone->property("message").toString().contains("Added ubuntu-24.04.3-live-server-amd64.iso to your media"));
+        // Ubuntu Server can install by itself: the dialog offers it, and needs a user name and password for it.
+        QTRY_VERIFY(creator->findChild<QQuickItem *>("setupOptions")->isVisible());
+        QVERIFY(creator->findChild<QObject *>("newVmUnattended")->property("checked").toBool());
+        QVERIFY(!creator->property("setupValid").toBool());
+        creator->findChild<QObject *>("newVmSetupUser")->setProperty("text", "alex"); creator->findChild<QObject *>("newVmSetupPassword")->setProperty("text", "pw");
+        QVERIFY(creator->property("setupValid").toBool());
         QVERIFY(capture("iso-dropped"));
         // With the dialog open, a drop switches its ISO; known files and non-ISOs are reported, not copied.
         const QVariantList several{QUrl::fromLocalFile(downloads.filePath("alpine-virt-3.24.2-x86_64.iso")), QUrl::fromLocalFile(downloads.filePath("ubuntu-24.04.3-live-server-amd64.iso")), QUrl::fromLocalFile(downloads.filePath("notes.txt"))};
@@ -302,7 +336,7 @@ private slots:
         QTRY_COMPARE(imported.size(), 2);
         QTRY_COMPARE(creator->findChild<QObject *>("newVmSource")->property("text").toString(), files.filePath("iso-library/alpine-virt-3.24.2-x86_64.iso"));
         const auto said = dropZone->property("message").toString();
-        QVERIFY2(said.contains("Added alpine-virt-3.24.2-x86_64.iso") && said.contains("already in your ISOs") && said.contains("notes.txt was skipped"), qPrintable(said));
+        QVERIFY2(said.contains("Added alpine-virt-3.24.2-x86_64.iso") && said.contains("already in your media") && said.contains("notes.txt was skipped"), qPrintable(said));
         QCOMPARE(isos->files().size(), 3);
         QVERIFY(QMetaObject::invokeMethod(creator, "close")); QTRY_VERIFY(!creator->property("visible").toBool());
         dropZone->setProperty("message", "");
@@ -1961,6 +1995,272 @@ private slots:
     }
     void agentLabOnScreen() { runAgentLabOnScreen(); }
     void agentLabNetwork() { runAgentLabNetwork(); }
+    void agentNetworkWorkflow() { runAgentNetworkWorkflow(); }
+    void agentSerialConsole() {
+        // The guest-agent fixture with an init that also runs a shell on its serial port.
+        const auto fixture = QStringLiteral(QT_TESTCASE_SOURCEDIR) + "/artifacts/agent-fixture/";
+        QVERIFY(QFile::exists(fixture + "vmlinuz") && QFile::exists(fixture + "initrd.cpio.gz"));
+        const auto overlay = files.filePath("serial-overlay"); QVERIFY(QDir().mkpath(overlay));
+        QFile init(overlay + "/init"); QVERIFY(init.open(QIODevice::WriteOnly));
+        init.write("#!/bin/sh\nexport PATH=/bin:/usr/sbin\nmount -t devtmpfs devtmpfs /dev\nmount -t proc proc /proc\nmount -t sysfs sysfs /sys\n"
+                   "busybox setsid sh -c 'exec sh </dev/ttyS0 >/dev/ttyS0 2>&1' &\nwhile true; do sleep 1; done\n");
+        init.close(); QVERIFY(init.setPermissions(QFile::ReadOwner | QFile::WriteOwner | QFile::ExeOwner | QFile::ReadOther | QFile::ExeOther));
+        const auto initrd = files.filePath("initrd-serial.gz");
+        QVERIFY(process("sh", {"-c", "cat \"$1\" > \"$3\" && cd \"$2\" && find . | cpio -o -H newc --quiet | gzip >> \"$3\"", "sh", fixture + "initrd.cpio.gz", overlay, initrd}));
+        const auto source = makeSource(); QVERIFY(process("mkfs.ext4", {"-q", "-F", source}));
+        auto result = command("vm.create", {{"name", "serial-" + QUuid::createUuid().toString(QUuid::Id128).left(8)}, {"sourceMode", "disk"}, {"source", source}, {"preset", "generic"}, {"firmware", "bios"}, {"cpus", 1}, {"memoryMiB", 384}, {"networkId", "none"}, {"location", files.path()}});
+        QVERIFY2(resultOk, qPrintable(result["message"].toString())); const auto uuid = result["uuid"].toString(); if (!created.contains(uuid)) created << uuid;
+        QDomDocument doc; QVERIFY(doc.setContent(xml(uuid))); auto os = doc.documentElement().firstChildElement("os");
+        for (auto pair : QVariantMap{{"kernel", fixture + "vmlinuz"}, {"initrd", initrd}, {"cmdline", "console=ttyS0 rdinit=/init panic=-1 quiet"}}.toStdMap()) { auto e = doc.createElement(pair.first); e.appendChild(doc.createTextNode(pair.second.toString())); os.appendChild(e); }
+        auto d = virDomainDefineXML(external, doc.toString(-1).toUtf8().constData()); QVERIFY(d);
+        const auto freeDomain = qScopeGuard([&] { virDomainFree(d); });
+        QCOMPARE(virDomainCreate(d), 0);
+        AgentBridge agent(backend.get()); const bool wasEnabled = agent.enabled(); agent.setEnabled(true);
+        // Text in, text out; the answer is computed by the guest, so it isn't just the typed text echoed.
+        QVariantMap r;
+        QTRY_VERIFY_WITH_TIMEOUT((r = tool(agent, "serial_console", {{"vm", uuid}, {"send", "echo serial-$((40+2))\n"}, {"wait_for", "serial-42"}, {"timeout_seconds", 5}}))["result"].toMap()["matched"].toBool(), 60000);
+        QVERIFY(r["result"].toMap()["output"].toString().contains("serial-42"));
+        QVERIFY(!r["result"].toMap()["output"].toString().contains('\r'));
+        // Reading only, without wait_for, returns once the guest is quiet.
+        r = tool(agent, "serial_console", {{"vm", uuid}, {"timeout_seconds", 5}}); QVERIFY2(r["ok"].toBool(), qPrintable(r["error"].toString()));
+        QVERIFY(r["result"].toMap()["elapsed_ms"].toInt() < 4000); QVERIFY(!r["result"].toMap()["timed_out"].toBool());
+        // Nobody else may hold the console at the same time.
+        auto holder = virStreamNew(external, 0); QVERIFY(holder);
+        QCOMPARE(virDomainOpenConsole(d, nullptr, holder, 0), 0);
+        r = tool(agent, "serial_console", {{"vm", uuid}, {"send", "true\n"}});
+        QVERIFY(!r["ok"].toBool()); QCOMPARE(r["result"].toMap()["code"].toString(), QString("console_unavailable"));
+        virStreamAbort(holder); virStreamFree(holder);
+        r = tool(agent, "serial_console", {{"vm", uuid}, {"send", "echo again-$((1+1))\n"}, {"wait_for", "again-2"}});
+        QVERIFY2(r["result"].toMap()["matched"].toBool(), qPrintable(QJsonDocument::fromVariant(r).toJson()));
+        // Contained VMs are off limits.
+        virDomainDestroy(d); QTRY_VERIFY(!active(uuid)); QTRY_VERIFY(!backend->busy());
+        result = command("containment.set", {{"uuid", uuid}, {"enabled", true}}); QVERIFY2(resultOk, qPrintable(result["message"].toString()));
+        QCOMPARE(virDomainCreate(d), 0);
+        r = tool(agent, "serial_console", {{"vm", uuid}, {"send", "true\n"}});
+        QVERIFY(!r["ok"].toBool()); QVERIFY(r["error"].toString().contains("contained"));
+        virDomainDestroy(d);
+        agent.setEnabled(wasEnabled);
+    }
+    void unattendedSetup() {
+        // "Set it up for me": an answers disc, the first boot into the installer, and clean-up once it powers off.
+        const auto fixture = QStringLiteral(QT_TESTCASE_SOURCEDIR) + "/artifacts/agent-fixture/";
+        QVERIFY(QFile::exists(fixture + "vmlinuz") && QFile::exists(fixture + "initrd.cpio.gz"));
+        const auto library = files.filePath("setup-isos"); QVERIFY(QDir().mkpath(library));
+        auto readIso = [](const QString &iso, const QString &name) {
+            QByteArray data; auto a = archive_read_new(); archive_read_support_format_iso9660(a);
+            if (archive_read_open_filename(a, QFile::encodeName(iso).constData(), 65536) == ARCHIVE_OK) {
+                archive_entry *e = nullptr;
+                while (archive_read_next_header(a, &e) == ARCHIVE_OK) if (QString::fromUtf8(archive_entry_pathname(e)).endsWith(name)) { data.resize(archive_entry_size(e)); archive_read_data(a, data.data(), data.size()); break; }
+            }
+            archive_read_free(a); return data;
+        };
+        auto setupDisk = [](const QDomDocument &doc) { QString path; auto disks = doc.elementsByTagName("disk"); for (int i = 0; i < disks.size(); ++i) { const auto f = disks.at(i).toElement().firstChildElement("source").attribute("file"); if (f.endsWith("/setup.iso")) path = f; } return path; };
+        // Windows: autounattend.xml on an extra disc; the installer's disc boots first.
+        const auto windowsIso = library + "/26100.32230.260111-0550.lt_release_svc_refresh_SERVER_EVAL_x64FRE_en-us.iso";
+        { QFile f(windowsIso); QVERIFY(f.open(QIODevice::WriteOnly)); f.write(QByteArray(1 << 20, 'w')); }
+        QVariantMap values{{"name", "setup-" + QUuid::createUuid().toString(QUuid::Id128).left(8)}, {"sourceMode", "iso"}, {"source", windowsIso}, {"preset", "generic"}, {"firmware", "bios"},
+            {"cpus", 1}, {"memoryMiB", 384}, {"diskGiB", 1}, {"networkId", "none"}, {"location", files.path()}, {"unattended", QVariantMap{{"user", "Bad User"}, {"password", "x"}}}};
+        auto result = command("vm.create", values); QVERIFY(!resultOk); QVERIFY(result["message"].toString().contains("user name"));
+        values["unattended"] = QVariantMap{{"user", "alex"}, {"password", "s3cret-pass"}};
+        result = command("vm.create", values); QVERIFY2(resultOk, qPrintable(result["message"].toString())); QCOMPARE(result["unattended"].toString(), QString("windows"));
+        auto uuid = result["uuid"].toString();
+        QDomDocument doc; QVERIFY(doc.setContent(xml(uuid)));
+        const auto answers = setupDisk(doc); QVERIFY(!answers.isEmpty());
+        QCOMPARE(QFileInfo(answers).permissions() & (QFile::ReadGroup | QFile::ReadOther), QFile::Permissions());
+        const auto answerFile = readIso(answers, "autounattend.xml"); QVERIFY2(answerFile.contains("<Name>alex</Name>"), answerFile.constData()); QVERIFY(answerFile.contains("Datacenter Evaluation"));
+        auto os = doc.documentElement().firstChildElement("os");
+        QCOMPARE(os.firstChildElement("boot").attribute("dev"), QString("cdrom"));
+        QVERIFY(xml(uuid).contains("https://omaware.org/xmlns/setup/1"));
+        { QDomDocument plain; QVERIFY(plain.setContent(xml(uuid))); auto disks = plain.elementsByTagName("disk"); QStringList cds;
+          for (int i = 0; i < disks.size(); ++i) if (disks.at(i).toElement().attribute("device") == "cdrom") cds << disks.at(i).toElement().firstChildElement("source").attribute("file");
+          QCOMPARE(cds, QStringList({windowsIso, answers})); }
+        // Something that can't be set up automatically is refused, not silently installed by hand.
+        auto plain = values; plain["name"] = "setup-" + QUuid::createUuid().toString(QUuid::Id128).left(8); plain["source"] = files.filePath("Library installer.ISO");
+        { QFile f(plain["source"].toString()); QVERIFY(f.open(QIODevice::WriteOnly)); f.write("x"); }
+        command("vm.create", plain); QVERIFY(!resultOk);
+        // Ubuntu: the first start boots the installer's kernel with "autoinstall" (this fixture powers off only
+        // then); afterwards OmaWare takes out the answers and the ISO, and starts the VM from its disk.
+        const auto overlay = files.filePath("setup-overlay"); QVERIFY(QDir().mkpath(overlay));
+        QFile init(overlay + "/init"); QVERIFY(init.open(QIODevice::WriteOnly));
+        init.write("#!/bin/sh\nexport PATH=/bin:/sbin:/usr/sbin\nmount -t proc proc /proc\nif grep -q autoinstall /proc/cmdline; then sleep 1; poweroff -f; fi\nwhile true; do sleep 1; done\n");
+        init.close(); QVERIFY(init.setPermissions(QFile::ReadOwner | QFile::WriteOwner | QFile::ExeOwner | QFile::ReadOther | QFile::ExeOther));
+        const auto initrd = files.filePath("initrd-setup.gz");
+        QVERIFY(process("sh", {"-c", "cat \"$1\" > \"$3\" && cd \"$2\" && find . | cpio -o -H newc --quiet | gzip >> \"$3\"", "sh", fixture + "initrd.cpio.gz", overlay, initrd}));
+        const auto ubuntu = library + "/ubuntu-26.04.1-live-server-amd64.iso";
+        {
+            auto w = archive_write_new(); QCOMPARE(archive_write_set_format_iso9660(w), ARCHIVE_OK); QCOMPARE(archive_write_open_filename(w, QFile::encodeName(ubuntu).constData()), ARCHIVE_OK);
+            for (const auto &[name, path] : QList<QPair<QString, QString>>{{"casper/vmlinuz", fixture + "vmlinuz"}, {"casper/initrd", initrd}}) {
+                QFile f(path); QVERIFY(f.open(QIODevice::ReadOnly)); const auto data = f.readAll();
+                auto e = archive_entry_new(); archive_entry_set_pathname(e, name.toUtf8().constData()); archive_entry_set_size(e, data.size()); archive_entry_set_filetype(e, AE_IFREG); archive_entry_set_perm(e, 0644);
+                archive_write_header(w, e); archive_write_data(w, data.constData(), data.size()); archive_entry_free(e);
+            }
+            archive_write_close(w); archive_write_free(w);
+        }
+        values["name"] = "setup-" + QUuid::createUuid().toString(QUuid::Id128).left(8); values["source"] = ubuntu;
+        result = command("vm.create", values); QVERIFY2(resultOk, qPrintable(result["message"].toString())); QCOMPARE(result["unattended"].toString(), QString("subiquity"));
+        uuid = result["uuid"].toString();
+        const auto storage = result["storage"].toString();
+        QVERIFY(QFile::exists(storage + "/installer-vmlinuz") && QFile::exists(storage + "/installer-initrd"));
+        QVERIFY(readIso(storage + "/setup.iso", "user-data").contains("\"autoinstall\""));
+        QVERIFY(doc.setContent(xml(uuid))); QCOMPARE(doc.documentElement().firstChildElement("os").firstChildElement("boot").attribute("dev"), QString("hd"));
+        backend->action(uuid, "start"); QTRY_VERIFY_WITH_TIMEOUT(active(uuid), 20000);
+        // The kernel ran with "autoinstall", powered off, and OmaWare finished the setup and started it again.
+        QTRY_VERIFY_WITH_TIMEOUT(!QFile::exists(storage + "/setup.iso"), 60000);
+        QTRY_VERIFY_WITH_TIMEOUT(active(uuid), 20000);
+        QVERIFY(!xml(uuid).contains("https://omaware.org/xmlns/setup/1"));
+        QVERIFY(doc.setContent(xml(uuid))); QVERIFY(setupDisk(doc).isEmpty());
+        auto disks = doc.elementsByTagName("disk");
+        for (int i = 0; i < disks.size(); ++i) { const auto e = disks.at(i).toElement(); if (e.attribute("device") == "cdrom") QVERIFY(e.firstChildElement("source").isNull()); }
+        QVERIFY(doc.documentElement().firstChildElement("os").firstChildElement("kernel").isNull());
+        QVERIFY(!QFile::exists(storage + "/installer-vmlinuz"));
+        auto d = virDomainLookupByUUIDString(external, uuid.toUtf8().constData()); QVERIFY(d);
+        virDomainDestroy(d); virDomainFree(d);
+    }
+    void unattendedInstall() {
+        // Real installers, start to finish (10–60 minutes each). Linux: the account exists and the guest agent
+        // answers. Windows: screenshots show the progress, and shutting it down afterwards removes the media.
+        const auto isos = qEnvironmentVariable("OMAWARE_INSTALL_ISOS").split(',', Qt::SkipEmptyParts);
+        if (isos.isEmpty()) QSKIP("Real unattended installs take 10–60 minutes each: set OMAWARE_INSTALL_ISOS to installation ISOs (comma-separated) on a test machine with internet.");
+        const auto shots = qEnvironmentVariable("OMAWARE_SCREENSHOT_DIR");
+        auto agent = [&](const QString &uuid, const QString &command) {
+            auto d = virDomainLookupByUUIDString(external, uuid.toUtf8().constData()); if (!d) return QString();
+            char *raw = virDomainQemuAgentCommand(d, command.toUtf8().constData(), 10, 0); virDomainFree(d);
+            QString out = raw ? QString::fromUtf8(raw) : "error: " + QString::fromUtf8(virGetLastErrorMessage()); free(raw); virResetLastError(); return out;
+        };
+        for (const auto &iso : isos) {
+            const auto file = QFileInfo(iso).fileName(), kind = Unattended::kindForFile(file);
+            QVERIFY2(!kind.isEmpty(), qPrintable(iso));
+            const bool windows = kind == "windows", server = file.contains("SERVER_EVAL");
+            const auto name = "install-" + QUuid::createUuid().toString(QUuid::Id128).left(6);
+            QVariantMap values{{"name", name}, {"sourceMode", "iso"}, {"source", iso}, {"preset", windows ? (server ? "win2k25" : "win11") : "generic"},
+                {"firmware", windows ? "uefi" : "bios"}, {"tpm", windows && !server}, {"cpus", 4}, {"memoryMiB", windows ? 6144 : 4096}, {"diskGiB", windows ? 64 : 20},
+                {"networkId", "user"}, {"location", files.path()}, {"unattended", QVariantMap{{"user", "alex"}, {"password", "Omaware-Test-42"}}}};
+            auto result = command("vm.create", values); QVERIFY2(resultOk, qPrintable(result["message"].toString()));
+            const auto uuid = result["uuid"].toString(), storage = result["storage"].toString();
+            backend->action(uuid, "start"); QTRY_VERIFY_WITH_TIMEOUT(active(uuid), 60000);
+            QElapsedTimer clock; clock.start();
+            const qint64 limit = (windows ? 35 : 60) * 60000LL;
+            int shot = 0; bool installed = false;
+            while (clock.elapsed() < limit) {
+                QTest::qWait(20000);
+                if (!shots.isEmpty() && clock.elapsed() / 120000 >= shot) {
+                    QProcess::execute("virsh", {"-c", "qemu:///session", "screenshot", uuid, QString("%1/%2-%3.ppm").arg(shots, kind).arg(shot, 3, 10, QChar('0'))});
+                    ++shot;
+                }
+                if (!windows && !xml(uuid).contains(Unattended::ns) && active(uuid)) { installed = true; break; }
+            }
+            qInfo().noquote() << file << "took" << clock.elapsed() / 60000 << "minutes";
+            if (windows) {
+                // Setup is checked on the screenshots (it should end at the sign-in screen). Windows Server ignores a
+                // shutdown request until someone signs in, so the media clean-up after shutdown is only checked when
+                // the guest does switch off (Windows 11 does).
+                backend->action(uuid, "shutdown");
+                QElapsedTimer off; off.start();
+                while (active(uuid) && off.elapsed() < 300000) QTest::qWait(5000);
+                if (!active(uuid)) { QTRY_VERIFY_WITH_TIMEOUT(!xml(uuid).contains(Unattended::ns), 30000); QVERIFY(!QFile::exists(storage + "/setup.iso")); }
+                else qInfo().noquote() << file << "didn't shut down from its sign-in screen (expected for Windows Server)";
+                auto d = virDomainLookupByUUIDString(external, uuid.toUtf8().constData()); virDomainDestroy(d); virDomainUndefineFlags(d, VIR_DOMAIN_UNDEFINE_NVRAM | VIR_DOMAIN_UNDEFINE_TPM); virDomainFree(d);
+                continue;
+            }
+            QVERIFY2(installed, qPrintable(file + " didn't finish installing in time"));
+            // The new system boots with the guest agent running and the account set up.
+            QTRY_VERIFY_WITH_TIMEOUT(agent(uuid, R"({"execute":"guest-ping"})").contains("return"), 900000);
+            const auto exec = agent(uuid, R"({"execute":"guest-exec","arguments":{"path":"/usr/bin/id","arg":["alex"],"capture-output":true}})");
+            const auto started = QJsonDocument::fromJson(exec.toUtf8()).object()["return"].toObject()["pid"].toInt();
+            QVERIFY2(started > 0, qPrintable("guest-exec: " + exec));
+            QString out;
+            QElapsedTimer waited; waited.start();
+            while (waited.elapsed() < 120000) {
+                out = agent(uuid, QString(R"({"execute":"guest-exec-status","arguments":{"pid":%1}})").arg(started));
+                if (QJsonDocument::fromJson(out.toUtf8()).object()["return"].toObject()["exited"].toBool()) break;
+                QTest::qWait(1000);
+            }
+            QVERIFY2(QJsonDocument::fromJson(out.toUtf8()).object()["return"].toObject()["exited"].toBool(), qPrintable("guest-exec-status: " + out));
+            const auto text = QString::fromUtf8(QByteArray::fromBase64(QJsonDocument::fromJson(out.toUtf8()).object()["return"].toObject()["out-data"].toString().toUtf8()));
+            qInfo().noquote() << file << "->" << text.trimmed();
+            QVERIFY2(text.contains("(alex)") && (text.contains("(sudo)") || text.contains("(wheel)")), qPrintable(text));
+            QVERIFY(!QFile::exists(storage + "/setup.iso"));
+            auto d = virDomainLookupByUUIDString(external, uuid.toUtf8().constData()); virDomainDestroy(d); virDomainUndefineFlags(d, VIR_DOMAIN_UNDEFINE_NVRAM | VIR_DOMAIN_UNDEFINE_TPM); virDomainFree(d);
+        }
+    }
+    void agentMedia() {
+        // get_media: the OS Shop's catalogue for agents, and approved downloads of its own sources only.
+        QTemporaryDir dir; QVERIFY(dir.isValid());
+        IsoLibrary library; library.setProperty("autoCheck", qEnvironmentVariable("OMAWARE_ONLINE_TEST") == "1"); library.setFolder(dir.filePath("isos"));
+        AgentBridge agent(backend.get()); const bool wasEnabled = agent.enabled(); agent.setEnabled(true);
+        const auto restore = qScopeGuard([&] { agent.setEnabled(wasEnabled); });
+        auto r = tool(agent, "get_media", {{"action", "catalog"}});
+        QCOMPARE(r["result"].toMap()["code"].toString(), QString("unavailable"));
+        agent.setMedia(&library);
+        r = tool(agent, "get_media", {{"action", "catalog"}}); QVERIFY2(r["ok"].toBool(), qPrintable(r["error"].toString()));
+        QVariantMap pfsense, eval;
+        for (const auto &v : r["result"].toMap()["sources"].toList()) { if (v.toMap()["source"] == "pfsense") pfsense = v.toMap(); if (v.toMap()["source"] == "windows-server") eval = v.toMap(); }
+        QCOMPARE(pfsense["kind"].toString(), QString("website_only")); QVERIFY(!pfsense.contains("versions"));
+        QCOMPARE(eval["verification"].toString(), QString("unverified")); QVERIFY(!eval["verification_note"].toString().isEmpty());
+        // Only the catalogue's own sources and arguments; never a URL or a path.
+        QCOMPARE(tool(agent, "get_media", {{"action", "download"}, {"source", "https://example.com/evil.iso"}})["result"].toMap()["code"].toString(), QString("not_found"));
+        QCOMPARE(tool(agent, "get_media", {{"action", "download"}, {"source", "debian"}, {"url", "https://example.com/x.iso"}})["result"].toMap()["code"].toString(), QString("invalid_argument"));
+        QCOMPARE(tool(agent, "get_media", {{"action", "download"}, {"source", "pfsense"}})["result"].toMap()["code"].toString(), QString("website_only"));
+        { QFile f(dir.filePath("isos/alpine-virt-3.24.2-x86_64.iso")); QVERIFY(f.open(QIODevice::WriteOnly)); } library.rescan();
+        r = tool(agent, "get_media", {{"action", "status"}, {"source", "alpine"}});
+        QCOMPARE(r["result"].toMap()["files"].toList().size(), 1); QCOMPARE(r["result"].toMap()["files"].toList().first().toMap()["verification"].toString(), QString("added_by_user"));
+        if (qEnvironmentVariable("OMAWARE_ONLINE_TEST") != "1") {
+            QCOMPARE(tool(agent, "get_media", {{"action", "download"}, {"source", "debian"}})["result"].toMap()["code"].toString(), QString("not_ready"));
+            QSKIP("Downloads through get_media contact the publishers: set OMAWARE_ONLINE_TEST=1.");
+        }
+        QTRY_VERIFY_WITH_TIMEOUT(!library.checking(), 60000);
+        // The user is asked every time (no session approval), and a no is final.
+        QStringList asked; bool answer = false;
+        connect(&agent, &AgentBridge::confirmationChanged, this, [&] {
+            const auto c = agent.confirmation(); if (c.value("id").toString().isEmpty()) return;
+            asked << c["text"].toString(); QVERIFY(!c.contains("grant"));
+            const auto id = c["id"].toString(); QTimer::singleShot(100, &agent, [&agent, id, &answer] { agent.answer(id, answer); });
+        });
+        QFile::remove(dir.filePath("isos/alpine-virt-3.24.2-x86_64.iso")); library.rescan();
+        r = tool(agent, "get_media", {{"action", "download"}, {"source", "alpine"}});
+        QCOMPARE(r["result"].toMap()["code"].toString(), QString("declined")); QCOMPARE(asked.size(), 1); QVERIFY(asked.first().contains("checked against the publisher's checksum"));
+        QVERIFY(!library.downloading());
+        QCOMPARE(tool(agent, "get_media", {{"action", "download"}, {"source", "alpine"}, {"version", "0.1"}})["result"].toMap()["code"].toString(), QString("invalid_argument"));
+        answer = true;
+        r = tool(agent, "get_media", {{"action", "download"}, {"source", "alpine"}}); QVERIFY2(r["ok"].toBool(), qPrintable(r["error"].toString()));
+        QCOMPARE(r["result"].toMap()["state"].toString(), QString("started"));
+        QTRY_VERIFY_WITH_TIMEOUT(tool(agent, "get_media", {{"action", "status"}, {"source", "alpine"}})["result"].toMap()["files"].toList().size() == 1, 600000);
+        r = tool(agent, "get_media", {{"action", "status"}, {"source", "alpine"}});
+        QCOMPARE(r["result"].toMap()["files"].toList().first().toMap()["verification"].toString(), QString("sha256"));
+        QCOMPARE(tool(agent, "get_media", {{"action", "download"}, {"source", "alpine"}})["result"].toMap()["state"].toString(), QString("already_have"));
+        QCOMPARE(asked.size(), 2);
+    }
+    void agentRestartTimesOut() {
+        // A guest that ignores the shutdown request (this one has no OS) is never forced off.
+        AgentBridge agent(backend.get()); const bool wasEnabled = agent.enabled(); agent.setEnabled(true);
+        QStringList asked; approveAll(agent, asked);
+        backend->createTest(); QTRY_VERIFY(!backend->busy()); const auto uuid = created.last();
+        QSignalSpy configured(backend.get(), &Backend::networkConfigured);
+        QVERIFY(backend->configureNetwork(uuid, "", "user", "virtio", true, false, DomainConfig::revision(xml(uuid))));
+        QTRY_VERIFY(!configured.isEmpty()); QVERIFY(configured.last()[1].toBool()); QTRY_VERIFY(!backend->busy());
+        const auto mac = details(uuid)["interfaces"].toList().first().toMap()["mac"].toString();
+        backend->action(uuid, "start"); QTRY_VERIFY_WITH_TIMEOUT(active(uuid), 15000); QTRY_VERIFY(!backend->busy());
+        backend->action(uuid, "pause"); QTRY_VERIFY(!backend->busy());
+        auto r = tool(agent, "manage_network_adapter", {{"vm", uuid}, {"action", "update"}, {"mac", mac}, {"model", "e1000"}, {"apply", "restart_if_needed"}, {"restart_timeout_seconds", 10}}, 120000);
+        QVERIFY2(!r["ok"].toBool(), qPrintable(QJsonDocument::fromVariant(r).toJson()));
+        const auto result = r["result"].toMap();
+        QCOMPARE(result["code"].toString(), QString("restart_timed_out"));
+        QCOMPARE(result["restart"].toMap()["state"].toString(), QString("timed_out"));
+        QVERIFY(result["saved"].toBool()); QVERIFY(result["pending_change_count"].toInt() > 0);
+        QCOMPARE(result["revision"].toString(), DomainConfig::revision(xml(uuid)));
+        QVERIFY(r["error"].toString().contains("Nothing was forced"));
+        QVERIFY(asked.last().contains("never forces power off"));
+        // Resumed for the shutdown request, and still running.
+        QVERIFY(active(uuid)); int state = 0, reason = 0;
+        auto d = virDomainLookupByUUIDString(external, uuid.toUtf8().constData()); virDomainGetState(d, &state, &reason, 0); virDomainFree(d);
+        QCOMPARE(state, int(VIR_DOMAIN_RUNNING));
+        // The overview says a restart is needed.
+        const auto overview = tool(agent, "omaware_overview", {})["result"].toMap();
+        bool listed = false;
+        for (const auto &v : overview["vms"].toList()) if (v.toMap()["uuid"] == uuid) { listed = true; QVERIFY(v.toMap()["restart_needed"].toBool()); QVERIFY(v.toMap()["pending_change_count"].toInt() > 0); }
+        QVERIFY(listed);
+        agent.setEnabled(wasEnabled);
+    }
     void hostNetworkManager() {
         if (qEnvironmentVariable("OMAWARE_NETWORK_ADMIN_TEST") != "1") QSKIP("Host-network tests are opt-in: set OMAWARE_NETWORK_ADMIN_TEST=1 on a disposable test machine.");
         auto name = "nettest-" + QUuid::createUuid().toString(QUuid::Id128).left(8);
@@ -2131,6 +2431,168 @@ void ManagementTest::runAgentLabNetwork() {
     virConnectClose(system);
     agent.setEnabled(wasEnabled);
     Logins::setTestMode({});
+}
+
+void ManagementTest::runAgentNetworkWorkflow() {
+    // A network whose bridge this test machine's /etc/qemu/bridge.conf already allows, so session VMs can
+    // join it without an administrator step (and without sudo in the test).
+    const auto netUuid = qEnvironmentVariable("OMAWARE_ALLOWED_NETWORK_UUID");
+    if (QUuid(netUuid).isNull()) QSKIP("Set OMAWARE_ALLOWED_NETWORK_UUID to a network UUID whose bridge (oma + its first 8 hex digits) /etc/qemu/bridge.conf allows.");
+    const auto bridge = "oma" + netUuid.left(8);
+    QFile acl("/etc/qemu/bridge.conf");
+    if (!acl.open(QIODevice::ReadOnly) || !acl.readAll().contains("allow " + bridge.toUtf8() + "\n")) QSKIP("bridge.conf doesn't allow that network's bridge.");
+    const auto fixture = QStringLiteral(QT_TESTCASE_SOURCEDIR) + "/artifacts/agent-fixture/";
+    QVERIFY(QFile::exists(fixture + "vmlinuz") && QFile::exists(fixture + "initrd.cpio.gz"));
+    auto system = virConnectOpen("qemu:///system"); QVERIFY(system);
+    const auto closeSystem = qScopeGuard([&] { virConnectClose(system); });
+    if (auto existing = virNetworkLookupByUUIDString(system, netUuid.toUtf8().constData())) { virNetworkFree(existing); QSKIP("That network exists already."); }
+    const auto suffix = QUuid::createUuid().toString(QUuid::Id128).left(6);
+    QString why; const auto definition = Configuration::networkXml({{"name", "agentnet-" + suffix}, {"mode", "isolated"}}, netUuid, bridge, why); QVERIFY2(why.isEmpty(), qPrintable(why));
+    auto net = virNetworkDefineXML(system, definition.toUtf8().constData()); QVERIFY(net); networkUuid = netUuid;
+    const auto freeNet = qScopeGuard([&] { virNetworkFree(net); });
+    QCOMPARE(virNetworkCreate(net), 0); QCOMPARE(virNetworkSetAutostart(net, 0), 0);
+
+    AgentBridge agent(backend.get()); const bool wasEnabled = agent.enabled(); agent.setEnabled(true);
+    QStringList asked, offered; bool grant = false; approveAll(agent, asked, &grant, &offered);
+    auto r = tool(agent, "list_owned_networks", {});
+    QVariantMap listed; for (const auto &v : r["result"].toMap()["items"].toList()) if (v.toMap()["uuid"] == netUuid) listed = v.toMap();
+    QVERIFY2(listed["available"].toBool(), qPrintable(QJsonDocument::fromVariant(listed).toJson()));
+    auto revision = listed["revision"].toString();
+
+    // A stale revision is refused; set_autostart answers with the revision for the next change.
+    r = tool(agent, "manage_network", {{"network", netUuid}, {"action", "set_autostart"}, {"revision", QString(64, 'a')}, {"autostart", true}});
+    QCOMPARE(r["result"].toMap()["code"].toString(), QString("stale_revision"));
+    r = tool(agent, "manage_network", {{"network", "agentnet-" + suffix}, {"action", "set_autostart"}, {"revision", revision}, {"autostart", true}});
+    QVERIFY2(r["ok"].toBool(), qPrintable(r["error"].toString()));
+    QVERIFY(r["result"].toMap()["autostart"].toBool()); QCOMPARE(r["result"].toMap()["revision"].toString(), revision);
+    int autostart = 0; virNetworkGetAutostart(net, &autostart); QCOMPARE(autostart, 1);
+    QVERIFY(asked.last().contains("starts with the computer"));
+
+    // create_vm with the private internet connection first and the owned network second, from a
+    // small ext4 disk the guest-agent fixture mounts.
+    const auto source = makeSource(); QVERIFY(process("mkfs.ext4", {"-q", "-F", source}));
+    const auto library = Paths::root() + "/appliances", media = "order-" + suffix + ".raw";
+    QVERIFY(QDir().mkpath(library)); QVERIFY(QDir().mkpath(Paths::vms()));
+    // Agents only use unshared storage; the test folders may have been made with a group-writable umask.
+    const auto data = QFileInfo(Paths::root()).absolutePath();
+    for (const auto &dir : {QFileInfo(data).absolutePath(), data, Paths::root(), library, Paths::vms()}) QVERIFY(QFile::setPermissions(dir, QFile::ReadOwner | QFile::WriteOwner | QFile::ExeOwner));
+    QVERIFY(QFile::copy(source, library + "/" + media)); QVERIFY(QFile::setPermissions(library + "/" + media, QFile::ReadOwner | QFile::WriteOwner));
+    const auto removeMedia = qScopeGuard([&] { QFile::remove(library + "/" + media); });
+    const auto request = QUuid::createUuid().toString(QUuid::WithoutBraces);
+    const auto vmName = "order-" + suffix;
+    r = tool(agent, "create_vm", {{"request_id", request}, {"name", vmName}, {"media_kind", "disk"}, {"media", media}, {"cpus", 1}, {"memory_mib", 384}, {"networks", QVariantList{"user", netUuid}}});
+    QVERIFY2(r["ok"].toBool(), qPrintable(r["error"].toString()));
+    auto state = provisioned(agent, request, 180);
+    QVERIFY2(state["state"] == "succeeded", qPrintable(QJsonDocument::fromVariant(state).toJson()));
+    const auto uuid = state["result"].toMap()["uuid"].toString(); QVERIFY(!uuid.isEmpty());
+    if (!created.contains(uuid)) created << uuid;
+    QVERIFY(asked.last().contains("1. Internet · private to this VM")); QVERIFY(asked.last().contains("2. omaware-agentnet-" + suffix));
+    // The adapters are defined in that order, and libvirt gave them PCI addresses in that order.
+    QDomDocument doc; QVERIFY(doc.setContent(xml(uuid)));
+    QList<QDomElement> nics;
+    for (auto e = doc.documentElement().firstChildElement("devices").firstChildElement("interface"); !e.isNull(); e = e.nextSiblingElement("interface")) nics << e;
+    QCOMPARE(nics.size(), 2);
+    QCOMPARE(nics[0].attribute("type"), QString("user"));
+    QCOMPARE(nics[1].attribute("type"), QString("bridge")); QCOMPARE(nics[1].firstChildElement("source").attribute("bridge"), bridge);
+    auto pci = [](const QDomElement &nic) { const auto a = nic.firstChildElement("address"); return a.attribute("bus").toInt(nullptr, 16) * 256 + a.attribute("slot").toInt(nullptr, 16); };
+    QVERIFY2(pci(nics[0]) < pci(nics[1]), qPrintable(doc.toString()));
+    const auto firstMac = nics[0].firstChildElement("mac").attribute("address"), secondMac = nics[1].firstChildElement("mac").attribute("address");
+    const auto storage = QFileInfo(doc.documentElement().firstChildElement("devices").firstChildElement("disk").firstChildElement("source").attribute("file")).absolutePath();
+    const auto removeStorage = qScopeGuard([&] { if (QFileInfo(storage).absolutePath() == QDir::cleanPath(Paths::vms())) QDir(storage).removeRecursively(); });
+
+    // Boot the fixture, with a /sbin/shutdown the guest agent can use for a clean shutdown.
+    const auto overlay = files.filePath("overlay"); QVERIFY(QDir().mkpath(overlay + "/sbin"));
+    QFile shutdown(overlay + "/sbin/shutdown"); QVERIFY(shutdown.open(QIODevice::WriteOnly)); shutdown.write("#!/bin/sh\nexec /bin/busybox poweroff -f\n"); shutdown.close();
+    QVERIFY(shutdown.setPermissions(QFile::ReadOwner | QFile::WriteOwner | QFile::ExeOwner | QFile::ReadOther | QFile::ExeOther));
+    const auto initrd = files.filePath("initrd-shutdown.gz");
+    QVERIFY(process("sh", {"-c", "cat \"$1\" > \"$3\" && cd \"$2\" && find . | cpio -o -H newc --quiet | gzip >> \"$3\"", "sh", fixture + "initrd.cpio.gz", overlay, initrd}));
+    auto os = doc.documentElement().firstChildElement("os");
+    for (auto pair : QVariantMap{{"kernel", fixture + "vmlinuz"}, {"initrd", initrd}, {"cmdline", "console=ttyS0 rdinit=/init panic=-1"}}.toStdMap()) { auto e = doc.createElement(pair.first); e.appendChild(doc.createTextNode(pair.second.toString())); os.appendChild(e); }
+    auto d = virDomainDefineXML(external, doc.toString(-1).toUtf8().constData()); QVERIFY(d);
+    const auto freeDomain = qScopeGuard([&] { virDomainFree(d); });
+    QCOMPARE(virDomainCreate(d), 0);
+    auto agentUp = [&] { char *raw = virDomainQemuAgentCommand(d, "{\"execute\":\"guest-ping\"}", 5, 0); const bool ok = raw != nullptr; free(raw); return ok; };
+    QTRY_VERIFY_WITH_TIMEOUT(agentUp(), 60000);
+    // The guest numbers its cards in that order too: eth0 is the first adapter (a router's WAN).
+    char *raw = virDomainQemuAgentCommand(d, "{\"execute\":\"guest-network-get-interfaces\"}", 10, 0); QVERIFY(raw);
+    QHash<QString, QString> guestMacs;
+    for (const auto &v : QJsonDocument::fromJson(raw).object()["return"].toArray()) guestMacs[v.toObject()["name"].toString()] = v.toObject()["hardware-address"].toString();
+    free(raw);
+    QCOMPARE(guestMacs.value("eth0"), firstMac); QCOMPARE(guestMacs.value("eth1"), secondMac);
+
+    // run_command goes through the guest agent, which doesn't need the network (eth1 is on an isolated one).
+    QTRY_VERIFY(!backend->busy());
+    r = tool(agent, "run_command", {{"vm", vmName}, {"command", "busybox ip link set eth1 up && busybox ip addr add 172.30.77.5/24 dev eth1 && echo configured"}});
+    QVERIFY2(r["ok"].toBool(), qPrintable(r["error"].toString()));
+    QCOMPARE(r["result"].toMap()["stdout"].toString(), QString("configured\n")); QVERIFY(r["result"].toMap()["via"].toString().contains("guest agent"));
+    // The overview gets that address from the guest agent and says so; the host has no lease or neighbour entry for it.
+    auto overview = tool(agent, "omaware_overview", {})["result"].toMap();
+    QVariantMap row; for (const auto &v : overview["vms"].toList()) if (v.toMap()["uuid"] == uuid) row = v.toMap();
+    const auto adapters = row["adapters"].toList(); QCOMPARE(adapters.size(), 2);
+    QCOMPARE(adapters[1].toMap()["ips"].toList(), QVariantList{"172.30.77.5"});
+    QCOMPARE(adapters[1].toMap()["ip_source"].toString(), QString("guest_agent"));
+    QVERIFY(QStringList({"unknown", "guest_agent"}).contains(adapters[0].toMap()["ip_source"].toString()));
+    QCOMPARE(row["pending_change_count"].toInt(), 0); QVERIFY(!row["restart_needed"].toBool());
+    QVariantMap overviewNet; for (const auto &v : overview["networks"].toList()) if (v.toMap()["uuid"] == netUuid) overviewNet = v.toMap();
+    QVERIFY(overviewNet["autostart"].toBool());
+    // A network in use can't be stopped or deleted.
+    r = tool(agent, "manage_network", {{"network", netUuid}, {"action", "stop"}, {"revision", revision}});
+    QCOMPARE(r["result"].toMap()["code"].toString(), QString("in_use"));
+    QVERIFY(virNetworkIsActive(net) == 1);
+
+    // Session grant: off until the user ticks it, then only adapter changes onto isolated/host-only networks
+    // skip the question; it ends when agent access is turned off.
+    QVERIFY(agent.grants().isEmpty());
+    auto addAdapter = [&](const QString &network) { return tool(agent, "manage_network_adapter", {{"vm", vmName}, {"action", "add"}, {"network_id", network}}, 60000); };
+    int before = asked.size(); grant = true;
+    r = addAdapter("bridge:" + bridge); QVERIFY2(r["ok"].toBool(), qPrintable(r["error"].toString()));
+    QCOMPARE(asked.size(), before + 1); QCOMPARE(offered.last(), QString(AgentGrants::privateAdapters));
+    QCOMPARE(r["result"].toMap()["approved_by"].toString(), QString("user"));
+    QCOMPARE(agent.grants().size(), 1);
+    grant = false; before = asked.size();
+    r = addAdapter("bridge:" + bridge); QVERIFY2(r["ok"].toBool(), qPrintable(r["error"].toString()));
+    QCOMPARE(asked.size(), before);   // not asked
+    QCOMPARE(r["result"].toMap()["approved_by"].toString(), QString("session_grant"));
+    r = addAdapter("user"); QVERIFY2(r["ok"].toBool(), qPrintable(r["error"].toString()));
+    QCOMPARE(asked.size(), before + 1); QVERIFY(offered.last().isEmpty());   // the internet always asks, without the option
+    agent.setEnabled(false); agent.setEnabled(true);
+    QVERIFY(agent.grants().isEmpty());
+    before = asked.size();
+    r = addAdapter("bridge:" + bridge); QVERIFY2(r["ok"].toBool(), qPrintable(r["error"].toString()));
+    QCOMPARE(asked.size(), before + 1); QCOMPARE(r["result"].toMap()["approved_by"].toString(), QString("user"));
+    QVERIFY(agent.grants().isEmpty());   // asked again, not ticked this time
+
+    // On a paused VM the change can't apply live; restart_if_needed resumes it, shuts the guest down
+    // cleanly and starts it again with the change.
+    QCOMPARE(virDomainSuspend(d), 0);
+    const auto questions = asked.size();
+    r = tool(agent, "manage_network_adapter", {{"vm", vmName}, {"action", "update"}, {"mac", firstMac}, {"model", "e1000"}, {"apply", "restart_if_needed"}, {"restart_timeout_seconds", 60}}, 180000);
+    QVERIFY2(r["ok"].toBool(), qPrintable(QJsonDocument::fromVariant(r).toJson()));
+    QCOMPARE(asked.size(), questions + 1);   // one approval covers the change and the restart
+    auto result = r["result"].toMap();
+    QCOMPARE(result["restart"].toMap()["state"].toString(), QString("completed"));
+    QCOMPARE(result["pending_change_count"].toInt(), 0);
+    QCOMPARE(result["revision"].toString(), DomainConfig::revision(xml(uuid)));
+    QTRY_VERIFY_WITH_TIMEOUT(active(uuid), 15000);
+    QString live; for (const auto &v : details(uuid, true)["interfaces"].toList()) if (v.toMap()["mac"] == firstMac) live = v.toMap()["model"].toString();
+    QCOMPARE(live, QString("e1000"));
+    // diagnose_vm explains what it sees.
+    QTRY_VERIFY_WITH_TIMEOUT(agentUp(), 60000);
+    r = tool(agent, "diagnose_vm", {{"vm", vmName}}); QVERIFY2(r["ok"].toBool(), qPrintable(r["error"].toString()));
+    QVERIFY(r["result"].toMap().contains("hints"));
+
+    // With the VM gone, the network can be deleted; the agent gets told it's gone.
+    virDomainDestroy(d);
+    QVERIFY(virDomainUndefineFlags(d, VIR_DOMAIN_UNDEFINE_NVRAM) == 0);
+    QTRY_VERIFY(!backend->busy());
+    r = tool(agent, "list_owned_networks", {});
+    for (const auto &v : r["result"].toMap()["items"].toList()) if (v.toMap()["uuid"] == netUuid) revision = v.toMap()["revision"].toString();
+    r = tool(agent, "manage_network", {{"network", netUuid}, {"action", "delete"}, {"revision", revision}});
+    QVERIFY2(r["ok"].toBool(), qPrintable(r["error"].toString()));
+    QVERIFY(r["result"].toMap()["deleted"].toBool());
+    auto gone = virNetworkLookupByUUIDString(system, netUuid.toUtf8().constData()); QVERIFY(!gone); if (gone) virNetworkFree(gone);
+    networkUuid.clear();
+    agent.setEnabled(wasEnabled);
 }
 
 int main(int argc, char **argv) {

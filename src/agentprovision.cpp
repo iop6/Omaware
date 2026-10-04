@@ -39,8 +39,9 @@ QVariantList AgentProvision::tools() {
         definition("list_installation_media", {}, {}, true, "List confined, local ISO and qcow2/raw/OVA appliance filenames. OVA execution supports one packaged standalone sparse VMDK only. No downloads or arbitrary paths."),
         definition("list_owned_networks", {}, {}, true, "Owned network UUIDs, revisions, modes and availability for provisioning; no non-owned destinations."),
         definition("provision_status", {{"request_id", request}}, {"request_id"}, true, "Immediate operation status. Poll until succeeded, failed or declined. Failed operations may have partial effects; inspect inventory before any new request. No cancellation of running workers."),
-        definition("create_vm", {{"request_id", request}, {"name", field("string", "1–48 letters, digits, dots, underscores or dashes.")}, {"media_kind", choice({"iso", "disk"})}, {"media", field("string", "Exact library filename, not a path.")}, {"cpus", number(1,256,"Default 2; within host capacity.")}, {"memory_mib", number(256,1048576,"Default 4096; within host capacity.")}, {"disk_gib", number(1,2048,"Default 32 for ISO; disk imports retain their source capacity.")}, {"preset", field("string", "Supported libosinfo id, default generic; use win11 for Windows, freebsd for pfSense when supported by host.")}, {"firmware", choice({"bios", "uefi"})}, {"tpm", field("boolean", "Default false. Windows 11 typically needs true and UEFI.")}, {"networks", QJsonObject{{"type","array"},{"items",field("string","Owned available network UUID.")},{"maxItems",4},{"uniqueItems",true}}}, {"dry_run", dry}}, {"request_id","name","media_kind","media"}, false, "Approve in OmaWare; existing vm.create backend creates a STOPPED VM with copied independent disk and fresh MACs. Zero to four owned network UUIDs, default disconnected. Imports copy guest identities/credentials. Does not install Windows/FLARE or configure pfSense; use guest console after explicit start."),
-        definition("create_network", {{"request_id",request},{"name",field("string","1–48 letters, digits, underscores or dashes.")},{"mode",choice({"nat","hostonly","isolated"})},{"subnet",field("string","Explicit IPv4 /16–/29 subnet for nat/hostonly.")},{"dhcp",field("boolean","Default false; provide range when true.")},{"dhcp_start",field("string","IPv4 DHCP start.")},{"dhcp_end",field("string","IPv4 DHCP end.")},{"dry_run",dry}}, {"request_id","name","mode"}, false, "Approval-gated networks.save; creates a started, non-autostart owned network. NAT exposes host and internet, hostonly exposes host, isolated is guest-only. Authorization is a separate operation; may need system polkit authorization."),
+        definition("create_vm", {{"request_id", request}, {"name", field("string", "1–48 letters, digits, dots, underscores or dashes.")}, {"media_kind", choice({"iso", "disk"})}, {"media", field("string", "Exact library filename, not a path.")}, {"cpus", number(1,256,"Default 2; within host capacity.")}, {"memory_mib", number(256,1048576,"Default 4096; within host capacity.")}, {"disk_gib", number(1,2048,"Default 32 for ISO; disk imports retain their source capacity.")}, {"preset", field("string", "Supported libosinfo id, default generic; use win11 for Windows, freebsd for pfSense when supported by host.")}, {"firmware", choice({"bios", "uefi"})}, {"tpm", field("boolean", "Default false. Windows 11 typically needs true and UEFI.")}, {"networks", QJsonObject{{"type","array"},{"items",field("string","An owned, available network UUID from list_owned_networks, or \"user\" for the VM's own private internet connection (\"Internet · private to this VM\").")},{"maxItems",4},{"uniqueItems",true},
+            {"description","Adapters in this order: the first entry is the guest's first NIC (for pfSense, vtnet0 = WAN), the second its second NIC, and so on. Empty or omitted: no adapters."}}}, {"dry_run", dry}}, {"request_id","name","media_kind","media"}, false, "Approve in OmaWare; existing vm.create backend creates a STOPPED VM with copied independent disk and fresh MACs. Zero to four adapters, in the order given (owned network UUIDs or \"user\"), default disconnected. Imports copy guest identities/credentials. Does not install Windows/FLARE or configure pfSense; use guest console after explicit start."),
+        definition("create_network", {{"request_id",request},{"name",field("string","1–48 letters, digits, underscores or dashes.")},{"mode",choice({"nat","hostonly","isolated"})},{"subnet",field("string","Explicit IPv4 /16–/29 subnet for nat/hostonly.")},{"dhcp",field("boolean","Default false; provide range when true.")},{"dhcp_start",field("string","IPv4 DHCP start.")},{"dhcp_end",field("string","IPv4 DHCP end.")},{"autostart",field("boolean","Start the network when the computer starts, so VMs on it work after a reboot. Default true, like networks made in OmaWare and labs.")},{"dry_run",dry}}, {"request_id","name","mode"}, false, "Approval-gated networks.save; creates and starts an owned network (autostart on unless autostart is false). NAT exposes host and internet, hostonly exposes host, isolated is guest-only. Authorization is a separate operation; may need system polkit authorization. Change, stop or delete it later with manage_network."),
         definition("authorize_network", {{"request_id",request},{"network",field("string","Owned active network UUID.")},{"revision",field("string","Expected revision from list_owned_networks.")},{"dry_run",dry}}, {"request_id","network","revision"}, false, "Approval-gated networks.authorize using installed trusted helper; separate administrator authorization may be required. No passwords or helper installation through MCP.")
     };
 }
@@ -73,7 +74,7 @@ bool AgentProvision::validate(const QString &tool, const QVariantMap &args, QStr
         if (args.contains("preset") && !QRegularExpression("^[a-z][a-z0-9.+-]{1,40}$").match(args["preset"].toString()).hasMatch()) return fail();
         auto nets = args["networks"].toList(); QStringList seen;
         if (nets.size() > 4) return fail();
-        for (const auto &v : nets) { if (v.typeId() != QMetaType::QString || !uuid(v.toString()) || seen.contains(v.toString())) return fail(); seen << v.toString(); }
+        for (const auto &v : nets) { if (v.typeId() != QMetaType::QString || !(uuid(v.toString()) || v.toString() == "user") || seen.contains(v.toString())) return fail(); seen << v.toString(); }
     }
     if (tool == "create_network") {
         if (args["mode"] == "isolated") { for (auto key : {"subnet","dhcp","dhcp_start","dhcp_end"}) if (args.contains(key)) return fail(); }
@@ -157,18 +158,21 @@ bool AgentProvision::prepare(const QString &tool, const QVariantMap &args, const
         ::close(fd);
         input = {{"name",args["name"]},{"sourceMode",args["media_kind"]},{"source",mediaPath(args["media_kind"].toString(),args["media"].toString())},{"mediaIdentity",identity},{"cpus",args.value("cpus",2)},{"memoryMiB",args.value("memory_mib",4096)},{"diskGiB",args.value("disk_gib",32)},{"preset",args.value("preset","generic")},{"firmware",args.value("firmware","bios")},{"tpm",args.value("tpm",false)},{"networkId","none"}};
         QVariantList adapters, revisions;
+        // In the caller's order: vm.create appends the adapters in this order, so the guest numbers them so.
         for (const auto &v : args["networks"].toList()) {
+            const auto mac = QCryptographicHash::hash((args["request_id"].toString()+QString::number(adapters.size())).toUtf8(),QCryptographicHash::Sha256).toHex().left(6);
+            const auto address = QString("52:54:00:%1:%2:%3").arg(QString(mac.mid(0,2)),QString(mac.mid(2,2)),QString(mac.mid(4,2)));
+            if (v.toString() == "user") { adapters.append(QVariantMap{{"id","user"},{"mac",address}}); continue; }
             auto n = owned(v.toString());
             if (n.isEmpty() || !n["active"].toBool() || !n["available"].toBool()) { error = "Select an owned, active, authorized network from list_owned_networks."; return false; }
-            const auto mac = QCryptographicHash::hash((args["request_id"].toString()+QString::number(adapters.size())).toUtf8(),QCryptographicHash::Sha256).toHex().left(6);
-            adapters.append(QVariantMap{{"id","bridge:"+n["bridge"].toString()},{"mac",QString("52:54:00:%1:%2:%3").arg(QString(mac.mid(0,2)),QString(mac.mid(2,2)),QString(mac.mid(4,2)))}});
+            adapters.append(QVariantMap{{"id","bridge:"+n["bridge"].toString()},{"mac",address}});
             revisions.append(QVariantMap{{"uuid",n["uuid"]},{"revision",n["revision"]}});
         }
         input["networks"] = adapters; input["networkRevisions"] = revisions;
     } else if (tool == "create_network") {
         const auto full = "omaware-"+args["name"].toString().toLower();
         for (const auto &v : networks) if (v.toMap()["name"] == full) { error = "Network name already exists."; return false; }
-        input = {{"name",args["name"]},{"mode",args["mode"]},{"subnet",args.value("subnet",QString{})},{"dhcp",args.value("dhcp",false)},{"dhcpStart",args.value("dhcp_start",QString{})},{"dhcpEnd",args.value("dhcp_end",QString{})},{"start",true},{"autostart",false},{"authorize",false}};
+        input = {{"name",args["name"]},{"mode",args["mode"]},{"subnet",args.value("subnet",QString{})},{"dhcp",args.value("dhcp",false)},{"dhcpStart",args.value("dhcp_start",QString{})},{"dhcpEnd",args.value("dhcp_end",QString{})},{"start",true},{"autostart",args.value("autostart",true)},{"authorize",false}};
     } else if (tool == "authorize_network") {
         auto n = owned(args["network"].toString());
         if (n.isEmpty() || !n["active"].toBool() || n["revision"] != args["revision"]) { error = "Owned active network required; revision changed or network unavailable."; return false; }
@@ -190,4 +194,14 @@ bool AgentProvision::verifyEnvelope(const QString &op, const QVariantMap &input,
     if (!prepare(tool,args,networks,prepared,error)) return false;
     if (prepared != received) { error = "Approved provisioning media, arguments or network identity changed."; return false; }
     return true;
+}
+
+QVariantMap AgentProvision::publicResult(bool ok, const QVariantMap &r) {
+    QVariantMap result;
+    for (auto key : {"uuid","subnet","authorized","revision","code","reason"}) if (r.contains(key)) result[key] = r[key];
+    if (!ok && !result.contains("code")) result["code"] = "operation_failed";
+    const QString message = ok ? (result.contains("reason") ? "Backend operation completed, with a problem: " + result["reason"].toString() : QString("Backend operation completed. Created VMs remain stopped."))
+        : result.contains("reason") ? result["reason"].toString() + " Nothing else was changed by this request."
+        : QString("Backend operation failed; it may have partial effects. Check inventory and OmaWare activity before submitting a new request.");
+    return {{"result", result}, {"message", message}};
 }

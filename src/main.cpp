@@ -75,6 +75,7 @@ int main(int argc, char **argv) {
     engine.load(QUrl("qrc:/qml/Main.qml"));
     if (engine.rootObjects().isEmpty()) return 1;
     auto console = engine.rootObjects().first()->findChild<Console *>("console");
+    agent.setMedia(engine.rootObjects().first()->findChild<IsoLibrary *>("isoLibrary"));
     if (!console) return 1;
     if (args.isSet("restarted")) engine.rootObjects().first()->setProperty("restarted", true);
     if (args.isSet("open-vm"))

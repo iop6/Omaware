@@ -30,12 +30,16 @@ bool VmWorker::owned(virDomainPtr d) {
     free(metadata);
     return result;
 }
-int VmWorker::event(virConnectPtr, virDomainPtr, int, int, void *opaque) {
+int VmWorker::event(virConnectPtr, virDomainPtr domain, int event, int detail, void *opaque) {
     auto self = static_cast<VmWorker *>(opaque);
     auto generation = self->generation_.load();
-    QMetaObject::invokeMethod(self, [self, generation] {
+    QString stopped;
+    if (event == VIR_DOMAIN_EVENT_STOPPED) { char uuid[VIR_UUID_STRING_BUFLEN]; if (virDomainGetUUIDString(domain, uuid) == 0) stopped = QString::fromLatin1(uuid); }
+    QMetaObject::invokeMethod(self, [self, generation, stopped, detail] {
         if (generation != self->generation_) return;
-        emit self->lifecycle(); self->refresh();
+        emit self->lifecycle();
+        if (!stopped.isEmpty()) self->finishSetup(stopped, detail);
+        self->refresh();
     }, Qt::QueuedConnection);
     return 0;
 }
@@ -149,7 +153,7 @@ QString VmWorker::power(virDomainPtr d, const QString &operation) {
         if (!blocker.isEmpty()) return blocker;
     }
     int result = -1;
-    if (operation == "start") result = virDomainCreate(d);
+    if (operation == "start") result = start(d);
     else if (operation == "pause") result = virDomainSuspend(d);
     else if (operation == "resume") result = virDomainResume(d);
     else if (operation == "shutdown") result = virDomainShutdown(d);

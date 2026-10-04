@@ -50,7 +50,10 @@ void AgentBridge::provisioningTool(const QString &tool, const QVariantMap &args,
     const auto epoch = backend_->provisionEpoch();
     reply(good(provisioningStates_[id])); // Reply BEFORE any potentially long worker or approval wait.
     QTimer::singleShot(0,this,[this,tool,args,id,epoch] {
-        auto fail = [this,id](QString error, QString state = "failed") { provisioningStates_[id]["state"] = state; provisioningStates_[id]["message"] = error; };
+        auto fail = [this,id](QString error, QString state = "failed", QString code = "precondition_failed") {
+            provisioningStates_[id]["state"] = state; provisioningStates_[id]["message"] = error;
+            provisioningStates_[id]["result"] = QVariantMap{{"code", state == "declined" ? QString("declined") : code}};
+        };
         call("networks.list",{},[this,tool,args,id,fail,epoch](bool ok,const QVariantMap &r) {
             QVariantMap input; QString error;
             if (!enabled_ || backend_->provisionEpoch() != epoch || !ok || !AgentProvision::prepare(tool,args,r["items"].toList(),input,error)) { fail(ok ? (error.isEmpty() ? "Agent access changed before preparation." : error) : r["message"].toString()); return; }
@@ -60,25 +63,33 @@ void AgentBridge::provisioningTool(const QString &tool, const QVariantMap &args,
                 const auto n = v.toMap();
                 if (args["networks"].toList().contains(n["uuid"]) || args["network"] == n["uuid"]) destinations.append(publicNetwork(n));
             }
-            const auto destinationText = destinations.isEmpty() ? QString{} : "\nSelected network names, modes, subnets and revisions:\n" + QString::fromUtf8(QJsonDocument::fromVariant(destinations).toJson());
-            const auto effects = tool == "create_vm" ? "Creates a stopped VM; disk imports copy guest identities and credentials into an independent disk. Network cables are connected to the selected owned destinations on first start. No installer, guest configuration or automatic boot." : tool == "create_network" ? "Creates and starts a host network, without autostart. NAT permits host/internet access; hostonly permits host access; isolated permits guest-only traffic. Administrator authorization may be required." : "Lets session VMs use this owned network via OmaWare's trusted helper. A separate administrator prompt may appear.";
+            auto destinationText = destinations.isEmpty() ? QString{} : "\nSelected network names, modes, subnets and revisions:\n" + QString::fromUtf8(QJsonDocument::fromVariant(destinations).toJson());
+            if (tool == "create_vm" && !args["networks"].toList().isEmpty()) {
+                // The order matters to the guest (its first NIC is the first adapter), so show it.
+                QStringList order; int index = 0;
+                for (const auto &v : args["networks"].toList()) {
+                    QString label = v.toString() == "user" ? QString("Internet · private to this VM") : v.toString();
+                    for (const auto &n : r["items"].toList()) if (n.toMap()["uuid"] == v) label = n.toMap()["name"].toString() + " (" + n.toMap()["mode"].toString() + ")";
+                    order << QString("%1. %2").arg(++index).arg(label);
+                }
+                destinationText += "\nNetwork adapters, in the order the guest sees them:\n" + order.join("\n");
+            }
+            const auto effects = tool == "create_vm" ? "Creates a stopped VM; disk imports copy guest identities and credentials into an independent disk. Network cables are connected to the selected owned networks (and the private internet connection, if chosen), in the order listed, on first start. No installer, guest configuration or automatic boot." : tool == "create_network" ? QString(args.value("autostart", true).toBool() ? "Creates and starts a host network that also starts with the computer." : "Creates and starts a host network, without autostart (it is stopped after a reboot).") + " NAT permits host/internet access; hostonly permits host access; isolated permits guest-only traffic. Administrator authorization may be required." : "Lets session VMs use this owned network via OmaWare's trusted helper. A separate administrator prompt may appear.";
             ask("Approve background provisioning?",tool+"\n"+QString::fromUtf8(QJsonDocument::fromVariant(args).toJson())+destinationText+"\n"+effects,"Approve",[this,tool,args,id,input,fail,epoch](bool yes) {
                 if (!yes || !enabled_) { fail("Declined or agent access disabled.","declined"); return; }
                 // Re-read inventory and media after approval; preserve the exact approved revisions/identity.
                 call("networks.list",{},[this,tool,args,id,input,fail,epoch](bool ok,const QVariantMap &r) {
                     QVariantMap current; QString error;
-                    if (!enabled_ || backend_->provisionEpoch() != epoch || !ok || !AgentProvision::prepare(tool,args,r["items"].toList(),current,error) || current != input) { fail("Approved media/network state changed or agent access disabled. Refresh inventory." ); return; }
+                    if (!enabled_ || backend_->provisionEpoch() != epoch || !ok || !AgentProvision::prepare(tool,args,r["items"].toList(),current,error) || current != input) { fail("Approved media/network state changed or agent access disabled. Refresh inventory.", "failed", "state_changed"); return; }
                     provisioningStates_[id]["state"] = "running";
                     const auto op = tool == "create_vm" ? "vm.create" : tool == "create_network" ? "networks.save" : "networks.authorize";
                     note(tool+": approved background provisioning");
                     auto authorized = input; authorized["provisionEpoch"] = qulonglong(epoch);
                     call(op,authorized,[this,id](bool ok,const QVariantMap &r) {
                         auto &state = provisioningStates_[id]; state["state"] = ok ? "succeeded" : "failed";
-                        // Explicit public allowlist: no XML, paths, subprocess output or credentials.
-                        QVariantMap result;
-                        for (auto key : {"uuid","subnet","authorized"}) if (r.contains(key)) result[key] = r[key];
-                        state["result"] = result;
-                        state["message"] = ok ? "Backend operation completed. Created VMs remain stopped." : "Backend operation failed; it may have partial effects. Check inventory and OmaWare activity before submitting a new request.";
+                        // Never r["message"], which can hold helper output for the user.
+                        const auto shown = AgentProvision::publicResult(ok, r);
+                        state["result"] = shown["result"]; state["message"] = shown["message"];
                     });
                 });
             });

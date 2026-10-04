@@ -12,6 +12,9 @@ bool prepare(const QString &tool, const QVariantMap &args, const QVariantList &n
 bool verifyEnvelope(const QString &op, const QVariantMap &input, const QVariantList &networks, QString &error);
 QString admission(const QString &id, const QVariantMap &request, const QHash<QString,QVariantMap> &requests, const QHash<QString,QVariantMap> &states);
 QVariantList media();
+// What provision_status shows for a finished worker operation: {result, message}. An explicit allowlist:
+// no XML, paths, subprocess output or credentials. `reason` is the worker's fixed text for `code`.
+QVariantMap publicResult(bool ok, const QVariantMap &worker);
 // Confined default storage only; read-only by default, worker may create the final vms directory.
 bool storageRoot(QString &error, bool create = false);
 QString mediaPath(const QString &kind, const QString &name);
