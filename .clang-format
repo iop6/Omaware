@@ -19,4 +19,4 @@ SortIncludes: Never
 IncludeBlocks: Preserve
 AlignAfterOpenBracket: DontAlign
 ContinuationIndentWidth: 8
-SeparateDefinitionBlocks: Always
+SeparateDefinitionBlocks: Leave
