@@ -67,145 +67,169 @@ QVariantMap summaries(const QString &xml) {
 }
 }
 
+namespace {
+// Sets the processor count and CPU mode, with all processors as cores of one socket.
+bool setProcessors(QDomDocument &doc, const QVariantMap &before, int cpus, const QString &mode, QString &error) {
+    auto root = doc.documentElement();
+    auto cpu = root.firstChildElement("cpu");
+    if (cpus == before["vcpus"].toInt() && mode == before["cpuMode"].toString()) return true;
+    if (!root.firstChildElement("vcpus").isNull() || !cpu.firstChildElement("numa").isNull() ||
+            !root.firstChildElement("cputune").isNull()) {
+        error = "This VM uses advanced CPU pinning, NUMA or hotplug. Keep its CPU configuration unchanged.";
+        return false;
+    }
+    auto vcpu = ensure(doc, root, "vcpu");
+    text(doc, vcpu, QString::number(cpus));
+    vcpu.removeAttribute("current");
+    if (mode != before["cpuMode"].toString()) {
+        if (!QStringList{"host-model", "host-passthrough"}.contains(mode)) {
+            error = "Choose a supported CPU mode.";
+            return false;
+        }
+        if (!cpu.isNull()) root.removeChild(cpu);
+        cpu = ensure(doc, root, "cpu");
+        cpu.setAttribute("mode", mode);
+    }
+    if (!cpu.isNull()) {
+        cpu.removeChild(cpu.firstChildElement("topology"));
+        auto topology = ensure(doc, cpu, "topology");
+        topology.setAttribute("sockets", "1");
+        topology.setAttribute("cores", QString::number(cpus));
+        topology.setAttribute("threads", "1");
+    }
+    return true;
+}
+
+bool setMemory(QDomDocument &doc, const QVariantMap &before, int memory, QString &error) {
+    auto root = doc.documentElement();
+    if (memory == before["currentMemoryMiB"].toInt()) return true;
+    if (!root.firstChildElement("maxMemory").isNull() ||
+            !root.firstChildElement("cpu").firstChildElement("numa").isNull() ||
+            !root.firstChildElement("devices").firstChildElement("memory").isNull()) {
+        error = "This VM uses memory hotplug or NUMA. Keep its memory configuration unchanged.";
+        return false;
+    }
+    for (auto tag : {"memory", "currentMemory"}) {
+        auto e = ensure(doc, root, tag);
+        e.setAttribute("unit", "MiB");
+        text(doc, e, QString::number(memory));
+    }
+    return true;
+}
+
+// `boot` is a comma-separated list of devices ("cdrom,hd"); it replaces every other boot setting.
+bool setBootOrder(QDomDocument &doc, const QString &boot, QString &error) {
+    if (!QStringList{"hd", "cdrom,hd", "hd,cdrom", "network,hd"}.contains(boot)) {
+        error = "Choose a supported boot order.";
+        return false;
+    }
+    auto os = doc.documentElement().firstChildElement("os");
+    const auto devices = doc.documentElement().firstChildElement("devices");
+    while (!os.firstChildElement("boot").isNull())
+        os.removeChild(os.firstChildElement("boot"));
+    for (auto e = devices.firstChildElement(); !e.isNull(); e = e.nextSiblingElement())
+        e.removeChild(e.firstChildElement("boot"));
+    for (const auto &dev : boot.split(',')) {
+        auto e = doc.createElement("boot");
+        e.setAttribute("dev", dev);
+        os.appendChild(e);
+    }
+    return true;
+}
+
+// Puts an ISO in the first optical drive (adding a SATA drive if there's none), or ejects it when `path` is
+// empty.
+bool setInstallationMedia(QDomDocument &doc, const QString &path, QString &error) {
+    if (!path.isEmpty() &&
+            (!QFileInfo(path).isAbsolute() || !QFileInfo(path).isFile() || !QFileInfo(path).isReadable())) {
+        error = "The installation ISO cannot be read. Choose an existing local file.";
+        return false;
+    }
+    auto devices = doc.documentElement().firstChildElement("devices");
+    QDomElement cdrom;
+    for (auto d = devices.firstChildElement("disk"); !d.isNull(); d = d.nextSiblingElement("disk"))
+        if (d.attribute("device") == "cdrom") {
+            cdrom = d;
+            break;
+        }
+    if (cdrom.isNull() && !path.isEmpty()) {
+        cdrom = doc.createElement("disk");
+        cdrom.setAttribute("device", "cdrom");
+        cdrom.setAttribute("type", "file");
+        devices.appendChild(cdrom);
+        auto driver = ensure(doc, cdrom, "driver");
+        driver.setAttribute("name", "qemu");
+        driver.setAttribute("type", "raw");
+        QSet<QString> targets;
+        for (auto d = devices.firstChildElement("disk"); !d.isNull(); d = d.nextSiblingElement("disk"))
+            targets.insert(d.firstChildElement("target").attribute("dev"));
+        QString target;
+        for (char c = 'a'; c <= 'z' && target.isEmpty(); ++c)
+            if (!targets.contains("sd" + QString(QChar(c)))) target = "sd" + QString(QChar(c));
+        if (target.isEmpty()) {
+            error = "No free optical drive target is available.";
+            return false;
+        }
+        auto t = ensure(doc, cdrom, "target");
+        t.setAttribute("dev", target);
+        t.setAttribute("bus", "sata");
+        ensure(doc, cdrom, "readonly");
+    }
+    if (!cdrom.isNull()) {
+        cdrom.removeChild(cdrom.firstChildElement("source"));
+        if (!path.isEmpty()) ensure(doc, cdrom, "source").setAttribute("file", path);
+    }
+    return true;
+}
+
+// Clipboard sharing through QEMU's own vdagent channel (spice-vdagent in the guest talks to it).
+bool setClipboard(QDomDocument &doc, bool on, QString &error) {
+    auto devices = doc.documentElement().firstChildElement("devices");
+    QDomElement agent;
+    for (auto c = devices.firstChildElement("channel"); !c.isNull(); c = c.nextSiblingElement("channel")) {
+        if (c.firstChildElement("target").attribute("name") != "com.redhat.spice.0") continue;
+        if (c.attribute("type") != "qemu-vdagent") {
+            error = "This VM already has a SPICE channel. Its integration settings must be kept.";
+            return false;
+        }
+        agent = c;
+    }
+    if (on) {
+        if (agent.isNull()) {
+            agent = doc.createElement("channel");
+            agent.setAttribute("type", "qemu-vdagent");
+            devices.appendChild(agent);
+        }
+        auto target = ensure(doc, agent, "target");
+        target.setAttribute("type", "virtio");
+        target.setAttribute("name", "com.redhat.spice.0");
+        ensure(doc, ensure(doc, agent, "source"), "clipboard").setAttribute("copypaste", "yes");
+    } else if (!agent.isNull()) {
+        ensure(doc, ensure(doc, agent, "source"), "clipboard").setAttribute("copypaste", "no");
+    }
+    return true;
+}
+}
+
 QString Configuration::hardware(const QString &xml, const QVariantMap &values, QString &error) {
     QDomDocument doc;
     if (!doc.setContent(xml)) {
         error = "Could not parse saved configuration.";
         return {};
     }
-    auto root = doc.documentElement(), devices = root.firstChildElement("devices"), os = root.firstChildElement("os");
     QString parseError;
-    auto before = DomainConfig::describe(xml, parseError);
-    int cpus = values.value("cpus", before["vcpus"]).toInt();
-    int memory = values.value("memoryMiB", before["currentMemoryMiB"]).toInt();
+    const auto before = DomainConfig::describe(xml, parseError);
+    const int cpus = values.value("cpus", before["vcpus"]).toInt();
+    const int memory = values.value("memoryMiB", before["currentMemoryMiB"]).toInt();
     if (cpus < 1 || cpus > 256 || memory < 256 || memory > 1048576) {
         error = "Choose 1–256 processors and 256–1048576 MiB RAM.";
         return {};
     }
-    auto cpu = root.firstChildElement("cpu");
     const auto mode = values.value("cpuMode", before["cpuMode"]).toString();
-    if (cpus != before["vcpus"].toInt() || mode != before["cpuMode"].toString()) {
-        if (!root.firstChildElement("vcpus").isNull() || !cpu.firstChildElement("numa").isNull() ||
-                !root.firstChildElement("cputune").isNull()) {
-            error = "This VM uses advanced CPU pinning, NUMA or hotplug. Keep its CPU configuration unchanged.";
-            return {};
-        }
-        auto vcpu = ensure(doc, root, "vcpu");
-        text(doc, vcpu, QString::number(cpus));
-        vcpu.removeAttribute("current");
-        if (mode != before["cpuMode"].toString()) {
-            if (!QStringList{"host-model", "host-passthrough"}.contains(mode)) {
-                error = "Choose a supported CPU mode.";
-                return {};
-            }
-            if (!cpu.isNull()) root.removeChild(cpu);
-            cpu = ensure(doc, root, "cpu");
-            cpu.setAttribute("mode", mode);
-        }
-        if (!cpu.isNull()) {
-            cpu.removeChild(cpu.firstChildElement("topology"));
-            auto topology = ensure(doc, cpu, "topology");
-            topology.setAttribute("sockets", "1");
-            topology.setAttribute("cores", QString::number(cpus));
-            topology.setAttribute("threads", "1");
-        }
-    }
-    if (memory != before["currentMemoryMiB"].toInt()) {
-        if (!root.firstChildElement("maxMemory").isNull() || !cpu.firstChildElement("numa").isNull() ||
-                !devices.firstChildElement("memory").isNull()) {
-            error = "This VM uses memory hotplug or NUMA. Keep its memory configuration unchanged.";
-            return {};
-        }
-        for (auto tag : {"memory", "currentMemory"}) {
-            auto e = ensure(doc, root, tag);
-            e.setAttribute("unit", "MiB");
-            text(doc, e, QString::number(memory));
-        }
-    }
-    if (values.contains("boot")) {
-        const auto boot = values["boot"].toString();
-        if (!QStringList{"hd", "cdrom,hd", "hd,cdrom", "network,hd"}.contains(boot)) {
-            error = "Choose a supported boot order.";
-            return {};
-        }
-        while (!os.firstChildElement("boot").isNull())
-            os.removeChild(os.firstChildElement("boot"));
-        for (auto e = devices.firstChildElement(); !e.isNull(); e = e.nextSiblingElement())
-            e.removeChild(e.firstChildElement("boot"));
-        for (const auto &dev : boot.split(',')) {
-            auto e = doc.createElement("boot");
-            e.setAttribute("dev", dev);
-            os.appendChild(e);
-        }
-    }
-    if (values.contains("iso")) {
-        auto path = values["iso"].toString();
-        if (!path.isEmpty() &&
-                (!QFileInfo(path).isAbsolute() || !QFileInfo(path).isFile() || !QFileInfo(path).isReadable())) {
-            error = "The installation ISO cannot be read. Choose an existing local file.";
-            return {};
-        }
-        QDomElement cdrom;
-        for (auto d = devices.firstChildElement("disk"); !d.isNull(); d = d.nextSiblingElement("disk"))
-            if (d.attribute("device") == "cdrom") {
-                cdrom = d;
-                break;
-            }
-        if (cdrom.isNull() && !path.isEmpty()) {
-            cdrom = doc.createElement("disk");
-            cdrom.setAttribute("device", "cdrom");
-            cdrom.setAttribute("type", "file");
-            devices.appendChild(cdrom);
-            auto driver = ensure(doc, cdrom, "driver");
-            driver.setAttribute("name", "qemu");
-            driver.setAttribute("type", "raw");
-            QSet<QString> targets;
-            for (auto d = devices.firstChildElement("disk"); !d.isNull(); d = d.nextSiblingElement("disk"))
-                targets.insert(d.firstChildElement("target").attribute("dev"));
-            QString target;
-            for (char c = 'a'; c <= 'z'; ++c)
-                if (!targets.contains("sd" + QString(QChar(c)))) {
-                    target = "sd" + QString(QChar(c));
-                    break;
-                }
-            if (target.isEmpty()) {
-                error = "No free optical drive target is available.";
-                return {};
-            }
-            auto t = ensure(doc, cdrom, "target");
-            t.setAttribute("dev", target);
-            t.setAttribute("bus", "sata");
-            ensure(doc, cdrom, "readonly");
-        }
-        if (!cdrom.isNull()) {
-            cdrom.removeChild(cdrom.firstChildElement("source"));
-            if (!path.isEmpty()) ensure(doc, cdrom, "source").setAttribute("file", path);
-        }
-    }
-    if (values.contains("clipboard")) {
-        QDomElement agent;
-        for (auto c = devices.firstChildElement("channel"); !c.isNull(); c = c.nextSiblingElement("channel")) {
-            if (c.firstChildElement("target").attribute("name") == "com.redhat.spice.0") {
-                if (c.attribute("type") != "qemu-vdagent") {
-                    error = "This VM already has a SPICE channel. Its integration settings must be kept.";
-                    return {};
-                }
-                agent = c;
-            }
-        }
-        if (values["clipboard"].toBool()) {
-            if (agent.isNull()) {
-                agent = doc.createElement("channel");
-                agent.setAttribute("type", "qemu-vdagent");
-                devices.appendChild(agent);
-            }
-            auto target = ensure(doc, agent, "target");
-            target.setAttribute("type", "virtio");
-            target.setAttribute("name", "com.redhat.spice.0");
-            ensure(doc, ensure(doc, agent, "source"), "clipboard").setAttribute("copypaste", "yes");
-        } else if (!agent.isNull())
-            ensure(doc, ensure(doc, agent, "source"), "clipboard").setAttribute("copypaste", "no");
-    }
+    if (!setProcessors(doc, before, cpus, mode, error) || !setMemory(doc, before, memory, error)) return {};
+    if (values.contains("boot") && !setBootOrder(doc, values["boot"].toString(), error)) return {};
+    if (values.contains("iso") && !setInstallationMedia(doc, values["iso"].toString(), error)) return {};
+    if (values.contains("clipboard") && !setClipboard(doc, values["clipboard"].toBool(), error)) return {};
     return doc.toString(-1);
 }
 

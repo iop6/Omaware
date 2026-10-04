@@ -1,21 +1,31 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "agentbridge.h"
 #include "backend.h"
-#include "mcpserver.h"
-#include <QCoreApplication>
 #include "console.h"
 #include "instance.h"
 #include "isolibrary.h"
-#include "updater.h"
-#include <QThread>
+#include "mcpserver.h"
 #include "theme.h"
+#include "updater.h"
 #include "workspace.h"
 #include <QCommandLineParser>
+#include <QCoreApplication>
+#include <QDir>
 #include <QGuiApplication>
 #include <QQmlApplicationEngine>
 #include <QQmlContext>
 #include <QQuickStyle>
-#include <QDir>
+#include <QThread>
+
+namespace {
+// The organization and application name stay "Omaware", so existing settings, snapshots and disk paths
+// keep working; the name people see is OmaWare.
+void identify(QCoreApplication &app) {
+    app.setOrganizationName("Omaware");
+    app.setApplicationName("Omaware");
+    app.setApplicationVersion(OMAWARE_VERSION);
+}
+}
 
 int main(int argc, char **argv) {
     // libvirt's default GLib context belongs exclusively to its event thread.
@@ -24,17 +34,12 @@ int main(int argc, char **argv) {
     // `omaware mcp`: the Model Context Protocol server an AI agent starts; no window.
     if (argc == 2 && QByteArray(argv[1]) == "mcp") {
         QCoreApplication app(argc, argv);
-        app.setOrganizationName("Omaware");
-        app.setApplicationName("Omaware");
-        app.setApplicationVersion(OMAWARE_VERSION);
+        identify(app);
         return Mcp::run();
     }
     QGuiApplication app(argc, argv);
-    // Keep the storage identity stable so existing preferences/checkpoints reopen.
-    app.setOrganizationName("Omaware");
-    app.setApplicationName("Omaware");
+    identify(app);
     app.setApplicationDisplayName("OmaWare");
-    app.setApplicationVersion(OMAWARE_VERSION);
     QCommandLineParser args;
     args.setApplicationDescription("OmaWare — a virtual machine manager for QEMU/KVM and libvirt");
     args.addHelpOption();
@@ -80,10 +85,11 @@ int main(int argc, char **argv) {
     engine.rootContext()->setContextProperty("agent", &agent);
     engine.load(QUrl("qrc:/qml/Main.qml"));
     if (engine.rootObjects().isEmpty()) return 1;
-    auto console = engine.rootObjects().first()->findChild<Console *>("console");
-    agent.setMedia(engine.rootObjects().first()->findChild<IsoLibrary *>("isoLibrary"));
-    if (!console) return 1;
-    if (args.isSet("restarted")) engine.rootObjects().first()->setProperty("restarted", true);
-    if (args.isSet("open-vm")) engine.rootObjects().first()->setProperty("selectedUuid", args.value("open-vm"));
+    QObject *window = engine.rootObjects().first();
+    if (!window->findChild<Console *>("console")) return 1;
+    // The OS Shop's library also serves agents' get_media.
+    agent.setMedia(window->findChild<IsoLibrary *>("isoLibrary"));
+    if (args.isSet("restarted")) window->setProperty("restarted", true);
+    if (args.isSet("open-vm")) window->setProperty("selectedUuid", args.value("open-vm"));
     return app.exec();
 }

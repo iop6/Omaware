@@ -106,6 +106,33 @@ QString DomainConfig::revision(const QString &xml) {
     return QString::fromLatin1(QCryptographicHash::hash(xml.toUtf8(), QCryptographicHash::Sha256).toHex());
 }
 
+namespace {
+// One <disk>: what it is, where its data comes from, and how it's attached.
+QVariantMap diskInfo(const QDomElement &disk) {
+    const auto source = disk.firstChildElement("source");
+    QString location = source.attribute("file", source.attribute("dev", source.attribute("name")));
+    if (source.hasAttribute("pool")) location = source.attribute("pool") + "/" + source.attribute("volume");
+    if (source.hasAttribute("protocol")) location = source.attribute("protocol") + ":" + location;
+    return {{"device", disk.attribute("device", "disk")}, {"type", disk.attribute("type")},
+            {"target", attr(disk, "target", "dev")}, {"bus", attr(disk, "target", "bus")}, {"source", location},
+            {"format", attr(disk, "driver", "type", "Not reported")},
+            {"readOnly", !disk.firstChildElement("readonly").isNull()}, {"bootOrder", attr(disk, "boot", "order")}};
+}
+
+// Secure Boot of a UEFI VM, as its <os> element describes it.
+QString secureBoot(const QDomElement &os) {
+    QString state = "Not reported";
+    const auto loader = os.firstChildElement("loader");
+    if (loader.hasAttribute("secure"))
+        state = loader.attribute("secure") == "yes" ? "Supported by firmware" : "Disabled";
+    const auto features = os.firstChildElement("firmware");
+    for (auto e = features.firstChildElement("feature"); !e.isNull(); e = e.nextSiblingElement("feature"))
+        if (e.attribute("name") == "secure-boot")
+            state = e.attribute("enabled") == "yes" ? "Enabled in firmware configuration" : "Disabled";
+    return state;
+}
+}
+
 QVariantMap DomainConfig::describe(const QString &xml, QString &error) {
     QDomDocument doc;
     if (!parse(xml, doc, error)) return {};
@@ -115,16 +142,8 @@ QVariantMap DomainConfig::describe(const QString &xml, QString &error) {
     QStringList boot;
     for (auto e = os.firstChildElement("boot"); !e.isNull(); e = e.nextSiblingElement("boot"))
         boot << e.attribute("dev");
-    QString firmware = os.attribute("firmware") == "efi" || loader.attribute("type") == "pflash" ? "UEFI" : "BIOS";
-    QString secure = "Not reported";
-    if (firmware == "BIOS")
-        secure = "Not applicable";
-    else if (loader.hasAttribute("secure"))
-        secure = loader.attribute("secure") == "yes" ? "Supported by firmware" : "Disabled";
-    auto features = os.firstChildElement("firmware");
-    for (auto e = features.firstChildElement("feature"); !e.isNull(); e = e.nextSiblingElement("feature"))
-        if (e.attribute("name") == "secure-boot")
-            secure = e.attribute("enabled") == "yes" ? "Enabled in firmware configuration" : "Disabled";
+    const QString firmware =
+            os.attribute("firmware") == "efi" || loader.attribute("type") == "pflash" ? "UEFI" : "BIOS";
     QString osProfile;
     auto osNodes = root.firstChildElement("metadata")
                            .elementsByTagNameNS("http://libosinfo.org/xmlns/libvirt/domain/1.0", "os");
@@ -134,7 +153,8 @@ QVariantMap DomainConfig::describe(const QString &xml, QString &error) {
             {"description", root.firstChildElement("description").text()},
             {"hypervisor", root.attribute("type").toUpper()}, {"architecture", attr(os, "type", "arch")},
             {"machine", attr(os, "type", "machine")}, {"osProfile", osProfile}, {"firmware", firmware},
-            {"loader", loader.text()}, {"nvram", os.firstChildElement("nvram").text()}, {"secureBoot", secure},
+            {"loader", loader.text()}, {"nvram", os.firstChildElement("nvram").text()},
+            {"secureBoot", firmware == "BIOS" ? QString("Not applicable") : secureBoot(os)},
             {"bootOrder", boot.join(" → ")}, {"cpuMode", cpu.attribute("mode", "Hypervisor default")},
             {"cpuModel", cpu.firstChildElement("model").text()},
             {"vcpus", root.firstChildElement("vcpu").text().toInt()},
@@ -153,16 +173,9 @@ QVariantMap DomainConfig::describe(const QString &xml, QString &error) {
     bool agentConfigured = false, agentConnected = false;
     bool clipboardConfigured = false;
     for (auto e = devices.firstChildElement(); !e.isNull(); e = e.nextSiblingElement()) {
-        if (e.tagName() == "disk") {
-            auto source = e.firstChildElement("source");
-            QString location = source.attribute("file", source.attribute("dev", source.attribute("name")));
-            if (source.hasAttribute("pool")) location = source.attribute("pool") + "/" + source.attribute("volume");
-            if (source.hasAttribute("protocol")) location = source.attribute("protocol") + ":" + location;
-            disks.append(QVariantMap{{"device", e.attribute("device", "disk")}, {"type", e.attribute("type")},
-                    {"target", attr(e, "target", "dev")}, {"bus", attr(e, "target", "bus")}, {"source", location},
-                    {"format", attr(e, "driver", "type", "Not reported")},
-                    {"readOnly", !e.firstChildElement("readonly").isNull()}, {"bootOrder", attr(e, "boot", "order")}});
-        } else if (e.tagName() == "interface")
+        if (e.tagName() == "disk")
+            disks.append(diskInfo(e));
+        else if (e.tagName() == "interface")
             nics.append(interfaceInfo(e));
         else if (e.tagName() == "graphics")
             displays.append(QVariantMap{
