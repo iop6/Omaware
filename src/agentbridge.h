@@ -30,7 +30,9 @@ class VmWorker;
 //   it does, with a button that turns agent access off.
 // - Every action goes into OmaWare's activity log.
 // What diagnose_vm suggests from a VM's details (vm.details) and addresses (vm.addresses): {code, hint}.
-namespace AgentDiagnosis { QVariantList hints(const QVariantMap &details, const QVariantMap &addresses); }
+namespace AgentDiagnosis {
+QVariantList hints(const QVariantMap &details, const QVariantMap &addresses);
+}
 
 // Session grants: kinds of low-risk change the user can let an agent make without asking each time.
 namespace AgentGrants {
@@ -65,14 +67,23 @@ class AgentBridge : public QObject {
 public:
     explicit AgentBridge(Backend *backend, QObject *parent = nullptr);
     ~AgentBridge() override;
+
     bool enabled() const { return enabled_; }
+
     void setEnabled(bool on);
+
     QString error() const { return error_; }
+
     QString command() const;
+
     QVariantMap screen() const { return screen_; }
+
     QVariantMap proposal() const { return proposal_; }
+
     QVariantMap confirmation() const { return confirmation_; }
+
     QVariantMap build() const { return build_; }
+
     QVariantList labs() const;
     QVariantList logins() const;
     QVariantList grants() const;
@@ -80,7 +91,8 @@ public:
 
     // The user's answers.
     // Build the proposed lab. With `saved`, use the saved login `login`; otherwise save user/password under it.
-    Q_INVOKABLE void approve(const QString &id, const QString &login, const QString &user, const QString &password, bool saved);
+    Q_INVOKABLE void approve(
+            const QString &id, const QString &login, const QString &user, const QString &password, bool saved);
     Q_INVOKABLE void decline(const QString &id);
     // With `grant`, a yes also allows the question's kind of change for the rest of the session.
     Q_INVOKABLE void answer(const QString &id, bool yes, bool grant = false);
@@ -126,7 +138,8 @@ private:
     // Finds an OmaWare VM by name or UUID; empty with an error otherwise.
     QVariantMap findVm(const QString &name, QString &error) const;
     // `grantKind` (see AgentGrants) lets the user allow this kind of change for the session in the same dialog.
-    void ask(const QString &title, const QString &text, const QString &action, std::function<void(bool)> then, const QString &grantKind = {});
+    void ask(const QString &title, const QString &text, const QString &action, std::function<void(bool)> then,
+            const QString &grantKind = {});
     bool granted(const QString &kind) const;
     void note(const QString &message, bool ok = true);
     void markScreen(const QString &uuid, const QString &name);
@@ -173,24 +186,31 @@ private:
     VmWorker *agentWorker_;
     QLocalServer server_;
     bool enabled_ = false;
-    bool localLab_ = false;   // the waiting proposal or running build came from a lab file
+    bool localLab_ = false; // the waiting proposal or running build came from a lab file
     QString error_;
     QVariantMap screen_, proposal_, confirmation_, build_;
     QHash<QString, Done> pending_;
     QHash<QString, std::function<void(bool)>> questions_;
-    QHash<QString, QString> questionGrants_;   // question id -> the kind of change it can grant
-    QHash<QString, qint64> grants_;            // kind -> expiry (ms since epoch)
+    QHash<QString, QString> questionGrants_; // question id -> the kind of change it can grant
+    QHash<QString, qint64> grants_;          // kind -> expiry (ms since epoch)
     QHash<QString, QSize> screenSizes_;
     QVariantMap host_;
     // Lab states by id, and lab_status calls waiting for a change.
     QHash<QString, QVariantMap> states_;
-    struct Waiter { QString lab, token; std::function<void()> answer; };
+
+    struct Waiter {
+        QString lab, token;
+        std::function<void()> answer;
+    };
+
     QList<Waiter> statusWaiters_;
+
     // The build in progress.
     struct Build {
         QString id, login, user, passwordHash;
         QVariantMap plan, lab;
         QList<QPair<QString, std::function<void(std::function<void(const QString &)>)>>> steps;
     } current_;
+
     QList<std::function<void()>> linkWaiters_;
 };

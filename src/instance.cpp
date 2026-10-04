@@ -10,11 +10,13 @@ InstanceGuard::InstanceGuard(const QString &lockPath) : lock_(lockPath) {
     // A lock left by a crashed copy is recognized by its dead process and taken over.
     lock_.setStaleLockTime(0);
 }
+
 QString InstanceGuard::defaultPath() {
     auto dir = QStandardPaths::writableLocation(QStandardPaths::RuntimeLocation);
     if (dir.isEmpty()) dir = QDir::tempPath();
     return dir + "/omaware.lock";
 }
+
 QList<qint64> InstanceGuard::otherProcesses(const QString &name) {
     QList<qint64> result;
     const qint64 self = QCoreApplication::applicationPid();
@@ -33,11 +35,14 @@ QList<qint64> InstanceGuard::otherProcesses(const QString &name) {
     }
     return result;
 }
+
 bool InstanceGuard::acquire() {
     if (!lock_.tryLock(0)) {
-        qint64 pid = 0; QString host, app;
+        qint64 pid = 0;
+        QString host, app;
         lock_.getLockInfo(&pid, &host, &app);
-        blocker_ = pid > 0 ? QString("OmaWare is already open (process %1).").arg(pid) : QString("OmaWare is already open.");
+        blocker_ = pid > 0 ? QString("OmaWare is already open (process %1).").arg(pid)
+                           : QString("OmaWare is already open.");
         return false;
     }
     const auto others = otherProcesses();

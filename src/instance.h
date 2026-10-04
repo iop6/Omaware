@@ -12,12 +12,15 @@ public:
     explicit InstanceGuard(const QString &lockPath);
     // True when no other OmaWare runs for this user. The lock is then held until destruction.
     bool acquire();
+
     // Why acquire() failed, for the user.
     QString blocker() const { return blocker_; }
+
     // Default lock location, in the user's runtime directory.
     static QString defaultPath();
     // Other processes of this user running an executable named `omaware`.
     static QList<qint64> otherProcesses(const QString &name = "omaware");
+
 private:
     QLockFile lock_;
     QString blocker_;

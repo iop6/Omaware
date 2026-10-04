@@ -12,16 +12,18 @@
 namespace CloudSeed {
 struct Nic {
     QString mac;
-    QString address;   // "10.20.0.10/24" for a fixed address; empty for DHCP
+    QString address; // "10.20.0.10/24" for a fixed address; empty for DHCP
 };
+
 struct Settings {
     QString instanceId, hostname, user, passwordHash, sshKey;
     // The VM's own SSH host key, made by OmaWare so it can check it is talking to the right VM.
     QString hostKeyPrivate, hostKeyPublic;
     QStringList packages, commands;
     QList<Nic> nics;
-    bool guestAgent = false;   // install and start the QEMU guest agent (needs internet on first boot)
+    bool guestAgent = false; // install and start the QEMU guest agent (needs internet on first boot)
 };
+
 // A Linux user name cloud-init and every distribution accept.
 bool validUser(const QString &user);
 // A host name from a VM name: lower case letters, digits and dashes.

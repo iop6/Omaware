@@ -22,12 +22,19 @@ class Theme : public QObject {
     Q_PROPERTY(QString texture READ texture NOTIFY changed)
 public:
     explicit Theme(QString path, QObject *parent = nullptr);
+
     QVariantMap colors() const { return colors_; }
+
     QString status() const { return status_; }
+
     QString mode() const { return mode_; }
+
     Q_INVOKABLE void setMode(QString mode);
+
     qreal textScale() const { return textScale_; }
+
     bool reducedMotion() const { return reducedMotion_; }
+
     bool omarchyAvailable() const;
     QVariantList themes() const;
     QString texture() const;
@@ -39,6 +46,7 @@ public:
     static bool parse(const QByteArray &data, QVariantMap &colors, QString &error);
 signals:
     void changed();
+
 private:
     void watch();
     QString path_, status_, mode_ = "omarchy";

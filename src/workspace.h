@@ -9,7 +9,9 @@ class Workspace : public QObject {
     Q_PROPERTY(int revision READ revision NOTIFY changed)
 public:
     explicit Workspace(QObject *parent = nullptr);
+
     int revision() const { return revision_; }
+
     Q_INVOKABLE QVariant get(QString key, QVariant fallback = {}) const;
     Q_INVOKABLE void set(QString key, QVariant value);
     Q_INVOKABLE QVariantMap vm(QString uuid) const;
@@ -23,6 +25,7 @@ public:
     static QVariantMap mediaFiles(QString folder);
 signals:
     void changed();
+
 private:
     QSettings settings_;
     int revision_ = 0;

@@ -37,17 +37,33 @@ public:
     QString error, command = "claude mcp add omaware -- omaware mcp";
     QVariantMap screen, proposal, confirmation, build;
     QVariantList labs, logins, grants;
+
     Q_INVOKABLE QVariantMap vmLab(const QString &) const { return {}; }
+
     Q_INVOKABLE QString revealPassword(const QString &) const { return {}; }
+
     Q_INVOKABLE QString generatePassword() const { return "abcd-efgh-jkmn-pqrs"; }
+
     Q_INVOKABLE void approve(const QString &, const QString &, const QString &, const QString &, bool) {}
+
     Q_INVOKABLE void decline(const QString &) {}
+
     Q_INVOKABLE void answer(const QString &, bool, bool = false) {}
-    Q_INVOKABLE void revokeGrants() { grants.clear(); emit changed(); }
-    Q_INVOKABLE void stop() { enabled = false; emit changed(); }
+
+    Q_INVOKABLE void revokeGrants() {
+        grants.clear();
+        emit changed();
+    }
+
+    Q_INVOKABLE void stop() {
+        enabled = false;
+        emit changed();
+    }
+
 signals:
     void changed();
 };
+
 class UiInventory : public QObject {
     Q_OBJECT
     Q_PROPERTY(QVariantList domains MEMBER domains NOTIFY changed)
@@ -72,21 +88,39 @@ public:
     QVariantList activity;
     QString activityWarning;
     std::function<bool(QString, QVariantMap)> query;
+
     Q_INVOKABLE QVariantMap errorAdvice(QString message) const { return Diagnostics::advice(message); }
-    Q_INVOKABLE void clearActivity() { activity.clear(); emit activityChanged(); }
+
+    Q_INVOKABLE void clearActivity() {
+        activity.clear();
+        emit activityChanged();
+    }
+
     Q_INVOKABLE void showRecovery(QString action, QString uuid = {}) { emit recoveryRequested(action, uuid); }
-    Q_INVOKABLE bool request(QString operation, QVariantMap input = {}) { return query ? query(operation, input) : true; }
+
+    Q_INVOKABLE bool request(QString operation, QVariantMap input = {}) {
+        return query ? query(operation, input) : true;
+    }
+
     Q_INVOKABLE void cancelRestart() {}
+
     Q_INVOKABLE void cancelCheckpoint() {}
+
     Q_INVOKABLE void setLinks(QVariantList, bool) {}
+
     Q_INVOKABLE void bulkAction(QVariantList, QString) {}
+
     Q_INVOKABLE bool connectVms(QVariantList, QString) { return true; }
+
     Q_INVOKABLE void pauseForExit() {}
+
     Q_INVOKABLE void inspect(QString uuid, bool = false) {
         details = {};
-        for (auto row : domains) if (row.toMap()["uuid"].toString() == uuid) details = row.toMap();
+        for (auto row : domains)
+            if (row.toMap()["uuid"].toString() == uuid) details = row.toMap();
         emit detailsChanged();
     }
+
 signals:
     void changed();
     void created(QString uuid);
@@ -111,18 +145,25 @@ class Integration : public QObject {
     QString extraUuid_;
     virConnectPtr external_ = nullptr;
     std::unique_ptr<Backend> backend_;
+
     int state() {
-        for (auto row : backend_->domains()) if (row.toMap()["uuid"] == uuid_) return row.toMap()["stateCode"].toInt();
+        for (auto row : backend_->domains())
+            if (row.toMap()["uuid"] == uuid_) return row.toMap()["stateCode"].toInt();
         return -1;
     }
+
 private slots:
+
     void initTestCase() {
-        QVERIFY2(qEnvironmentVariable("OMAWARE_VM_TEST") == "1" && qEnvironmentVariable("OMAWARE_VM_TEST_HOST") == QSysInfo::machineHostName(),
-            "VM tests create, pause and power off OmaWare VMs in your libvirt session. Run them only on a disposable machine, "
-            "with OMAWARE_VM_TEST=1 and OMAWARE_VM_TEST_HOST set to that machine's hostname.");
+        QVERIFY2(qEnvironmentVariable("OMAWARE_VM_TEST") == "1" &&
+                         qEnvironmentVariable("OMAWARE_VM_TEST_HOST") == QSysInfo::machineHostName(),
+                "VM tests create, pause and power off OmaWare VMs in your libvirt session. Run them only on a "
+                "disposable machine, "
+                "with OMAWARE_VM_TEST=1 and OMAWARE_VM_TEST_HOST set to that machine's hostname.");
         external_ = virConnectOpen("qemu:///session");
         QVERIFY(external_);
     }
+
     void lifecycleConsoleAndReconnect() {
         backend_ = std::make_unique<Backend>("qemu:///session");
         QTRY_VERIFY_WITH_TIMEOUT(backend_->connected(), 15000);
@@ -148,12 +189,14 @@ private slots:
         // Wait for BIOS text rather than accepting the initial black framebuffer.
         auto nonBlack = [&] {
             auto image = console.frame();
-            for (int y = 0; y < image.height(); ++y) for (int x = 0; x < image.width(); ++x)
-                if ((image.pixel(x, y) & 0xffffff) != 0) return true;
+            for (int y = 0; y < image.height(); ++y)
+                for (int x = 0; x < image.width(); ++x)
+                    if ((image.pixel(x, y) & 0xffffff) != 0) return true;
             return false;
         };
         QTRY_VERIFY_WITH_TIMEOUT(nonBlack(), 15000);
-        if (!qEnvironmentVariable("OMAWARE_FRAME_PATH").isEmpty()) QVERIFY(console.frame().save(qEnvironmentVariable("OMAWARE_FRAME_PATH")));
+        if (!qEnvironmentVariable("OMAWARE_FRAME_PATH").isEmpty())
+            QVERIFY(console.frame().save(qEnvironmentVariable("OMAWARE_FRAME_PATH")));
         QTest::mouseClick(&window, Qt::LeftButton, Qt::NoModifier, QPoint(400, 300));
         QTRY_VERIFY(console.captured());
         QTest::keyClick(&window, Qt::Key_Alt, Qt::ControlModifier);
@@ -182,12 +225,15 @@ private slots:
         QTRY_COMPARE(state(), -1);
         uuid_.clear();
     }
+
     void consoleSwitchesBetweenVms() {
         backend_ = std::make_unique<Backend>("qemu:///session");
         QTRY_VERIFY_WITH_TIMEOUT(backend_->connected(), 15000);
         connect(backend_.get(), &Backend::created, this, [this](QString uuid) {
-            if (uuid_.isEmpty()) uuid_ = uuid;
-            else extraUuid_ = uuid;
+            if (uuid_.isEmpty())
+                uuid_ = uuid;
+            else
+                extraUuid_ = uuid;
         });
         backend_->createTest();
         QTRY_VERIFY(!uuid_.isEmpty());
@@ -236,21 +282,28 @@ private slots:
             QCOMPARE(active, 1);
         }
     }
+
     void cleanup() {
         backend_.reset();
         // Cleanup is restricted to the precise UUID created by this test.
         for (const auto &uuid : {uuid_, extraUuid_}) {
             if (external_ && !uuid.isEmpty()) {
                 auto d = virDomainLookupByUUIDString(external_, uuid.toUtf8().constData());
-                if (d) { if (virDomainIsActive(d) == 1) virDomainDestroy(d); virDomainUndefine(d); virDomainFree(d); }
+                if (d) {
+                    if (virDomainIsActive(d) == 1) virDomainDestroy(d);
+                    virDomainUndefine(d);
+                    virDomainFree(d);
+                }
             }
         }
         uuid_.clear();
         extraUuid_.clear();
     }
+
     void cleanupTestCase() {
         if (external_) virConnectClose(external_);
     }
+
     void uiInventoryStates() {
         UiInventory inventory;
         Theme theme("/nonexistent/omaware-test-palette.toml");
@@ -258,7 +311,8 @@ private slots:
         QList<QQmlError> warnings;
         connect(&engine, &QQmlEngine::warnings, this, [&](const QList<QQmlError> &items) { warnings += items; });
         engine.rootContext()->setContextProperty("backend", &inventory);
-        engine.rootContext()->setContextProperty("theme", &theme); engine.rootContext()->setContextProperty("agent", &uiAgent);
+        engine.rootContext()->setContextProperty("theme", &theme);
+        engine.rootContext()->setContextProperty("agent", &uiAgent);
         engine.load(QUrl("qrc:/qml/Main.qml"));
         QVERIFY(!engine.rootObjects().isEmpty());
         auto window = qobject_cast<QQuickWindow *>(engine.rootObjects().first());
@@ -279,9 +333,9 @@ private slots:
         // Many rows, long names, an external VM and a nonstandard state must fit.
         for (int i = 0; i < 30; ++i) {
             inventory.domains.append(QVariantMap{{"uuid", QString::number(i)},
-                {"name", QString("external-development-workstation-with-a-long-name-%1").arg(i, 2, 10, QChar('0'))},
-                {"state", "Suspended"}, {"stateCode", 7}, {"cpus", 16},
-                {"memoryMiB", 65536}, {"owned", false}, {"diskless", false}});
+                    {"name", QString("external-development-workstation-with-a-long-name-%1").arg(i, 2, 10, QChar('0'))},
+                    {"state", "Suspended"}, {"stateCode", 7}, {"cpus", 16}, {"memoryMiB", 65536}, {"owned", false},
+                    {"diskless", false}});
         }
         emit inventory.changed();
         QTRY_COMPARE(window->property("selectedUuid").toString(), "0");
@@ -292,8 +346,8 @@ private slots:
         // Presentation fixture for disk paths/capacities at the minimum size.
         auto richVm = inventory.domains.first().toMap();
         richVm["disks"] = QVariantList{QVariantMap{{"target", "vda"}, {"device", "disk"},
-            {"source", "/home/example/Virtual Machines/Ubuntu Development Workstation/disks/system-volume.qcow2"},
-            {"capacityBytes", qulonglong(64) * 1024 * 1024 * 1024}, {"format", "qcow2"}, {"bus", "virtio"}}};
+                {"source", "/home/example/Virtual Machines/Ubuntu Development Workstation/disks/system-volume.qcow2"},
+                {"capacityBytes", qulonglong(64) * 1024 * 1024 * 1024}, {"format", "qcow2"}, {"bus", "virtio"}}};
         richVm["videoModel"] = "virtio";
         richVm["videoHeads"] = 1;
         inventory.domains[0] = richVm;
@@ -304,7 +358,8 @@ private slots:
         detailsPanel->setProperty("page", 1);
         QVERIFY(capture("details-disk-small"));
         window->setProperty("detailsOpen", false);
-        window->setProperty("operationError", "The local session could not complete this operation. Check that the virtual machine is available, then reconnect and try again.");
+        window->setProperty("operationError", "The local session could not complete this operation. Check that the "
+                                              "virtual machine is available, then reconnect and try again.");
         theme.setMode("light");
         QVERIFY(capture("omaware-error"));
         window->setProperty("detailsOpen", true);
@@ -315,36 +370,55 @@ private slots:
         // A lab an agent proposed: the plan, then the login; Build waits for a valid user and password.
         theme.setMode("dark");
         const QVariantMap vm{{"name", "web1"}, {"os", "ubuntu"}, {"cpus", 2}, {"memoryMiB", 2048}, {"diskGiB", 16},
-            {"nics", QVariantList{QVariantMap{{"network", "dmz"}, {"ip", ""}}}}, {"packages", QVariantList{"nginx"}}, {"setup", QVariantList{"systemctl enable --now nginx"}}};
+                {"nics", QVariantList{QVariantMap{{"network", "dmz"}, {"ip", ""}}}},
+                {"packages", QVariantList{"nginx"}}, {"setup", QVariantList{"systemctl enable --now nginx"}}};
         const QVariantMap fw{{"name", "fw"}, {"os", "debian"}, {"cpus", 1}, {"memoryMiB", 1024}, {"diskGiB", 8},
-            {"nics", QVariantList{QVariantMap{{"network", "dmz"}, {"ip", ""}}, QVariantMap{{"network", "lan"}, {"ip", "172.30.1.10/24"}}}}};
+                {"nics", QVariantList{QVariantMap{{"network", "dmz"}, {"ip", ""}},
+                                 QVariantMap{{"network", "lan"}, {"ip", "172.30.1.10/24"}}}}};
         uiAgent.proposal = {{"id", "p1"}, {"login", "Web lab"}, {"user", "alex"},
-            {"plan", QVariantMap{{"name", "Web lab"}, {"networks", QVariantList{QVariantMap{{"name", "dmz"}, {"type", "internet"}, {"subnet", ""}}, QVariantMap{{"name", "lan"}, {"type", "isolated"}, {"subnet", "172.30.1.0/24"}}}}, {"vms", QVariantList{fw, vm}}}},
-            {"warnings", QVariantList{"Together the VMs use most of this computer's memory."}}, {"images", QVariantList{QVariantMap{{"os", "debian"}, {"ready", false}}}}};
+                {"plan", QVariantMap{{"name", "Web lab"},
+                                 {"networks", QVariantList{QVariantMap{{"name", "dmz"}, {"type", "internet"},
+                                                                   {"subnet", ""}},
+                                                      QVariantMap{{"name", "lan"}, {"type", "isolated"},
+                                                              {"subnet", "172.30.1.0/24"}}}},
+                                 {"vms", QVariantList{fw, vm}}}},
+                {"warnings", QVariantList{"Together the VMs use most of this computer's memory."}},
+                {"images", QVariantList{QVariantMap{{"os", "debian"}, {"ready", false}}}}};
         emit uiAgent.changed();
-        auto labDialog = window->findChild<QObject *>("labDialog"); QVERIFY(labDialog);
+        auto labDialog = window->findChild<QObject *>("labDialog");
+        QVERIFY(labDialog);
         QTRY_VERIFY(labDialog->property("visible").toBool());
-        auto buildButton = window->findChild<QObject *>("buildLab"); QVERIFY(buildButton);
+        auto buildButton = window->findChild<QObject *>("buildLab");
+        QVERIFY(buildButton);
         QVERIFY(!buildButton->property("enabled").toBool());
         window->findChild<QObject *>("labPassword")->setProperty("text", "long-enough-1");
         QTRY_VERIFY(buildButton->property("enabled").toBool());
         QVERIFY(capture("lab-proposal"));
         uiAgent.proposal.clear();
-        uiAgent.build = {{"id", "p1"}, {"name", "Web lab"}, {"state", "building"}, {"step", 2}, {"steps", QVariantList{"Getting the debian image", "Creating the network dmz", "Creating fw", "Starting fw"}}, {"message", "Creating fw"}};
+        uiAgent.build = {{"id", "p1"}, {"name", "Web lab"}, {"state", "building"}, {"step", 2},
+                {"steps", QVariantList{"Getting the debian image", "Creating the network dmz", "Creating fw",
+                                  "Starting fw"}},
+                {"message", "Creating fw"}};
         uiAgent.screen = {{"uuid", "x"}, {"name", "fw"}, {"at", double(QDateTime::currentMSecsSinceEpoch())}};
         uiAgent.enabled = true;
         emit uiAgent.changed();
-        auto banner = window->findChild<QObject *>("agentBanner"); QVERIFY(banner);
+        auto banner = window->findChild<QObject *>("agentBanner");
+        QVERIFY(banner);
         QTRY_VERIFY(banner->property("visible").toBool());
         QVERIFY(capture("lab-building"));
         QMetaObject::invokeMethod(labDialog, "close");
-        uiAgent.build.clear(); uiAgent.screen.clear(); uiAgent.enabled = false; emit uiAgent.changed();
+        uiAgent.build.clear();
+        uiAgent.screen.clear();
+        uiAgent.enabled = false;
+        emit uiAgent.changed();
         QVERIFY2(warnings.isEmpty(), qPrintable(warnings.isEmpty() ? QString{} : warnings.first().toString()));
     }
+
     void snapshotTabDeferredLoad() {
         UiInventory inventory;
         inventory.busy = true;
-        inventory.domains = {QVariantMap{{"uuid", "snapshot-ui"}, {"name", "Snapshot tab fixture"}, {"owned", false}, {"diskless", false}, {"state", "Stopped"}, {"stateCode", 5}}};
+        inventory.domains = {QVariantMap{{"uuid", "snapshot-ui"}, {"name", "Snapshot tab fixture"}, {"owned", false},
+                {"diskless", false}, {"state", "Stopped"}, {"stateCode", 5}}};
         int loads = 0;
         inventory.query = [&](QString operation, QVariantMap input) {
             if (inventory.busy) return false;
@@ -358,20 +432,34 @@ private slots:
             });
             return true;
         };
-        Theme theme("/nonexistent/palette"); QQmlApplicationEngine engine; QList<QQmlError> warnings;
+        Theme theme("/nonexistent/palette");
+        QQmlApplicationEngine engine;
+        QList<QQmlError> warnings;
         connect(&engine, &QQmlEngine::warnings, this, [&](QList<QQmlError> items) { warnings += items; });
-        engine.rootContext()->setContextProperty("backend", &inventory); engine.rootContext()->setContextProperty("theme", &theme); engine.rootContext()->setContextProperty("agent", &uiAgent);
-        engine.load(QUrl("qrc:/qml/Main.qml")); QVERIFY(!engine.rootObjects().isEmpty());
-        auto window = qobject_cast<QQuickWindow *>(engine.rootObjects().first()); QVERIFY(window);
+        engine.rootContext()->setContextProperty("backend", &inventory);
+        engine.rootContext()->setContextProperty("theme", &theme);
+        engine.rootContext()->setContextProperty("agent", &uiAgent);
+        engine.load(QUrl("qrc:/qml/Main.qml"));
+        QVERIFY(!engine.rootObjects().isEmpty());
+        auto window = qobject_cast<QQuickWindow *>(engine.rootObjects().first());
+        QVERIFY(window);
         window->setProperty("selectedUuid", "snapshot-ui");
-        auto details = window->findChild<QObject *>("vmDetails"); QVERIFY(details);
-        auto snapshots = window->findChild<QQuickItem *>("snapshotsPage"); QVERIFY(snapshots);
-        auto graph = window->findChild<QQuickItem *>("snapshotBranchMap"); QVERIFY(graph);
-        details->setProperty("page", 3); window->setProperty("detailsOpen", true);
-        QTest::qWait(100); QVERIFY(!snapshots->property("ready").toBool()); QCOMPARE(loads, 0);
+        auto details = window->findChild<QObject *>("vmDetails");
+        QVERIFY(details);
+        auto snapshots = window->findChild<QQuickItem *>("snapshotsPage");
+        QVERIFY(snapshots);
+        auto graph = window->findChild<QQuickItem *>("snapshotBranchMap");
+        QVERIFY(graph);
+        details->setProperty("page", 3);
+        window->setProperty("detailsOpen", true);
+        QTest::qWait(100);
+        QVERIFY(!snapshots->property("ready").toBool());
+        QCOMPARE(loads, 0);
         // No extra click or VM change: a request skipped while busy must retry.
-        inventory.busy = false; emit inventory.changed();
-        QTRY_VERIFY(snapshots->property("ready").toBool()); QTRY_VERIFY(graph->isVisible() && graph->height() > 100);
+        inventory.busy = false;
+        emit inventory.changed();
+        QTRY_VERIFY(snapshots->property("ready").toBool());
+        QTRY_VERIFY(graph->isVisible() && graph->height() > 100);
         QCOMPARE(loads, 1);
         // A failed query must not spin indefinitely on backend changed signals.
         inventory.query = [&](QString operation, QVariantMap input) {
@@ -379,48 +467,85 @@ private slots:
                 ++loads;
                 QTimer::singleShot(0, &inventory, [&, input] {
                     emit inventory.changed();
-                    emit inventory.commandFinished("snapshots.list", false, {{"uuid", input["uuid"]}, {"message", "Snapshot storage unavailable"}});
+                    emit inventory.commandFinished("snapshots.list", false,
+                            {{"uuid", input["uuid"]}, {"message", "Snapshot storage unavailable"}});
                 });
             }
             return true;
         };
-        inventory.management.clear(); emit inventory.managementChanged(); emit inventory.changed();
+        inventory.management.clear();
+        emit inventory.managementChanged();
+        emit inventory.changed();
         QTRY_COMPARE(snapshots->property("failure").toString(), "Snapshot storage unavailable");
         const auto attempts = loads;
-        for (int i = 0; i < 5; ++i) { emit inventory.changed(); QTest::qWait(20); }
+        for (int i = 0; i < 5; ++i) {
+            emit inventory.changed();
+            QTest::qWait(20);
+        }
         QCOMPARE(loads, attempts);
         QVERIFY2(warnings.isEmpty(), qPrintable(warnings.isEmpty() ? QString{} : warnings.first().toString()));
     }
+
     void snapshotContextPermissions() {
         UiInventory inventory;
-        QVariantMap vm{{"uuid", "context-ui"}, {"name", "Context fixture"}, {"owned", true}, {"diskless", false}, {"state", "Stopped"}, {"stateCode", 5}};
-        inventory.domains = {vm}; inventory.details = vm;
-        inventory.management["snapshots.list"] = QVariantMap{{"uuid", "context-ui"}, {"items", QVariantList{QVariantMap{{"id", "saved"}, {"name", "Saved point"}, {"kind", "copy"}, {"time", 1}, {"current", true}}}}, {"currentId", "saved"}};
-        Theme theme("/nonexistent/palette"); QQmlApplicationEngine engine; QList<QQmlError> warnings;
+        QVariantMap vm{{"uuid", "context-ui"}, {"name", "Context fixture"}, {"owned", true}, {"diskless", false},
+                {"state", "Stopped"}, {"stateCode", 5}};
+        inventory.domains = {vm};
+        inventory.details = vm;
+        inventory.management["snapshots.list"] = QVariantMap{{"uuid", "context-ui"},
+                {"items", QVariantList{QVariantMap{{"id", "saved"}, {"name", "Saved point"}, {"kind", "copy"},
+                                  {"time", 1}, {"current", true}}}},
+                {"currentId", "saved"}};
+        Theme theme("/nonexistent/palette");
+        QQmlApplicationEngine engine;
+        QList<QQmlError> warnings;
         connect(&engine, &QQmlEngine::warnings, this, [&](QList<QQmlError> items) { warnings += items; });
-        engine.rootContext()->setContextProperty("backend", &inventory); engine.rootContext()->setContextProperty("theme", &theme); engine.rootContext()->setContextProperty("agent", &uiAgent);
-        engine.load(QUrl("qrc:/qml/Main.qml")); QVERIFY(!engine.rootObjects().isEmpty());
-        auto window = qobject_cast<QQuickWindow *>(engine.rootObjects().first()); QVERIFY(window);
-        window->setProperty("selectedUuid", "context-ui"); window->setProperty("detailsOpen", true);
+        engine.rootContext()->setContextProperty("backend", &inventory);
+        engine.rootContext()->setContextProperty("theme", &theme);
+        engine.rootContext()->setContextProperty("agent", &uiAgent);
+        engine.load(QUrl("qrc:/qml/Main.qml"));
+        QVERIFY(!engine.rootObjects().isEmpty());
+        auto window = qobject_cast<QQuickWindow *>(engine.rootObjects().first());
+        QVERIFY(window);
+        window->setProperty("selectedUuid", "context-ui");
+        window->setProperty("detailsOpen", true);
         window->findChild<QObject *>("vmDetails")->setProperty("page", 3);
-        auto snapshots = window->findChild<QObject *>("snapshotsPage"); QVERIFY(snapshots);
+        auto snapshots = window->findChild<QObject *>("snapshotsPage");
+        QVERIFY(snapshots);
         QTRY_VERIFY(snapshots->property("ready").toBool());
         QVERIFY(QMetaObject::invokeMethod(snapshots, "selectSnapshot", Q_ARG(QVariant, 0)));
-        auto more = window->findChild<QQuickItem *>("snapshotMore"); QVERIFY(more); QTest::qWait(100);
-        QTest::mouseClick(window, Qt::LeftButton, Qt::NoModifier, more->mapToScene({more->width()/2, more->height()/2}).toPoint());
-        auto menu = window->findChild<QObject *>("snapshotContextMenu"); QVERIFY(menu); QTRY_VERIFY(menu->property("opened").toBool());
-        auto remove = menu->findChild<QQuickItem *>("deleteSnapshot"); QVERIFY(remove); QVERIFY(remove->isEnabled());
-        auto restore = menu->findChild<QQuickItem *>("contextRestore"); QVERIFY(restore); QVERIFY(restore->isEnabled());
-        inventory.busy = true; emit inventory.changed(); QTRY_VERIFY(!remove->isEnabled() && !restore->isEnabled());
-        inventory.details["owned"] = false; emit inventory.detailsChanged();
-        inventory.busy = false; emit inventory.changed(); QTRY_VERIFY(!remove->isEnabled() && !restore->isEnabled());
+        auto more = window->findChild<QQuickItem *>("snapshotMore");
+        QVERIFY(more);
+        QTest::qWait(100);
+        QTest::mouseClick(window, Qt::LeftButton, Qt::NoModifier,
+                more->mapToScene({more->width() / 2, more->height() / 2}).toPoint());
+        auto menu = window->findChild<QObject *>("snapshotContextMenu");
+        QVERIFY(menu);
+        QTRY_VERIFY(menu->property("opened").toBool());
+        auto remove = menu->findChild<QQuickItem *>("deleteSnapshot");
+        QVERIFY(remove);
+        QVERIFY(remove->isEnabled());
+        auto restore = menu->findChild<QQuickItem *>("contextRestore");
+        QVERIFY(restore);
+        QVERIFY(restore->isEnabled());
+        inventory.busy = true;
+        emit inventory.changed();
+        QTRY_VERIFY(!remove->isEnabled() && !restore->isEnabled());
+        inventory.details["owned"] = false;
+        emit inventory.detailsChanged();
+        inventory.busy = false;
+        emit inventory.changed();
+        QTRY_VERIFY(!remove->isEnabled() && !restore->isEnabled());
         // Switching VMs dismisses the old target's menu, rather than carrying
         // an enabled destructive action into the next VM's workspace.
-        vm["uuid"] = "another-context-ui"; inventory.domains.append(vm); emit inventory.changed();
+        vm["uuid"] = "another-context-ui";
+        inventory.domains.append(vm);
+        emit inventory.changed();
         window->setProperty("selectedUuid", "another-context-ui");
         QTRY_VERIFY(!menu->property("visible").toBool());
         QVERIFY2(warnings.isEmpty(), qPrintable(warnings.isEmpty() ? QString{} : warnings.first().toString()));
     }
+
     void uiThemeAndConsole() {
         backend_ = std::make_unique<Backend>("qemu:///session");
         QTRY_VERIFY(backend_->connected());
@@ -433,9 +558,11 @@ private slots:
         Theme theme("/nonexistent/omaware-test-palette.toml");
         QQmlApplicationEngine engine;
         QList<QQmlError> qmlWarnings;
-        connect(&engine, &QQmlEngine::warnings, this, [&](const QList<QQmlError> &warnings) { qmlWarnings += warnings; });
+        connect(&engine, &QQmlEngine::warnings, this,
+                [&](const QList<QQmlError> &warnings) { qmlWarnings += warnings; });
         engine.rootContext()->setContextProperty("backend", backend_.get());
-        engine.rootContext()->setContextProperty("theme", &theme); engine.rootContext()->setContextProperty("agent", &uiAgent);
+        engine.rootContext()->setContextProperty("theme", &theme);
+        engine.rootContext()->setContextProperty("agent", &uiAgent);
         engine.load(QUrl("qrc:/qml/Main.qml"));
         QVERIFY(!engine.rootObjects().isEmpty());
         auto window = qobject_cast<QQuickWindow *>(engine.rootObjects().first());
@@ -533,12 +660,12 @@ private slots:
 
         // Switching away from a captured console always releases guest input.
         QTest::mouseClick(window, Qt::LeftButton, Qt::NoModifier,
-            console->mapToScene(QPointF(console->width() / 2, console->height() / 2)).toPoint());
+                console->mapToScene(QPointF(console->width() / 2, console->height() / 2)).toPoint());
         QTRY_VERIFY(console->captured());
         auto details = window->findChild<QQuickItem *>("detailsTab");
         QVERIFY(details);
         QTest::mouseClick(window, Qt::LeftButton, Qt::NoModifier,
-            details->mapToScene(QPointF(details->width() / 2, details->height() / 2)).toPoint());
+                details->mapToScene(QPointF(details->width() / 2, details->height() / 2)).toPoint());
         QTRY_VERIFY(window->property("detailsOpen").toBool());
         QVERIFY(!console->captured());
         QVERIFY(capture("omaware-details"));
@@ -549,7 +676,8 @@ private slots:
         auto focusTitle = window->findChild<QQuickItem *>("focusTitle");
         QVERIFY(tools && focusTitle);
         QTRY_VERIFY(tools->mapToScene(QPointF(tools->width(), 0)).x() > window->width() - 40);
-        auto focusIcon = window->findChild<QQuickItem *>("focusIcon"); QVERIFY(focusIcon);
+        auto focusIcon = window->findChild<QQuickItem *>("focusIcon");
+        QVERIFY(focusIcon);
         QVERIFY(focusTitle->mapToScene(QPointF()).x() > focusIcon->mapToScene(QPointF(focusIcon->width(), 0)).x());
         QVERIFY(focusTitle->mapToScene(QPointF(focusTitle->width(), 0)).x() < tools->mapToScene(QPointF()).x());
         QTest::keyClick(window, Qt::Key_Escape);
@@ -561,7 +689,8 @@ private slots:
         {
             const auto fleet = backend_->management()["stats.all"].toMap();
             QStringList sampled;
-            for (const auto &entry : fleet["vms"].toList()) if (entry.toMap()["cpuTime"].toDouble() > 0) sampled << entry.toMap()["uuid"].toString();
+            for (const auto &entry : fleet["vms"].toList())
+                if (entry.toMap()["cpuTime"].toDouble() > 0) sampled << entry.toMap()["uuid"].toString();
             QVERIFY(sampled.contains(uuid_) && sampled.contains(extraUuid_));
             QVERIFY(fleet["host"].toMap()["cpus"].toInt() > 0);
             QVERIFY(fleet["host"].toMap().contains("cpu_idle"));
@@ -570,91 +699,149 @@ private slots:
         theme.setMode("dark");
         QTest::keyClick(window, Qt::Key_2, Qt::ControlModifier);
         QTRY_COMPARE(window->property("navigation").toString(), QString("monitor"));
-        auto monitor = window->findChild<QQuickItem *>("monitorPage"); QVERIFY(monitor); QTRY_VERIFY(monitor->isVisible());
-        auto monitorList = monitor->findChild<QQuickItem *>("monitorList"); QVERIFY(monitorList);
+        auto monitor = window->findChild<QQuickItem *>("monitorPage");
+        QVERIFY(monitor);
+        QTRY_VERIFY(monitor->isVisible());
+        auto monitorList = monitor->findChild<QQuickItem *>("monitorList");
+        QVERIFY(monitorList);
         QTRY_VERIFY(monitorList->property("count").toInt() >= 2);
-        monitor->setProperty("sortKey", "name"); monitor->setProperty("descending", false);
-        const auto rows = monitor->property("rows").toList(); QVERIFY(rows.size() >= 2);
+        monitor->setProperty("sortKey", "name");
+        monitor->setProperty("descending", false);
+        const auto rows = monitor->property("rows").toList();
+        QVERIFY(rows.size() >= 2);
         window->setProperty("selectedUuid", rows[0].toMap()["uuid"]);
-        monitorList->forceActiveFocus(); QTRY_VERIFY(monitorList->hasActiveFocus());
+        monitorList->forceActiveFocus();
+        QTRY_VERIFY(monitorList->hasActiveFocus());
         QTest::keyClick(window, Qt::Key_J);
         QTRY_COMPARE(window->property("selectedUuid").toString(), rows[1].toMap()["uuid"].toString());
-        monitor->setProperty("sortKey", "cpu"); monitor->setProperty("descending", true);
+        monitor->setProperty("sortKey", "cpu");
+        monitor->setProperty("descending", true);
         QVERIFY(window->findChild<QObject *>("monitorHost"));
         QTest::qWait(4500); // Monitor samples every 2 s; two samples give rates and host CPU.
         QVERIFY(capture("monitor"));
         QTest::keyClick(window, Qt::Key_1, Qt::ControlModifier);
         QTRY_COMPARE(window->property("navigation").toString(), QString("library"));
         window->setProperty("logOpen", true);
-        auto drawer = window->findChild<QQuickItem *>("logDrawer"); QVERIFY(drawer); QTRY_VERIFY(drawer->isVisible());
+        auto drawer = window->findChild<QQuickItem *>("logDrawer");
+        QVERIFY(drawer);
+        QTRY_VERIFY(drawer->isVisible());
         QVERIFY(capture("log-drawer"));
-        window->setProperty("logOpen", false); QTRY_VERIFY(!drawer->isVisible());
-        auto keyMap = window->findChild<QObject *>("keyMap"); QVERIFY(keyMap);
-        QVERIFY(QMetaObject::invokeMethod(keyMap, "open")); QTRY_VERIFY(keyMap->property("opened").toBool());
+        window->setProperty("logOpen", false);
+        QTRY_VERIFY(!drawer->isVisible());
+        auto keyMap = window->findChild<QObject *>("keyMap");
+        QVERIFY(keyMap);
+        QVERIFY(QMetaObject::invokeMethod(keyMap, "open"));
+        QTRY_VERIFY(keyMap->property("opened").toBool());
         QVERIFY(capture("keymap"));
-        QVERIFY(QMetaObject::invokeMethod(keyMap, "close")); QTRY_VERIFY(!keyMap->property("visible").toBool());
-        auto commandPrompt = window->findChild<QObject *>("actionPalette"); QVERIFY(commandPrompt);
-        QVERIFY(QMetaObject::invokeMethod(commandPrompt, "open")); QTRY_VERIFY(commandPrompt->property("opened").toBool());
-        auto commandQuery = commandPrompt->findChild<QQuickItem *>("actionQuery"); QVERIFY(commandQuery);
+        QVERIFY(QMetaObject::invokeMethod(keyMap, "close"));
+        QTRY_VERIFY(!keyMap->property("visible").toBool());
+        auto commandPrompt = window->findChild<QObject *>("actionPalette");
+        QVERIFY(commandPrompt);
+        QVERIFY(QMetaObject::invokeMethod(commandPrompt, "open"));
+        QTRY_VERIFY(commandPrompt->property("opened").toBool());
+        auto commandQuery = commandPrompt->findChild<QQuickItem *>("actionQuery");
+        QVERIFY(commandQuery);
         commandQuery->setProperty("text", "htop");
         QTRY_COMPARE(commandPrompt->property("matches").toList().size(), 1);
         QCOMPARE(commandPrompt->property("matches").toList().first().toMap()["key"].toString(), QString("monitor"));
         commandQuery->setProperty("text", "");
         QVERIFY(capture("command-prompt"));
-        QVERIFY(QMetaObject::invokeMethod(commandPrompt, "close")); QTRY_VERIFY(!commandPrompt->property("visible").toBool());
+        QVERIFY(QMetaObject::invokeMethod(commandPrompt, "close"));
+        QTRY_VERIFY(!commandPrompt->property("visible").toBool());
         // Sidebar: right-click targets the clicked VM without changing the selection or its console.
-        window->setProperty("navigation", "library"); window->setProperty("detailsOpen", false);
-        window->setProperty("selectedUuid", uuid_); QTRY_VERIFY(!backend_->busy());
-        auto stateCodeOf = [&](const QString &id) { for (const auto &row : backend_->domains()) if (row.toMap()["uuid"].toString() == id) return row.toMap()["stateCode"].toInt(); return -1; };
-        auto center = [](QQuickItem *item) { return item->mapToScene(QPointF(item->width() / 2, item->height() / 2)).toPoint(); };
+        window->setProperty("navigation", "library");
+        window->setProperty("detailsOpen", false);
+        window->setProperty("selectedUuid", uuid_);
+        QTRY_VERIFY(!backend_->busy());
+        auto stateCodeOf = [&](const QString &id) {
+            for (const auto &row : backend_->domains())
+                if (row.toMap()["uuid"].toString() == id) return row.toMap()["stateCode"].toInt();
+            return -1;
+        };
+        auto center = [](QQuickItem *item) {
+            return item->mapToScene(QPointF(item->width() / 2, item->height() / 2)).toPoint();
+        };
         // ListView delegates have no QObject parent, so reach the row through the view itself.
         auto rowFor = [&](const QString &id) -> QQuickItem * {
-            const auto rows = window->property("filteredDomains").toList(); int index = -1;
-            for (int i = 0; i < rows.size(); ++i) if (rows[i].toMap()["uuid"].toString() == id) index = i;
+            const auto rows = window->property("filteredDomains").toList();
+            int index = -1;
+            for (int i = 0; i < rows.size(); ++i)
+                if (rows[i].toMap()["uuid"].toString() == id) index = i;
             QQuickItem *delegate = nullptr;
-            if (index < 0 || !QMetaObject::invokeMethod(library, "itemAtIndex", Q_RETURN_ARG(QQuickItem *, delegate), Q_ARG(int, index)) || !delegate) return nullptr;
+            if (index < 0 ||
+                    !QMetaObject::invokeMethod(
+                            library, "itemAtIndex", Q_RETURN_ARG(QQuickItem *, delegate), Q_ARG(int, index)) ||
+                    !delegate)
+                return nullptr;
             return delegate->findChild<QQuickItem *>("vmRow_" + id);
         };
-        QQuickItem *otherRow = nullptr; QTRY_VERIFY((otherRow = rowFor(extraUuid_)) && otherRow->isVisible());
-        auto vmMenu = window->findChild<QObject *>("vmContextMenu"); QVERIFY(vmMenu);
-        QTRY_VERIFY((otherRow = rowFor(extraUuid_)) && otherRow->isVisible()); QTest::mouseClick(window, Qt::RightButton, Qt::NoModifier, center(otherRow));
+        QQuickItem *otherRow = nullptr;
+        QTRY_VERIFY((otherRow = rowFor(extraUuid_)) && otherRow->isVisible());
+        auto vmMenu = window->findChild<QObject *>("vmContextMenu");
+        QVERIFY(vmMenu);
+        QTRY_VERIFY((otherRow = rowFor(extraUuid_)) && otherRow->isVisible());
+        QTest::mouseClick(window, Qt::RightButton, Qt::NoModifier, center(otherRow));
         QTRY_VERIFY(vmMenu->property("opened").toBool());
         QCOMPARE(vmMenu->property("vm").toMap()["uuid"].toString(), extraUuid_);
         QCOMPARE(window->property("selectedUuid").toString(), uuid_);
         QVERIFY(capture("sidebar-menu"));
-        auto power = vmMenu->findChild<QQuickItem *>("vmMenuPower"); QVERIFY(power); QTRY_VERIFY(power->isEnabled());
+        auto power = vmMenu->findChild<QQuickItem *>("vmMenuPower");
+        QVERIFY(power);
+        QTRY_VERIFY(power->isEnabled());
         // The power item follows the clicked VM's own state; toggle it and back.
-        const int originalState = stateCodeOf(extraUuid_); QVERIFY(originalState == 1 || originalState == 3);
+        const int originalState = stateCodeOf(extraUuid_);
+        QVERIFY(originalState == 1 || originalState == 3);
         const int toggledState = originalState == 1 ? 3 : 1;
         QCOMPARE(power->property("text").toString(), QString(originalState == 1 ? "Pause" : "Resume"));
         QTest::mouseClick(window, Qt::LeftButton, Qt::NoModifier, center(power));
-        QTRY_COMPARE(stateCodeOf(extraUuid_), toggledState); QTRY_VERIFY(!backend_->busy());
-        QCOMPARE(window->property("selectedUuid").toString(), uuid_); QTRY_VERIFY(console->hasFrame());   // its console was opened just above; the first picture arrives shortly
-        QTRY_VERIFY((otherRow = rowFor(extraUuid_)) && otherRow->isVisible()); QTest::mouseClick(window, Qt::RightButton, Qt::NoModifier, center(otherRow)); QTRY_VERIFY(vmMenu->property("opened").toBool());
+        QTRY_COMPARE(stateCodeOf(extraUuid_), toggledState);
+        QTRY_VERIFY(!backend_->busy());
+        QCOMPARE(window->property("selectedUuid").toString(), uuid_);
+        QTRY_VERIFY(console->hasFrame()); // its console was opened just above; the first picture arrives shortly
+        QTRY_VERIFY((otherRow = rowFor(extraUuid_)) && otherRow->isVisible());
+        QTest::mouseClick(window, Qt::RightButton, Qt::NoModifier, center(otherRow));
+        QTRY_VERIFY(vmMenu->property("opened").toBool());
         QTRY_COMPARE(power->property("text").toString(), QString(toggledState == 1 ? "Pause" : "Resume"));
         QTest::mouseClick(window, Qt::LeftButton, Qt::NoModifier, center(power));
-        QTRY_COMPARE(stateCodeOf(extraUuid_), originalState); QTRY_VERIFY(!backend_->busy());
+        QTRY_COMPARE(stateCodeOf(extraUuid_), originalState);
+        QTRY_VERIFY(!backend_->busy());
         // Favorites form a collapsible group; the list count still counts VMs only.
         const int vmCount = library->property("count").toInt();
-        QTRY_VERIFY((otherRow = rowFor(extraUuid_)) && otherRow->isVisible()); QTest::mouseClick(window, Qt::RightButton, Qt::NoModifier, center(otherRow)); QTRY_VERIFY(vmMenu->property("opened").toBool());
-        auto favorite = vmMenu->findChild<QQuickItem *>("vmMenuFavorite"); QVERIFY(favorite);
+        QTRY_VERIFY((otherRow = rowFor(extraUuid_)) && otherRow->isVisible());
+        QTest::mouseClick(window, Qt::RightButton, Qt::NoModifier, center(otherRow));
+        QTRY_VERIFY(vmMenu->property("opened").toBool());
+        auto favorite = vmMenu->findChild<QQuickItem *>("vmMenuFavorite");
+        QVERIFY(favorite);
         QTest::mouseClick(window, Qt::LeftButton, Qt::NoModifier, center(favorite));
-        QTRY_VERIFY(window->property("grouped").toBool()); QCOMPARE(library->property("count").toInt(), vmCount);
-        QQuickItem *favorites = nullptr; QTRY_VERIFY((otherRow = rowFor(extraUuid_)) && (favorites = otherRow->parentItem()->findChild<QQuickItem *>("libraryGroup_favorites")) && favorites->isVisible());
+        QTRY_VERIFY(window->property("grouped").toBool());
+        QCOMPARE(library->property("count").toInt(), vmCount);
+        QQuickItem *favorites = nullptr;
+        QTRY_VERIFY((otherRow = rowFor(extraUuid_)) &&
+                    (favorites = otherRow->parentItem()->findChild<QQuickItem *>("libraryGroup_favorites")) &&
+                    favorites->isVisible());
         QVERIFY(capture("sidebar-grouped"));
         // Keyboard: the menu key opens the selected VM's menu.
-        library->forceActiveFocus(); QTRY_VERIFY(library->hasActiveFocus());
-        QTest::keyClick(window, Qt::Key_F10, Qt::ShiftModifier); QTRY_VERIFY(vmMenu->property("opened").toBool());
+        library->forceActiveFocus();
+        QTRY_VERIFY(library->hasActiveFocus());
+        QTest::keyClick(window, Qt::Key_F10, Qt::ShiftModifier);
+        QTRY_VERIFY(vmMenu->property("opened").toBool());
         QCOMPARE(vmMenu->property("vm").toMap()["uuid"].toString(), window->property("selectedUuid").toString());
-        QVERIFY(QMetaObject::invokeMethod(vmMenu, "close")); QTRY_VERIFY(!vmMenu->property("visible").toBool());
-        QVERIFY(QMetaObject::invokeMethod(window, "toggleFavorite", Q_ARG(QVariant, QVariant(QVariantMap{{"uuid", extraUuid_}}))));
+        QVERIFY(QMetaObject::invokeMethod(vmMenu, "close"));
+        QTRY_VERIFY(!vmMenu->property("visible").toBool());
+        QVERIFY(QMetaObject::invokeMethod(
+                window, "toggleFavorite", Q_ARG(QVariant, QVariant(QVariantMap{{"uuid", extraUuid_}}))));
         QTRY_VERIFY(!window->property("grouped").toBool());
         // Ctrl+B collapses the sidebar to an icon rail and back.
-        const bool railBefore = window->property("sidebarRail").toBool(); QVERIFY(!railBefore);
-        QTest::keyClick(window, Qt::Key_B, Qt::ControlModifier); QTRY_VERIFY(window->property("sidebarRail").toBool());
-        auto sidebar = window->findChild<QQuickItem *>("sidebar"); QVERIFY(sidebar); QTRY_VERIFY(sidebar->width() < 80);
+        const bool railBefore = window->property("sidebarRail").toBool();
+        QVERIFY(!railBefore);
+        QTest::keyClick(window, Qt::Key_B, Qt::ControlModifier);
+        QTRY_VERIFY(window->property("sidebarRail").toBool());
+        auto sidebar = window->findChild<QQuickItem *>("sidebar");
+        QVERIFY(sidebar);
+        QTRY_VERIFY(sidebar->width() < 80);
         QVERIFY(capture("sidebar-rail"));
-        QTest::keyClick(window, Qt::Key_B, Qt::ControlModifier); QTRY_VERIFY(!window->property("sidebarRail").toBool());
+        QTest::keyClick(window, Qt::Key_B, Qt::ControlModifier);
+        QTRY_VERIFY(!window->property("sidebarRail").toBool());
         window->setProperty("navigation", "monitor");
         window->resize(940, 660);
         QVERIFY(capture("monitor-compact"));
@@ -692,11 +879,12 @@ private slots:
         auto confirm = window->findChild<QQuickItem *>("confirmAction");
         QVERIFY(confirm);
         QTest::mouseClick(window, Qt::LeftButton, Qt::NoModifier,
-            confirm->mapToScene(QPointF(confirm->width() / 2, confirm->height() / 2)).toPoint());
+                confirm->mapToScene(QPointF(confirm->width() / 2, confirm->height() / 2)).toPoint());
         QTRY_COMPARE(state(), -1);
         uuid_.clear();
         QVERIFY2(qmlWarnings.isEmpty(), qPrintable(qmlWarnings.isEmpty() ? QString{} : qmlWarnings.first().toString()));
     }
+
     void networkConfiguration() {
         backend_ = std::make_unique<Backend>("qemu:///session");
         QTRY_VERIFY(backend_->connected());
@@ -721,7 +909,8 @@ private slots:
         QList<QQmlError> warnings;
         connect(&engine, &QQmlEngine::warnings, this, [&](const QList<QQmlError> &items) { warnings += items; });
         engine.rootContext()->setContextProperty("backend", backend_.get());
-        engine.rootContext()->setContextProperty("theme", &theme); engine.rootContext()->setContextProperty("agent", &uiAgent);
+        engine.rootContext()->setContextProperty("theme", &theme);
+        engine.rootContext()->setContextProperty("agent", &uiAgent);
         engine.load(QUrl("qrc:/qml/Main.qml"));
         QVERIFY(!engine.rootObjects().isEmpty());
         auto window = qobject_cast<QQuickWindow *>(engine.rootObjects().first());
@@ -744,7 +933,7 @@ private slots:
             auto button = window->findChild<QQuickItem *>(name);
             if (!button || !button->isEnabled()) return false;
             QTest::mouseClick(window, Qt::LeftButton, Qt::NoModifier,
-                button->mapToScene(QPointF(button->width() / 2, button->height() / 2)).toPoint());
+                    button->mapToScene(QPointF(button->width() / 2, button->height() / 2)).toPoint());
             return true;
         };
         QVERIFY(click("addAdapter"));
@@ -762,7 +951,8 @@ private slots:
         QVERIFY(!mac.isEmpty());
 
         // Add a second adapter, then edit the original without changing its MAC.
-        QVERIFY(backend_->configureNetwork(uuid_, "", "user", "e1000", true, false, backend_->details()["revision"].toString()));
+        QVERIFY(backend_->configureNetwork(
+                uuid_, "", "user", "e1000", true, false, backend_->details()["revision"].toString()));
         QTRY_COMPARE(saved.count(), 2);
         QVERIFY2(saved.last()[1].toBool(), qPrintable(saved.last()[2].toString()));
         QTRY_VERIFY(!backend_->detailsBusy());
@@ -784,7 +974,8 @@ private slots:
         // An optional, uniquely created host bridge exercises real bridge attachment.
         const auto bridge = qEnvironmentVariable("OMAWARE_TEST_BRIDGE");
         if (!bridge.isEmpty()) {
-            QVERIFY(backend_->configureNetwork(uuid_, mac, "bridge:" + bridge, "virtio", true, false, backend_->details()["revision"].toString()));
+            QVERIFY(backend_->configureNetwork(
+                    uuid_, mac, "bridge:" + bridge, "virtio", true, false, backend_->details()["revision"].toString()));
             QTRY_COMPARE(saved.count(), 5);
             QVERIFY2(saved.last()[1].toBool(), qPrintable(saved.last()[2].toString()));
             QTRY_VERIFY(!backend_->detailsBusy());
@@ -803,7 +994,8 @@ private slots:
         // Refreshing running-VM details can queue automatic console attachment.
         // Wait for that operation too before issuing a serialized network edit.
         QTRY_VERIFY(!backend_->busy());
-        QVERIFY(backend_->configureNetwork(uuid_, mac, networkId, model, false, false, backend_->details()["revision"].toString()));
+        QVERIFY(backend_->configureNetwork(
+                uuid_, mac, networkId, model, false, false, backend_->details()["revision"].toString()));
         ++count;
         QTRY_COMPARE(saved.count(), count);
         QVERIFY2(saved.last()[1].toBool(), qPrintable(saved.last()[2].toString()));
@@ -813,20 +1005,23 @@ private slots:
         QVERIFY(!backend_->details()["pendingNetworkChanges"].toBool());
         QVERIFY(!backend_->details()["liveInterfaces"].toList().first().toMap()["linkUp"].toBool());
         QVERIFY(!backend_->details()["interfaces"].toList().first().toMap()["linkUp"].toBool());
-        QVERIFY(backend_->configureNetwork(uuid_, secondMac, "", "virtio", true, true, backend_->details()["revision"].toString()));
+        QVERIFY(backend_->configureNetwork(
+                uuid_, secondMac, "", "virtio", true, true, backend_->details()["revision"].toString()));
         ++count;
         QTRY_COMPARE_WITH_TIMEOUT(saved.count(), count, 20000);
         QVERIFY2(saved.last()[1].toBool(), qPrintable(saved.last()[2].toString()));
         QTRY_VERIFY(!backend_->detailsBusy());
         // This test VM has no OS to acknowledge a PCI unplug, so the removal waits for the next start.
-        QVERIFY2(saved.last()[2].toString().contains("full shutdown and start"), qPrintable(saved.last()[2].toString()));
+        QVERIFY2(
+                saved.last()[2].toString().contains("full shutdown and start"), qPrintable(saved.last()[2].toString()));
         QCOMPARE(backend_->details()["interfaces"].toList().size(), 1);
         QCOMPARE(backend_->details()["liveInterfaces"].toList().size(), 2);
         QVERIFY(backend_->details()["pendingNetworkChanges"].toBool());
         for (auto mode : {"dark", "light"}) {
             theme.setMode(mode);
             QVERIFY(capture(QString("network-details-") + mode));
-            QVERIFY(QMetaObject::invokeMethod(dialog, "openFor", Q_ARG(QVariant, backend_->details()), Q_ARG(QVariant, backend_->details()["interfaces"].toList().first()), Q_ARG(QVariant, false)));
+            QVERIFY(QMetaObject::invokeMethod(dialog, "openFor", Q_ARG(QVariant, backend_->details()),
+                    Q_ARG(QVariant, backend_->details()["interfaces"].toList().first()), Q_ARG(QVariant, false)));
             QVERIFY(capture(QString("network-edit-") + mode));
             QVERIFY(QMetaObject::invokeMethod(dialog, "reject"));
         }
@@ -837,7 +1032,8 @@ private slots:
         window->resize(940, 660);
         panel->setProperty("page", 2);
         QVERIFY(capture("network-details-small"));
-        QVERIFY(QMetaObject::invokeMethod(dialog, "openFor", Q_ARG(QVariant, backend_->details()), Q_ARG(QVariant, backend_->details()["interfaces"].toList().first()), Q_ARG(QVariant, false)));
+        QVERIFY(QMetaObject::invokeMethod(dialog, "openFor", Q_ARG(QVariant, backend_->details()),
+                Q_ARG(QVariant, backend_->details()["interfaces"].toList().first()), Q_ARG(QVariant, false)));
         QVERIFY(capture("network-edit-small"));
         QVERIFY(click("networkPicker"));
         QVERIFY(capture("network-choices-small"));
@@ -877,15 +1073,17 @@ private slots:
         auto domain = virDomainLookupByUUIDString(external_, uuid_.toUtf8().constData());
         QVERIFY(domain);
         QVERIFY(virDomainSetMetadata(domain, VIR_DOMAIN_METADATA_ELEMENT, nullptr, nullptr,
-            "https://omaware.org/xmlns/prototype/1", VIR_DOMAIN_AFFECT_CONFIG) == 0);
+                        "https://omaware.org/xmlns/prototype/1", VIR_DOMAIN_AFFECT_CONFIG) == 0);
         backend_->inspect(uuid_);
         QTRY_VERIFY(!backend_->detailsBusy());
         QVERIFY(!backend_->details()["owned"].toBool());
         char *before = virDomainGetXMLDesc(domain, VIR_DOMAIN_XML_INACTIVE);
         QVERIFY(before);
-        const QByteArray savedXml(before); free(before);
+        const QByteArray savedXml(before);
+        free(before);
         count = saved.count();
-        QVERIFY(backend_->configureNetwork(uuid_, mac, "user", "virtio", true, false, backend_->details()["revision"].toString()));
+        QVERIFY(backend_->configureNetwork(
+                uuid_, mac, "user", "virtio", true, false, backend_->details()["revision"].toString()));
         ++count;
         QTRY_COMPARE(saved.count(), count);
         QVERIFY(!saved.last()[1].toBool());
@@ -898,6 +1096,7 @@ private slots:
         QVERIFY2(warnings.isEmpty(), qPrintable(warnings.isEmpty() ? QString{} : warnings.first().toString()));
     }
 };
+
 int main(int argc, char **argv) {
     qputenv("QT_NO_GLIB", "1");
     QGuiApplication app(argc, argv);
@@ -905,8 +1104,10 @@ int main(int argc, char **argv) {
     QQuickStyle::setStyle("Basic");
     qmlRegisterType<Console>("Omaware", 1, 0, "VmConsole");
     qmlRegisterType<Workspace>("Omaware", 1, 0, "Workspace");
-    qmlRegisterType<IsoLibrary>("Omaware", 1, 0, "IsoLibrary"); qmlRegisterType<Updater>("Omaware", 1, 0, "Updater");
+    qmlRegisterType<IsoLibrary>("Omaware", 1, 0, "IsoLibrary");
+    qmlRegisterType<Updater>("Omaware", 1, 0, "Updater");
     Integration test;
     return QTest::qExec(&test, argc, argv);
 }
+
 #include "integration.moc"

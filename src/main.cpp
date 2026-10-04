@@ -42,13 +42,16 @@ int main(int argc, char **argv) {
     args.addOption({"open-vm", "Select a VM by UUID and open its console if already running", "uuid"});
     args.addOption({"restarted", "Started by OmaWare itself after an update; wait for the previous copy to close"});
     args.addOption({"theme-file", "Read an alternate Omarchy colors.toml (data only)", "path",
-        QDir::homePath() + "/.local/state/omarchy/current/theme/colors.toml"});
+            QDir::homePath() + "/.local/state/omarchy/current/theme/colors.toml"});
     args.process(app);
     QQuickStyle::setStyle("Basic");
     InstanceGuard instance(InstanceGuard::defaultPath());
     bool acquired = instance.acquire();
     // After an update the previous copy is still closing; give it a moment instead of refusing to start.
-    for (int i = 0; !acquired && args.isSet("restarted") && i < 75; ++i) { QThread::msleep(200); acquired = instance.acquire(); }
+    for (int i = 0; !acquired && args.isSet("restarted") && i < 75; ++i) {
+        QThread::msleep(200);
+        acquired = instance.acquire();
+    }
     if (!acquired) {
         // Explain in a small window instead of silently exiting: OmaWare is usually started from a launcher.
         Theme theme(args.value("theme-file"));
@@ -56,7 +59,10 @@ int main(int argc, char **argv) {
         notice.rootContext()->setContextProperty("theme", &theme);
         notice.rootContext()->setContextProperty("blocker", instance.blocker());
         notice.load(QUrl("qrc:/qml/AlreadyRunning.qml"));
-        if (notice.rootObjects().isEmpty()) { qWarning("%s", qPrintable(instance.blocker())); return 1; }
+        if (notice.rootObjects().isEmpty()) {
+            qWarning("%s", qPrintable(instance.blocker()));
+            return 1;
+        }
         app.exec();
         return 1;
     }
@@ -78,7 +84,6 @@ int main(int argc, char **argv) {
     agent.setMedia(engine.rootObjects().first()->findChild<IsoLibrary *>("isoLibrary"));
     if (!console) return 1;
     if (args.isSet("restarted")) engine.rootObjects().first()->setProperty("restarted", true);
-    if (args.isSet("open-vm"))
-        engine.rootObjects().first()->setProperty("selectedUuid", args.value("open-vm"));
+    if (args.isSet("open-vm")) engine.rootObjects().first()->setProperty("selectedUuid", args.value("open-vm"));
     return app.exec();
 }

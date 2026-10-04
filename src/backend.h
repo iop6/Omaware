@@ -14,10 +14,15 @@
 
 struct GraphicsSocket {
     explicit GraphicsSocket(int value, QString domainUuid = {}) : fd(value), uuid(std::move(domainUuid)) {}
-    ~GraphicsSocket() { if (fd >= 0) ::close(fd); }
+
+    ~GraphicsSocket() {
+        if (fd >= 0) ::close(fd);
+    }
+
     int fd;
     QString uuid;
 };
+
 using GraphicsHandle = std::shared_ptr<GraphicsSocket>;
 Q_DECLARE_METATYPE(GraphicsHandle)
 
@@ -25,11 +30,18 @@ class VmWorker : public QObject {
     Q_OBJECT
 public:
     explicit VmWorker(QString uri, bool storageOnly = false) : uri_(std::move(uri)), storageOnly_(storageOnly) {}
+
     // Only atomics cross threads directly; all libvirt work stays on the worker.
-    void setProvisionAccess(bool enabled) { if (bool(provisionEpoch_.load() & 1) != enabled) ++provisionEpoch_; }
+    void setProvisionAccess(bool enabled) {
+        if (bool(provisionEpoch_.load() & 1) != enabled) ++provisionEpoch_;
+    }
+
     quint64 provisionEpoch() const { return provisionEpoch_.load(); }
+
     void requestCheckpointCancel() { checkpointCancel_ = true; }
+
     void resetCheckpointCancel() { checkpointCancel_ = false; }
+
 public slots:
     void open();
     void refresh();
@@ -41,7 +53,8 @@ public slots:
     void createTest();
     void openConsole(QString uuid);
     void inspect(QString uuid, quint64 request, bool guestInfo);
-    void configureNetwork(QString uuid, QString mac, QString networkId, QString model, bool linkUp, bool remove, QString revision);
+    void configureNetwork(
+            QString uuid, QString mac, QString networkId, QString model, bool linkUp, bool remove, QString revision);
     // Adds an adapter on this network to each VM, live on running ones where the guest allows.
     void connectVms(QVariantList uuids, QString networkId);
     // Plugs or pulls virtual cables: [{uuid, mac}], live on running VMs and in the saved definition.
@@ -63,6 +76,7 @@ signals:
     void managed(QString operation, bool ok, QVariantMap result);
     void progress(QString message);
     void checkpointProgress(QVariantMap job);
+
 private:
     QString error(const QString &context);
     bool owned(virDomainPtr domain);
@@ -75,7 +89,7 @@ private:
     void finishSetup(const QString &uuid, int detail);
     void pressKeys(const QString &uuid, int times);
     bool changeNetwork(const QString &uuid, const QString &mac, const QString &networkId, const QString &model,
-        bool linkUp, bool remove, const QString &revision, QString &message);
+            bool linkUp, bool remove, const QString &revision, QString &message);
     bool detachLive(virDomainPtr domain, const QString &device, const QString &mac, QString &why);
     bool attachLive(virDomainPtr domain, const QString &device, QString &why);
     static int event(virConnectPtr, virDomainPtr, int, int, void *opaque);
@@ -112,20 +126,35 @@ class Backend : public QObject {
 public:
     explicit Backend(QString uri, QObject *parent = nullptr);
     ~Backend() override;
+
     QVariantList domains() const { return rows_; }
+
     QString message() const { return message_; }
+
     QString uri() const { return uri_; }
+
     bool connected() const { return connected_; }
+
     bool busy() const { return busy_; }
+
     QVariantMap details() const { return details_; }
+
     bool detailsBusy() const { return detailsBusy_; }
+
     QVariantMap management() const { return management_; }
+
     QVariantList activity() const { return activity_; }
+
     QString activityWarning() const { return activityWarning_; }
+
     Q_INVOKABLE void clearActivity();
+
     Q_INVOKABLE QVariantMap errorAdvice(QString message) const { return Diagnostics::advice(message); }
+
     Q_INVOKABLE void showRecovery(QString action, QString uuid = {}) { emit recoveryRequested(action, uuid); }
+
     QVariantMap checkpointJob() const { return checkpointJob_; }
+
     Q_INVOKABLE void refresh();
     Q_INVOKABLE void reconnect();
     Q_INVOKABLE void createTest();
@@ -135,13 +164,17 @@ public:
     Q_INVOKABLE void pauseForExit();
     Q_INVOKABLE void openConsole(QString uuid);
     Q_INVOKABLE void inspect(QString uuid, bool guestInfo = false);
-    Q_INVOKABLE bool configureNetwork(QString uuid, QString mac, QString networkId, QString model, bool linkUp, bool remove, QString revision);
+    Q_INVOKABLE bool configureNetwork(
+            QString uuid, QString mac, QString networkId, QString model, bool linkUp, bool remove, QString revision);
     Q_INVOKABLE bool connectVms(QVariantList uuids, QString networkId);
     // Never waits for the busy flag: pulling a cable is a safety action and is queued behind any running operation.
     Q_INVOKABLE void setLinks(QVariantList targets, bool up);
     Q_INVOKABLE bool request(QString operation, QVariantMap input = {});
+
     void setProvisionAccess(bool enabled) { worker_->setProvisionAccess(enabled); }
+
     quint64 provisionEpoch() const { return worker_->provisionEpoch(); }
+
     // Adds a line to the activity log without reporting it as the result of an operation (used for agent actions).
     void note(const QString &message, bool ok);
     Q_INVOKABLE void cancelRestart();
@@ -161,6 +194,7 @@ signals:
     void activityChanged();
     void recoveryRequested(QString action, QString uuid);
     void checkpointJobChanged();
+
 private:
     bool begin();
     QThread thread_;

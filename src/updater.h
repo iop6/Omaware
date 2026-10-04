@@ -14,8 +14,9 @@ class QNetworkReply;
 // checks it against the release's SHA256SUMS and every file inside against the package's own
 // checksums, and unpacks it. install() swaps the new folder in (keeping the old one as
 // "<folder>.previous"), and restart() starts the new version and asks this one to quit. The window
-// pauses running VMs before calling it, as it does whenever OmaWare closes. Development builds ("-dev") and installs that aren't a self-contained folder
-// (for example a build installed to ~/.local) are never changed; they only point to the releases page.
+// pauses running VMs before calling it, as it does whenever OmaWare closes. Development builds ("-dev") and installs
+// that aren't a self-contained folder (for example a build installed to ~/.local) are never changed; they only point to
+// the releases page.
 class Updater : public QObject {
     Q_OBJECT
     Q_PROPERTY(QString current READ current NOTIFY changed)
@@ -31,14 +32,23 @@ class Updater : public QObject {
     Q_PROPERTY(bool development READ development NOTIFY changed)
 public:
     explicit Updater(QObject *parent = nullptr);
+
     QString current() const { return current_; }
+
     QString latest() const { return latest_; }
+
     QString status() const { return status_; }
+
     QString error() const { return error_; }
+
     QString notes() const { return notes_; }
+
     QString page() const { return page_; }
+
     double progress() const { return progress_; }
+
     bool canInstall() const;
+
     // Development builds, and copies without a version (such as test runs), never update themselves.
     bool development() const { return current_.isEmpty() || current_.contains("-dev"); }
 
@@ -48,12 +58,22 @@ public:
     Q_INVOKABLE bool install();
     // Starts this app folder's launcher again and asks the running copy to quit.
     Q_INVOKABLE bool restart();
+
     Q_INVOKABLE bool installAndRestart() { return install() && restart(); }
 
     // For tests: another app folder, version or release feed.
-    void setAppDir(const QString &dir) { appDir_ = dir; emit changed(); }
-    void setCurrent(const QString &version) { current_ = version; emit changed(); }
+    void setAppDir(const QString &dir) {
+        appDir_ = dir;
+        emit changed();
+    }
+
+    void setCurrent(const QString &version) {
+        current_ = version;
+        emit changed();
+    }
+
     void setFeed(const QUrl &url) { feed_ = url; }
+
     QString appDir() const { return appDir_; }
 
     // The fields OmaWare needs from GitHub's "latest release" JSON.
@@ -69,7 +89,9 @@ signals:
 
 private:
     void set(const QString &status, const QString &error = {});
+
     QString stageRoot() const { return appDir_ + ".update"; }
+
     QString current_, latest_, status_ = "idle", error_, notes_, page_;
     QString package_, packageUrl_, sumsUrl_, staged_;
     double progress_ = 0;

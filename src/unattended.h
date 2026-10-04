@@ -13,13 +13,14 @@
 // installation media and starts the new system.
 namespace Unattended {
 struct Settings {
-    QString user, password, passwordHash;   // passwordHash: SHA-512 crypt for Linux; Windows needs the password
-    QString hostname;                        // already a valid host name
-    QString timezone;                        // IANA, e.g. "Europe/Berlin"
-    QString locale;                          // e.g. "en_US"
-    QString keyboard;                        // XKB layout, e.g. "us"
+    QString user, password, passwordHash; // passwordHash: SHA-512 crypt for Linux; Windows needs the password
+    QString hostname;                     // already a valid host name
+    QString timezone;                     // IANA, e.g. "Europe/Berlin"
+    QString locale;                       // e.g. "en_US"
+    QString keyboard;                     // XKB layout, e.g. "us"
     bool uefi = false;
 };
+
 // What an installation ISO supports, from its file name: "windows", "subiquity" or "".
 QString kindForFile(const QString &fileName);
 // windows: the image to install from a Windows ISO, and the product key it needs ("" for evaluation copies).

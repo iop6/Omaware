@@ -12,6 +12,7 @@ struct Plan {
     QStringList folders; // folders made when the VM was created, deleted only once empty
     QStringList kept;    // files the VM used that are not deleted
 };
+
 // xmls are every definition the VM has had (current, snapshots, pending changes), since a restore
 // keeps the disks and firmware variables it replaced. ownedTrees are OmaWare's per-VM folders; a
 // file inside one belongs to the VM. So does a file in the "<name>-<first 8 characters of the

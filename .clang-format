@@ -1,0 +1,22 @@
+# Formatting for OmaWare's C++ sources: run `clang-format -i src/*.cpp src/*.h tests/*.cpp`.
+BasedOnStyle: LLVM
+IndentWidth: 4
+ColumnLimit: 120
+AccessModifierOffset: -4
+AllowShortFunctionsOnASingleLine: Inline
+AllowShortIfStatementsOnASingleLine: WithoutElse
+AllowShortLoopsOnASingleLine: false
+AllowShortBlocksOnASingleLine: Never
+AllowShortLambdasOnASingleLine: Inline
+AllowShortCaseLabelsOnASingleLine: false
+AllowShortEnumsOnASingleLine: true
+BreakBeforeBraces: Attach
+PointerAlignment: Right
+FixNamespaceComments: false
+KeepEmptyLines:
+  AtStartOfBlock: false
+SortIncludes: Never
+IncludeBlocks: Preserve
+AlignAfterOpenBracket: DontAlign
+ContinuationIndentWidth: 8
+SeparateDefinitionBlocks: Always

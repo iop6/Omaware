@@ -11,7 +11,8 @@
 namespace Mcp {
 int run();
 // Answers one JSON-RPC message (empty for notifications). `forward` sends a tool call to the app.
-QByteArray respond(const QByteArray &message, const std::function<QVariantMap(const QString &tool, const QVariantMap &args)> &forward);
+QByteArray respond(const QByteArray &message,
+        const std::function<QVariantMap(const QString &tool, const QVariantMap &args)> &forward);
 // The tool list, for tests.
 QVariantList tools();
 // Strict validation for the management tools; legacy tools keep their existing validators.

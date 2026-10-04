@@ -3,6 +3,7 @@
 #include <QVariantList>
 #include <QString>
 #include <libvirt/libvirt.h>
+
 namespace NetworkCatalog {
 QVariantMap describe(const QString &xml);
 QVariantList discover(virConnectPtr session, QString &status);
