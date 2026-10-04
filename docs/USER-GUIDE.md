@@ -43,7 +43,7 @@ Running it again reinstalls; `--dry-run` shows what it would do. Updates come th
 
 ## The window at a glance
 
-- **Sidebar (left):** navigation (Virtual machines, Monitor, Command, Networks), the VM list, **Create VM**, **Settings**, **Help** and the theme button.
+- **Sidebar (left):** navigation (Virtual machines, Monitor, Networks, OS Shop), the VM list, **Create VM**, **Settings**, **Help** and the theme button.
 - **Workspace (right):** the selected VM with three tabs: **Console**, **Details** and **Snapshots**.
 - **Status line (bottom):** current mode, connection state, host CPU and memory, number of running VMs, snapshot jobs, the log and the time.
 
@@ -294,23 +294,23 @@ The MCP interface exposes focused VM-management tools rather than unrestricted c
 | `set_cable` | Plugs or pulls an existing adapter's virtual cable. |
 | `list_snapshots`, `snapshot_vm`, `restore_snapshot` | Lists, saves and restores snapshots. |
 | `propose_lab`, `lab_status`, `delete_lab` | Proposes, tracks and removes labs. |
-| `list_installation_media`, `list_owned_networks` | Lists safe local ISO/appliance filenames and owned network UUIDs/revisions without selecting an existing VM. |
-| `create_vm`, `create_network`, `authorize_network` | After approval, creates a stopped VM from local media (with its adapters in the order given, including the private internet connection), creates/starts an owned network, or authorizes its bridge through the existing administrator helper. |
-| `provision_status` | Observes a background provisioning request; repeated IDs do not create duplicate work during the same app session. |
+| `list_installation_media`, `list_owned_networks` | Lists the ISOs and appliances in your library, and the networks OmaWare created, for `create_vm` and `create_network`. |
+| `create_vm`, `create_network`, `authorize_network` | After you approve: creates a stopped VM from your media (with its adapters in the order given, including the private internet connection), creates and starts a network, or lets VMs join a network through the administrator helper. |
+| `provision_status` | Follows a `create_vm`, `create_network` or `authorize_network` request, which runs in the background. |
 
 The agent should use the server's `tools/list` response for exact arguments and limits. A successful MCP connection is not proof that OmaWare is reachable: the app must be open and agent access enabled before VM tools can work. A powered-on VM may still be booting; use readiness checks before sending commands. For a VM's screen, `screenshot` and `vm_input` are reliable while OmaWare shows the console; `virsh send-key` and `virsh screenshot` can hang then.
 
 Every change an agent asks for answers with the VM's or network's new `revision`, so it can make the next change without listing everything again. When something fails, the answer has a stable `code` the agent can act on (for example `helper_missing` or `authorization_cancelled` when allowing VMs on a network), and OmaWare's activity log has the full story.
 
-Local-media provisioning does not need the agent to click or focus the desktop. User approval still happens in OmaWare; administrator authorization may also be necessary. Imports copy an independent disk and leave VMs stopped, without changing existing VMs. Windows/FLARE installation and pfSense configuration remain guest tasks. Read [Background provisioning through MCP](MCP-PROVISIONING.md) for media staging, safe network selection, exact retry rules, dry-run limits and examples. The running installed release must support these development tools before they can be used.
+Creating VMs and networks from your own media doesn't need the agent to use the desktop: you approve each request in OmaWare (and your computer's password may be needed to let VMs join a network). Imported disks are independent copies, new VMs stay stopped, and existing VMs aren't changed. Installing and configuring the guest systems is up to the agent afterwards. [Creating VMs and networks through MCP](MCP-PROVISIONING.md) has the details: where media goes, choosing networks safely, retries and examples.
 
 #### Transfer and cloning limits
 
 File transfers use `${XDG_DATA_HOME:-~/.local/share}/omaware/transfers/` on the host. The folder must be owned by you and accessible only to you (mode `0700`); OmaWare creates it with those permissions on the first transfer attempt. Put upload files there yourself, and look there for downloads. The agent supplies a plain file name, never an arbitrary host path. Files are limited to 32 KiB each; existing destinations are protected unless replacement is explicitly requested and approved. Symlinks, hardlinks, special files and obvious credential-file names are refused. These checks do not identify every secret: only place files you intend to share in the transfer folder.
 
-The initial transfer implementation requires a Linux guest with `python3`, reachable through the QEMU guest agent or lab SSH. It is intended for small scripts and reports, not disk images or large archives.
+Transfers need a Linux guest with `python3`, reachable through the QEMU guest agent or lab SSH. They are meant for small scripts and reports, not disk images or large archives.
 
-`clone_vm` creates an independent full copy from an existing checkpoint ID (see `list_snapshots`). The new VM is stopped, with new identifiers and MAC addresses and disconnected network cables. Guest files, identities and credentials are copied: change those inside the clone before connecting it to a network. Linked clones are not supported.
+`clone_vm` creates an independent full copy from one of the VM's snapshots (its ID from `list_snapshots`). The new VM is stopped, with new identifiers and MAC addresses and disconnected network cables. Guest files, identities and credentials are copied: change those inside the clone before connecting it to a network. Linked clones are not supported.
 
 `wait_for_vm` can wait for running state, the guest-agent connection, lab SSH, or completed cloud-init, for up to 120 seconds per call. A timeout reports `ready: false`; it does not power off the VM or undo boot work.
 
