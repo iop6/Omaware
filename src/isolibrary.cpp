@@ -450,10 +450,6 @@ QVariantList IsoLibrary::sources() const {
 }
 
 // ---- Release lists ----------------------------------------------------------------------------
-QString IsoLibrary::ubuntuLtsCodename(const QByteArray &metaRelease) {
-    return ubuntuLtsCodenames(metaRelease).value(0);
-}
-
 QStringList IsoLibrary::ubuntuLtsCodenames(const QByteArray &metaRelease) {
     QStringList codenames;
     for (const auto &block :
@@ -494,10 +490,6 @@ IsoLibrary::Release IsoLibrary::fromChecksums(const QByteArray &sums, const QStr
         best = {version, file, base + file, hash, 0, algorithm};
     }
     return best;
-}
-
-IsoLibrary::Release IsoLibrary::fedora(const QByteArray &releasesJson, const QString &variant) {
-    return fedoraReleases(releasesJson, variant).value(0);
 }
 
 QList<IsoLibrary::Release> IsoLibrary::fedoraReleases(const QByteArray &releasesJson, const QString &variant) {
@@ -594,17 +586,6 @@ QStringList IsoLibrary::newestFolders(const QByteArray &listing, const QString &
     return picked;
 }
 
-QString IsoLibrary::newestFolder(const QByteArray &listing, const QString &pattern) {
-    QString best;
-    const QRegularExpression href(R"(href="([^"/?]+)/")"), wanted(pattern);
-    auto it = href.globalMatch(QString::fromUtf8(listing));
-    while (it.hasNext()) {
-        const auto name = it.next().captured(1);
-        if (wanted.match(name).hasMatch() && (best.isEmpty() || newer(name, best))) best = name;
-    }
-    return best;
-}
-
 void IsoLibrary::get(const QUrl &url, Done done, int attempt, const QList<QPair<QByteArray, QByteArray>> &headers) {
     QNetworkRequest request(url);
     request.setHeader(QNetworkRequest::UserAgentHeader, "OmaWare/" + QCoreApplication::applicationVersion());
@@ -682,209 +663,232 @@ std::function<void(const QList<IsoLibrary::Release> &, const QString &)> IsoLibr
     };
 }
 
+// Looks up a source's releases the way its publisher lists them (lookup["type"]), then settles the source.
 void IsoLibrary::resolve(Source &source) {
-    const auto id = source.id, type = source.lookup.value("type").toString();
-    const auto pattern = source.lookup.value("remote", source.pattern).toString();
-    const int count = std::max(1, source.lookup.value("count", 1).toInt());
     source.status = "checking";
     source.error.clear();
     ++pending_;
-    // Reads several checksum lists ({sums URL, base URL}) and settles the source with the newest match of each.
-    auto sumsMany = [this, id, pattern](const QList<QPair<QString, QString>> &lists) {
-        auto done = gather(id, lists.size());
-        for (const auto &list : lists) {
-            const auto base = list.second;
-            get(QUrl(list.first), [pattern, base, done](bool ok, const QByteArray &data, const QUrl &) {
-                const auto release = ok ? fromChecksums(data, pattern, base) : Release{};
-                done(release.file.isEmpty() ? QList<Release>{} : QList<Release>{release}, ok ? QString{} : offline);
-            });
-        }
+    using Lookup = void (IsoLibrary::*)(const Source &);
+    static const QHash<QString, Lookup> lookups{
+            {"ubuntu", &IsoLibrary::lookUpUbuntu},
+            {"sums", &IsoLibrary::lookUpChecksums},
+            {"folder", &IsoLibrary::lookUpFolders},
+            {"securityonion", &IsoLibrary::lookUpSecurityOnion},
+            {"caine", &IsoLibrary::lookUpCaine},
+            {"fedora", &IsoLibrary::lookUpFedora},
+            {"alpine", &IsoLibrary::lookUpAlpine},
+            {"popos", &IsoLibrary::lookUpPopOs},
+            {"nixos", &IsoLibrary::lookUpNixos},
+            {"microsoft", &IsoLibrary::lookUpWindows},
+            {"evaluation", &IsoLibrary::lookUpEvaluation},
     };
-    if (type == "ubuntu") {
-        const auto base = source.lookup.value("base").toString();
-        get(QUrl("https://changelogs.ubuntu.com/meta-release-lts"),
-                [this, id, base, count, sumsMany](bool ok, const QByteArray &data, const QUrl &) {
-                    const auto codenames = ok ? ubuntuLtsCodenames(data).mid(0, count) : QStringList{};
-                    if (codenames.isEmpty()) {
-                        settle(id, {}, ok ? "Ubuntu's release list couldn't be read." : offline);
-                        return;
-                    }
-                    QList<QPair<QString, QString>> lists;
-                    for (const auto &codename : codenames) {
-                        const auto folder = fill(base, {{"codename", codename}});
-                        lists.append({folder + "SHA256SUMS", folder});
-                    }
-                    sumsMany(lists);
-                });
-    } else if (type == "sums") {
-        QList<QPair<QString, QString>> lists{
-                {source.lookup.value("sums").toString(), source.lookup.value("base").toString()}};
-        for (const auto &more : source.lookup.value("more").toList()) {
-            const auto pair = more.toStringList();
-            if (pair.size() == 2) lists.append({pair[0], pair[1]});
-        }
-        sumsMany(lists);
-    } else if (type == "folder") {
-        const auto lookup = source.lookup;
-        get(QUrl(lookup.value("index").toString()), [this, id, lookup, count, sumsMany](
-                                                            bool ok, const QByteArray &data, const QUrl &) {
-            const auto versions = ok ? newestFolders(data, lookup.value("folder", R"(^[0-9]+(\.[0-9]+)*$)").toString(),
-                                               count, lookup.value("perMajor").toBool())
-                                     : QStringList{};
-            if (versions.isEmpty()) {
-                settle(id, {}, ok ? "The release list couldn't be read." : offline);
-                return;
-            }
-            QList<QPair<QString, QString>> lists;
-            for (const auto &version : versions) {
-                const QHash<QString, QString> values{{"version", version}, {"major", majorOf(version)}};
-                lists.append(
-                        {fill(lookup.value("sums").toString(), values), fill(lookup.value("base").toString(), values)});
-            }
-            sumsMany(lists);
+    if (const auto lookup = lookups.value(source.lookup.value("type").toString())) return (this->*lookup)(source);
+    settle(source.id, {}, "");
+}
+
+// Reads several checksum lists ({sums URL, base URL}) and settles the source with the newest match of each.
+void IsoLibrary::readChecksumLists(const Source &source, const QList<QPair<QString, QString>> &lists) {
+    const auto pattern = source.lookup.value("remote", source.pattern).toString();
+    auto done = gather(source.id, lists.size());
+    for (const auto &[sums, base] : lists) {
+        get(QUrl(sums), [pattern, base, done](bool ok, const QByteArray &data, const QUrl &) {
+            const auto release = ok ? fromChecksums(data, pattern, base) : Release{};
+            done(release.file.isEmpty() ? QList<Release>{} : QList<Release>{release}, ok ? QString{} : offline);
         });
-    } else if (type == "securityonion") {
-        get(QUrl("https://raw.githubusercontent.com/Security-Onion-Solutions/securityonion/3/main/"
-                 "DOWNLOAD_AND_VERIFY_ISO.md"),
-                [this, id](bool ok, const QByteArray &data, const QUrl &) {
-                    settle(id, ok ? securityOnion(data) : Release{},
-                            ok ? "Security Onion's download page couldn't be read." : offline);
-                });
-    } else if (type == "caine") {
-        // CAINE's download page links the ISO and a file with its SHA-256.
-        get(QUrl("https://www.caine-live.net/page5/page5.html"),
-                [this, id, sumsMany](bool ok, const QByteArray &data, const QUrl &) {
-                    const auto m = QRegularExpression(
-                            R"re(href="(https://www\.caine-live\.net/page5/(caine[0-9][0-9.]*\.iso)\.sha256\.txt)")re")
-                                           .match(QString::fromUtf8(data));
-                    if (!ok || !m.hasMatch()) {
-                        settle(id, {}, ok ? "CAINE's download page couldn't be read." : offline);
-                        return;
-                    }
-                    sumsMany({{m.captured(1), "https://www.caine-live.net/Downloads/"}});
-                });
-    } else if (type == "fedora") {
-        const auto variant = source.lookup.value("variant").toString();
-        get(QUrl("https://fedoraproject.org/releases.json"),
-                [this, id, variant, count](bool ok, const QByteArray &data, const QUrl &) {
-                    settleAll(id, ok ? fedoraReleases(data, variant).mid(0, std::max(count, 2)) : QList<Release>{},
-                            ok ? QString{} : offline);
-                });
-    } else if (type == "alpine") {
-        const auto flavor = source.lookup.value("flavor").toString(),
-                   base = QString("https://dl-cdn.alpinelinux.org/alpine/latest-stable/releases/x86_64/");
-        get(QUrl(base + "latest-releases.yaml"),
-                [this, id, flavor, base](bool ok, const QByteArray &data, const QUrl &) {
-                    settle(id, ok ? alpine(data, flavor, base) : Release{}, ok ? QString{} : offline);
-                });
-    } else if (type == "popos") {
-        // Pop!_OS follows Ubuntu LTS versions: try this LTS year, then the ones before.
-        const int year = QDate::currentDate().year() % 100;
-        QStringList versions;
-        for (int y = year - year % 2; y >= year - 4; y -= 2)
-            versions << QString("%1.04").arg(y, 2, 10, QChar('0'));
-        auto attempt = std::make_shared<std::function<void(int)>>();
-        *attempt = [this, id, versions, attempt](int i) {
-            if (i >= versions.size()) {
-                settle(id, {}, "Pop!_OS's release list couldn't be read.");
-                return;
-            }
-            get(QUrl("https://api.pop-os.org/builds/" + versions[i] + "/intel"), [this, id, i, attempt](bool ok,
-                                                                                         const QByteArray &data,
-                                                                                         const QUrl &) {
-                const auto o = QJsonDocument::fromJson(data).object();
-                const auto url = o["url"].toString(), sha = o["sha_sum"].toString().toLower();
-                if (!ok || !url.startsWith("https://") || !QRegularExpression("^[0-9a-f]{64}$").match(sha).hasMatch()) {
-                    (*attempt)(i + 1);
-                    return;
+    }
+}
+
+// Ubuntu and its flavours: the newest supported LTS releases, each with a SHA256SUMS in its folder.
+void IsoLibrary::lookUpUbuntu(const Source &source) {
+    const auto base = source.lookup.value("base").toString();
+    const int count = std::max(1, source.lookup.value("count", 1).toInt());
+    get(QUrl("https://changelogs.ubuntu.com/meta-release-lts"),
+            [this, source, base, count](bool ok, const QByteArray &data, const QUrl &) {
+                const auto codenames = ok ? ubuntuLtsCodenames(data).mid(0, count) : QStringList{};
+                if (codenames.isEmpty())
+                    return settle(source.id, {}, ok ? "Ubuntu's release list couldn't be read." : offline);
+                QList<QPair<QString, QString>> lists;
+                for (const auto &codename : codenames) {
+                    const auto folder = fill(base, {{"codename", codename}});
+                    lists.append({folder + "SHA256SUMS", folder});
                 }
-                settle(id, {o["version"].toString(), QUrl(url).fileName(), url, sha, qint64(o["size"].toDouble())}, {});
+                readChecksumLists(source, lists);
             });
-        };
-        (*attempt)(0);
-    } else if (type == "nixos") {
-        // NixOS releases are YY.05 and YY.11; the newest one with a published image wins.
-        const int year = QDate::currentDate().year() % 100;
-        QStringList versions;
-        for (int y = year; y >= year - 1; --y)
-            versions << QString("%1.11").arg(y, 2, 10, QChar('0')) << QString("%1.05").arg(y, 2, 10, QChar('0'));
-        auto attempt = std::make_shared<std::function<void(int)>>();
-        *attempt = [this, id, versions, attempt](int i) {
-            if (i >= versions.size()) {
-                settle(id, {}, "NixOS's release list couldn't be read.");
-                return;
-            }
-            const auto channel = "https://channels.nixos.org/nixos-" + versions[i] +
-                                 "/latest-nixos-graphical-x86_64-linux.iso.sha256";
-            get(QUrl(channel), [this, id, i, attempt](bool ok, const QByteArray &data, const QUrl &finalUrl) {
-                // The channel link redirects to the exact release; its checksum names the file next to it.
-                const auto m = QRegularExpression(R"(^([0-9a-f]{64})\s+(\S+\.iso)\s*$)")
-                                       .match(QString::fromUtf8(data).trimmed());
-                if (!ok || !m.hasMatch()) {
-                    (*attempt)(i + 1);
-                    return;
+}
+
+// A checksum list at a fixed address ("sums", files under "base"), plus any "more" lists for older releases.
+void IsoLibrary::lookUpChecksums(const Source &source) {
+    QList<QPair<QString, QString>> lists{
+            {source.lookup.value("sums").toString(), source.lookup.value("base").toString()}};
+    for (const auto &more : source.lookup.value("more").toList()) {
+        const auto pair = more.toStringList();
+        if (pair.size() == 2) lists.append({pair[0], pair[1]});
+    }
+    readChecksumLists(source, lists);
+}
+
+// One folder per version in a directory listing ("index"); the newest few each have a checksum list.
+void IsoLibrary::lookUpFolders(const Source &source) {
+    const auto lookup = source.lookup;
+    const int count = std::max(1, lookup.value("count", 1).toInt());
+    get(QUrl(lookup.value("index").toString()), [this, source, lookup, count](
+                                                        bool ok, const QByteArray &data, const QUrl &) {
+        const auto pattern = lookup.value("folder", R"(^[0-9]+(\.[0-9]+)*$)").toString();
+        const auto versions =
+                ok ? newestFolders(data, pattern, count, lookup.value("perMajor").toBool()) : QStringList{};
+        if (versions.isEmpty()) return settle(source.id, {}, ok ? "The release list couldn't be read." : offline);
+        QList<QPair<QString, QString>> lists;
+        for (const auto &version : versions) {
+            const QHash<QString, QString> values{{"version", version}, {"major", majorOf(version)}};
+            lists.append(
+                    {fill(lookup.value("sums").toString(), values), fill(lookup.value("base").toString(), values)});
+        }
+        readChecksumLists(source, lists);
+    });
+}
+
+void IsoLibrary::lookUpSecurityOnion(const Source &source) {
+    const auto id = source.id;
+    get(QUrl("https://raw.githubusercontent.com/Security-Onion-Solutions/securityonion/3/main/"
+             "DOWNLOAD_AND_VERIFY_ISO.md"),
+            [this, id](bool ok, const QByteArray &data, const QUrl &) {
+                settle(id, ok ? securityOnion(data) : Release{},
+                        ok ? "Security Onion's download page couldn't be read." : offline);
+            });
+}
+
+// CAINE's download page links the ISO and a file with its SHA-256.
+void IsoLibrary::lookUpCaine(const Source &source) {
+    get(QUrl("https://www.caine-live.net/page5/page5.html"),
+            [this, source](bool ok, const QByteArray &data, const QUrl &) {
+                const auto m = QRegularExpression(
+                        R"re(href="(https://www\.caine-live\.net/page5/(caine[0-9][0-9.]*\.iso)\.sha256\.txt)")re")
+                                       .match(QString::fromUtf8(data));
+                if (!ok || !m.hasMatch())
+                    return settle(source.id, {}, ok ? "CAINE's download page couldn't be read." : offline);
+                readChecksumLists(source, {{m.captured(1), "https://www.caine-live.net/Downloads/"}});
+            });
+}
+
+void IsoLibrary::lookUpFedora(const Source &source) {
+    const auto id = source.id, variant = source.lookup.value("variant").toString();
+    const int count = std::max(1, source.lookup.value("count", 1).toInt());
+    get(QUrl("https://fedoraproject.org/releases.json"),
+            [this, id, variant, count](bool ok, const QByteArray &data, const QUrl &) {
+                settleAll(id, ok ? fedoraReleases(data, variant).mid(0, std::max(count, 2)) : QList<Release>{},
+                        ok ? QString{} : offline);
+            });
+}
+
+void IsoLibrary::lookUpAlpine(const Source &source) {
+    const auto id = source.id, flavor = source.lookup.value("flavor").toString();
+    const QString base = "https://dl-cdn.alpinelinux.org/alpine/latest-stable/releases/x86_64/";
+    get(QUrl(base + "latest-releases.yaml"), [this, id, flavor, base](bool ok, const QByteArray &data, const QUrl &) {
+        settle(id, ok ? alpine(data, flavor, base) : Release{}, ok ? QString{} : offline);
+    });
+}
+
+// Pop!_OS follows Ubuntu LTS versions: try this LTS year, then the ones before.
+void IsoLibrary::lookUpPopOs(const Source &source) {
+    const auto id = source.id;
+    const int year = QDate::currentDate().year() % 100;
+    QStringList versions;
+    for (int y = year - year % 2; y >= year - 4; y -= 2)
+        versions << QString("%1.04").arg(y, 2, 10, QChar('0'));
+    auto attempt = std::make_shared<std::function<void(int)>>();
+    *attempt = [this, id, versions, attempt](int i) {
+        if (i >= versions.size()) return settle(id, {}, "Pop!_OS's release list couldn't be read.");
+        get(QUrl("https://api.pop-os.org/builds/" + versions[i] + "/intel"), [this, id, i, attempt](bool ok,
+                                                                                     const QByteArray &data,
+                                                                                     const QUrl &) {
+            const auto o = QJsonDocument::fromJson(data).object();
+            const auto url = o["url"].toString(), sha = o["sha_sum"].toString().toLower();
+            if (!ok || !url.startsWith("https://") || !QRegularExpression("^[0-9a-f]{64}$").match(sha).hasMatch())
+                return (*attempt)(i + 1);
+            settle(id, {o["version"].toString(), QUrl(url).fileName(), url, sha, qint64(o["size"].toDouble())}, {});
+        });
+    };
+    (*attempt)(0);
+}
+
+// NixOS releases are YY.05 and YY.11; the newest one with a published image wins.
+void IsoLibrary::lookUpNixos(const Source &source) {
+    const auto id = source.id;
+    const int year = QDate::currentDate().year() % 100;
+    QStringList versions;
+    for (int y = year; y >= year - 1; --y)
+        versions << QString("%1.11").arg(y, 2, 10, QChar('0')) << QString("%1.05").arg(y, 2, 10, QChar('0'));
+    auto attempt = std::make_shared<std::function<void(int)>>();
+    *attempt = [this, id, versions, attempt](int i) {
+        if (i >= versions.size()) return settle(id, {}, "NixOS's release list couldn't be read.");
+        const auto channel =
+                "https://channels.nixos.org/nixos-" + versions[i] + "/latest-nixos-graphical-x86_64-linux.iso.sha256";
+        get(QUrl(channel), [this, id, i, attempt](bool ok, const QByteArray &data, const QUrl &finalUrl) {
+            // The channel link redirects to the exact release; its checksum names the file next to it.
+            const auto m =
+                    QRegularExpression(R"(^([0-9a-f]{64})\s+(\S+\.iso)\s*$)").match(QString::fromUtf8(data).trimmed());
+            if (!ok || !m.hasMatch()) return (*attempt)(i + 1);
+            const auto base = finalUrl.toString().section('/', 0, -2) + "/";
+            const auto version = QRegularExpression(R"(^nixos-graphical-([0-9][0-9.]*)\.[0-9a-f]+-)")
+                                         .match(m.captured(2))
+                                         .captured(1);
+            settle(id, {version, m.captured(2), base + m.captured(2), m.captured(1), 0}, {});
+        });
+    };
+    (*attempt)(0);
+}
+
+// Windows 11 from Microsoft's download page: its version, edition, languages and their checksums.
+void IsoLibrary::lookUpWindows(const Source &source) {
+    const auto id = source.id;
+    get(QUrl(source.lookup.value("page").toString()),
+            [this, id](bool ok, const QByteArray &data, const QUrl &) {
+                const auto page = ok ? windowsPage(data) : QVariantMap{};
+                auto s = find(id);
+                if (!s || page.isEmpty())
+                    return settle(id, {}, ok ? "Microsoft's download page couldn't be read." : offline);
+                s->version = page["version"].toString();
+                s->edition = page["edition"].toString();
+                s->languages = page["languages"].toStringList();
+                s->hashes.clear();
+                const auto hashes = page["hashes"].toMap();
+                for (auto it = hashes.cbegin(); it != hashes.cend(); ++it)
+                    s->hashes[it.key()] = it.value().toString();
+                if (!s->languages.contains(s->language)) s->language = windowsLanguage(QLocale::system(), s->languages);
+                settle(id, windowsRelease(*s), {});
+            },
+            0, {{"User-Agent", browserAgent}});
+}
+
+// Windows evaluation copies from Microsoft's Evaluation Center: one link per language.
+void IsoLibrary::lookUpEvaluation(const Source &source) {
+    const auto id = source.id, product = source.lookup.value("product").toString();
+    get(QUrl(source.lookup.value("page").toString()),
+            [this, id, product](bool ok, const QByteArray &data, const QUrl &) {
+                const auto links = ok ? evaluationLinks(data, product) : QVariantMap{};
+                auto s = find(id);
+                if (!s || links.isEmpty())
+                    return settle(id, {}, ok ? "Microsoft's Evaluation Center page couldn't be read." : offline);
+                // Languages by name ("English (United States)"), the computer's own first if Microsoft offers it.
+                s->links.clear();
+                s->languages.clear();
+                QString mine;
+                const auto system = QLocale::system().bcp47Name();
+                for (auto it = links.cbegin(); it != links.cend(); ++it) {
+                    const QLocale locale(QString(it.key()).replace('-', '_'));
+                    const auto name = QLocale::languageToString(locale.language()) + " (" +
+                                      QLocale::territoryToString(locale.territory()) + ")";
+                    s->links[name] = it.value().toString();
+                    s->languages << name;
+                    if (it.key().compare(system, Qt::CaseInsensitive) == 0 ||
+                            (mine.isEmpty() && it.key().compare("en-US", Qt::CaseInsensitive) == 0))
+                        mine = name;
                 }
-                const auto base = finalUrl.toString().section('/', 0, -2) + "/";
-                const auto version = QRegularExpression(R"(^nixos-graphical-([0-9][0-9.]*)\.[0-9a-f]+-)")
-                                             .match(m.captured(2))
-                                             .captured(1);
-                settle(id, {version, m.captured(2), base + m.captured(2), m.captured(1), 0}, {});
-            });
-        };
-        (*attempt)(0);
-    } else if (type == "microsoft") {
-        get(QUrl(source.lookup.value("page").toString()),
-                [this, id](bool ok, const QByteArray &data, const QUrl &) {
-                    const auto page = ok ? windowsPage(data) : QVariantMap{};
-                    auto s = find(id);
-                    if (!s || page.isEmpty()) {
-                        settle(id, {}, ok ? "Microsoft's download page couldn't be read." : offline);
-                        return;
-                    }
-                    s->version = page["version"].toString();
-                    s->edition = page["edition"].toString();
-                    s->languages = page["languages"].toStringList();
-                    s->hashes.clear();
-                    const auto hashes = page["hashes"].toMap();
-                    for (auto it = hashes.cbegin(); it != hashes.cend(); ++it)
-                        s->hashes[it.key()] = it.value().toString();
-                    if (!s->languages.contains(s->language))
-                        s->language = windowsLanguage(QLocale::system(), s->languages);
-                    settle(id, windowsRelease(*s), {});
-                },
-                0, {{"User-Agent", browserAgent}});
-    } else if (type == "evaluation") {
-        const auto product = source.lookup.value("product").toString();
-        get(QUrl(source.lookup.value("page").toString()),
-                [this, id, product](bool ok, const QByteArray &data, const QUrl &) {
-                    const auto links = ok ? evaluationLinks(data, product) : QVariantMap{};
-                    auto s = find(id);
-                    if (!s || links.isEmpty()) {
-                        settle(id, {}, ok ? "Microsoft's Evaluation Center page couldn't be read." : offline);
-                        return;
-                    }
-                    // Languages by name ("English (United States)"), the computer's own first if Microsoft offers it.
-                    s->links.clear();
-                    s->languages.clear();
-                    QString mine;
-                    const auto system = QLocale::system().bcp47Name();
-                    for (auto it = links.cbegin(); it != links.cend(); ++it) {
-                        const QLocale locale(QString(it.key()).replace('-', '_'));
-                        const auto name = QLocale::languageToString(locale.language()) + " (" +
-                                          QLocale::territoryToString(locale.territory()) + ")";
-                        s->links[name] = it.value().toString();
-                        s->languages << name;
-                        if (it.key().compare(system, Qt::CaseInsensitive) == 0 ||
-                                (mine.isEmpty() && it.key().compare("en-US", Qt::CaseInsensitive) == 0))
-                            mine = name;
-                    }
-                    s->languages.sort();
-                    if (!s->languages.contains(s->language)) s->language = mine.isEmpty() ? s->languages.first() : mine;
-                    resolveEvaluation(id);
-                },
-                0, {{"User-Agent", browserAgent}});
-    } else
-        settle(id, {}, "");
+                s->languages.sort();
+                if (!s->languages.contains(s->language)) s->language = mine.isEmpty() ? s->languages.first() : mine;
+                resolveEvaluation(id);
+            },
+            0, {{"User-Agent", browserAgent}});
 }
 
 // The evaluation link redirects to the ISO itself; its name says the build, and its size is known up front.

@@ -113,13 +113,11 @@ public:
     };
 
     // Parsers for the publishers' release lists; empty on failure.
-    static QString ubuntuLtsCodename(const QByteArray &metaRelease);
-    // Every supported LTS codename, newest first.
+    // Every supported Ubuntu LTS codename, newest first.
     static QStringList ubuntuLtsCodenames(const QByteArray &metaRelease);
     // GNU ("hash  file") or BSD ("SHA256 (file) = hash") checksum lists, with SHA-256, SHA-512 or MD5
     // hashes (the strongest one wins when a file is listed more than once). The newest match.
     static Release fromChecksums(const QByteArray &sums, const QString &pattern, const QString &base);
-    static Release fedora(const QByteArray &releasesJson, const QString &variant);
     // Every stable release of a Fedora variant, newest first.
     static QList<Release> fedoraReleases(const QByteArray &releasesJson, const QString &variant);
     // Security Onion's DOWNLOAD_AND_VERIFY_ISO.md: the ISO link and its SHA-256.
@@ -128,9 +126,8 @@ public:
     // label contains product (and isn't LTSC).
     static QVariantMap evaluationLinks(const QByteArray &html, const QString &product);
     static Release alpine(const QByteArray &latestReleasesYaml, const QString &flavor, const QString &base);
-    // The newest numeric folder in a web server's directory listing, e.g. "10.2" or "26.7".
-    static QString newestFolder(const QByteArray &listing, const QString &pattern = R"(^[0-9]+(\.[0-9]+)*$)");
-    // The newest count folders, or with perMajor the newest folder of each of the newest count major versions.
+    // The newest `count` version folders in a web server's directory listing ("10.2", "26.7"), or with
+    // perMajor the newest folder of each of the newest `count` major versions.
     static QStringList newestFolders(
             const QByteArray &listing, const QString &pattern, int count, bool perMajor = false);
     // Microsoft's Windows download page: {version ("26H2"), edition (product edition id), languages
@@ -223,6 +220,19 @@ private:
     void saveMeta();
     void downloadWindows(const QString &id);
     void resolve(Source &source);
+    // Release lookups by the source's lookup type (see resolve()).
+    void readChecksumLists(const Source &source, const QList<QPair<QString, QString>> &lists);
+    void lookUpUbuntu(const Source &source);
+    void lookUpChecksums(const Source &source);
+    void lookUpFolders(const Source &source);
+    void lookUpSecurityOnion(const Source &source);
+    void lookUpCaine(const Source &source);
+    void lookUpFedora(const Source &source);
+    void lookUpAlpine(const Source &source);
+    void lookUpPopOs(const Source &source);
+    void lookUpNixos(const Source &source);
+    void lookUpWindows(const Source &source);
+    void lookUpEvaluation(const Source &source);
     void settle(const QString &id, const Release &release, const QString &failure);
     void unpack(const QString &id, Job *job, const QString &packed);
     void request(const QString &id);

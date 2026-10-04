@@ -200,7 +200,7 @@ private slots:
         const QByteArray meta =
                 "Dist: jammy\nName: Jammy Jellyfish\nVersion: 22.04.5 LTS\nSupported: 1\n\nDist: noble\nName: Noble "
                 "Numbat\nVersion: 24.04.3 LTS\nSupported: 1\n\nDist: zesty\nSupported: 0\n";
-        QCOMPARE(IsoLibrary::ubuntuLtsCodename(meta), QString("noble"));
+        QCOMPARE(IsoLibrary::ubuntuLtsCodenames(meta), QStringList({"noble", "jammy"}));
         const QByteArray sums = QByteArray(64, 'a') + " *ubuntu-24.04.2-desktop-amd64.iso\n" + QByteArray(64, 'b') +
                                 " *ubuntu-24.04.10-desktop-amd64.iso\n" + QByteArray(64, 'c') +
                                 " *ubuntu-24.04.10-live-server-amd64.iso\n";
@@ -222,7 +222,7 @@ private slots:
                         entry("43 Beta", "x86_64", "https://x/beta.iso", 'e', "1"),
                         entry("43", "aarch64", "https://x/arm.iso", 'f', "1")})
                                     .toJson();
-        auto f = IsoLibrary::fedora(fedora, "Workstation");
+        auto f = IsoLibrary::fedoraReleases(fedora, "Workstation").value(0);
         QCOMPARE(f.version, QString("42"));
         QCOMPARE(f.file, QString("Fedora-Workstation-Live-42-1.1.x86_64.iso"));
         QCOMPARE(f.size, qint64(2400000000));
@@ -245,9 +245,9 @@ private slots:
         // Directory listings: the newest numeric folder, not the last one alphabetically.
         const QByteArray listing =
                 R"(<a href="9.8/">9.8/</a> <a href="10.2/">10.2/</a> <a href="10.10/">10.10/</a> <a href="Readme/">x</a> <a href="?C=N;O=D">)";
-        QCOMPARE(IsoLibrary::newestFolder(listing), QString("10.10"));
-        QCOMPARE(IsoLibrary::newestFolder("<a href=\"26.1.6/\"> <a href=\"26.7/\">", "^[0-9]+\\.[0-9]+$"),
-                QString("26.7"));
+        QCOMPARE(IsoLibrary::newestFolders(listing, "^[0-9]+(\\.[0-9]+)*$", 1), QStringList({"10.10"}));
+        QCOMPARE(IsoLibrary::newestFolders("<a href=\"26.1.6/\"> <a href=\"26.7/\">", "^[0-9]+\\.[0-9]+$", 1),
+                QStringList({"26.7"}));
         // Earlier versions: the newest few, or the newest of each major version (Rocky keeps "9" beside "9.6").
         QCOMPARE(IsoLibrary::newestFolders(listing, "^[0-9]+(\\.[0-9]+)*$", 2), QStringList({"10.10", "10.2"}));
         QCOMPARE(
