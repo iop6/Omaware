@@ -164,6 +164,9 @@ private:
     void provisioningTool(const QString &tool, const QVariantMap &args, Reply reply);
     QHash<QString, QVariantMap> provisioningStates_, provisioningRequests_;
     void managementTool(const QString &tool, const QVariantMap &vm, const QVariantMap &args, Reply reply);
+    void describeVm(const QString &tool, const QString &uuid, const QVariantMap &details, Reply reply);
+    void approveChange(const QString &tool, const QVariantMap &vm, const QVariantMap &args, const QVariantMap &details,
+            const QString &op, const QVariantMap &input, Reply reply);
     void manageNetwork(const QVariantMap &args, Reply reply);
     // get_media: the OS Shop's catalogue, and downloads from it after the user approves.
     void getMedia(const QVariantMap &args, Reply reply);

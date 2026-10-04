@@ -15,7 +15,6 @@ bool exists(const QString &name);
 // Saves (or replaces) a login. `store` says where the password went.
 bool save(const QString &name, const QString &user, const QString &password, QString &store, QString &error);
 bool password(const QString &name, QString &password, QString &error);
-bool remove(const QString &name);
 // A random password that is easy to read and type: four groups of letters and digits.
 QString generate();
 // Tests use a separate index and file, and never touch the real password store.

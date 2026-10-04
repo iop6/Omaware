@@ -15,6 +15,7 @@ QByteArray respond(const QByteArray &message,
         const std::function<QVariantMap(const QString &tool, const QVariantMap &args)> &forward);
 // The tool list, for tests.
 QVariantList tools();
-// Strict validation for the management tools; legacy tools keep their existing validators.
+// Checks a tool call's arguments against its schema: types, required and unknown arguments. Only for the
+// management and provisioning tools; the older tools check their own arguments.
 bool validateManagementArguments(const QString &tool, const QVariantMap &args, QString &error);
 }

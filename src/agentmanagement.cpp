@@ -53,187 +53,192 @@ QVariantList localIsos() {
         if (f.isReadable()) out.append(QVariantMap{{"name", f.fileName()}, {"bytes", f.size()}});
     return out;
 }
+
+// The worker operation (`op`) and its input for a VM change an agent asked for, checked against the VM's current
+// details. Returns the failure to reply with, or nothing when the request is valid.
+QVariantMap prepareChange(
+        const QString &tool, const QVariantMap &args, const QVariantMap &details, QString &op, QVariantMap &input) {
+    if (tool == "update_vm_resources") {
+        if ((!args.contains("cpus") && !args.contains("memory_mib")) ||
+                (args.contains("cpus") && !integer(args, "cpus", 1, 256)) ||
+                (args.contains("memory_mib") && !integer(args, "memory_mib", 256, 1048576)))
+            return failure("Supply integer cpus (1–256) and/or memory_mib (256–1048576).", "invalid_argument");
+        op = "hardware.save";
+        input["cpus"] = args.value("cpus", details["vcpus"]);
+        input["memoryMiB"] = args.value("memory_mib", details["currentMemoryMiB"]);
+    } else if (tool == "manage_iso") {
+        if (args["action"] != "attach" && args["action"] != "eject")
+            return failure("action must be list, attach or eject.", "invalid_argument");
+        op = "hardware.save";
+        input["iso"] = QString{};
+        if (args["action"] == "attach") {
+            bool found = false;
+            for (const auto &v : localIsos())
+                if (v.toMap()["name"] == args["iso"]) found = true;
+            if (!found) return failure("Choose an ISO name from manage_iso list.", "invalid_argument");
+            input["iso"] = Paths::isos() + "/" + args["iso"].toString();
+        }
+    } else if (tool == "manage_network_adapter") {
+        const auto action = args["action"].toString();
+        if (!QStringList{"add", "remove", "update"}.contains(action))
+            return failure("action must be list, add, remove or update.", "invalid_argument");
+        if (args.contains("restart_timeout_seconds") && !integer(args, "restart_timeout_seconds", 10, 300))
+            return failure("restart_timeout_seconds must be 10–300.", "invalid_argument");
+        QVariantMap nic;
+        for (const auto &v : details["interfaces"].toList())
+            if (v.toMap()["mac"].toString().compare(args["mac"].toString(), Qt::CaseInsensitive) == 0) nic = v.toMap();
+        if (action != "add" && nic.isEmpty()) return failure("Select an existing adapter by MAC.", "invalid_argument");
+        if (action == "add" && !args["mac"].toString().isEmpty())
+            return failure("New adapters receive an automatically generated MAC.", "invalid_argument");
+        op = "adapter.save";
+        input["mac"] = action == "add" ? QString{} : nic["mac"].toString();
+        input["networkId"] = args.value("network_id", nic["networkId"]);
+        input["model"] = args.value("model", nic.value("model", "virtio"));
+        input["linkUp"] = args.value("plugged", nic.value("linkUp", true));
+        input["remove"] = action == "remove";
+        if (action != "remove") {
+            bool found = false;
+            for (const auto &v : details["networkOptions"].toList())
+                if (v.toMap()["id"] == input["networkId"] && v.toMap()["available"].toBool()) found = true;
+            if (!found) return failure("Choose an available network_id from the adapter list.", "invalid_argument");
+        }
+    } else if (tool == "clone_vm") {
+        if (args.value("mode", "full") != "full")
+            return failure("Only independent full clones from an existing checkpoint are supported.", "unsupported");
+        if (!QRegularExpression("^[A-Za-z0-9][A-Za-z0-9_.-]{0,47}$").match(args["name"].toString()).hasMatch() ||
+                !QRegularExpression("^[0-9a-fA-F]{8}(-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}$")
+                        .match(args["snapshot"].toString())
+                        .hasMatch())
+            return failure("Supply a checkpoint id and a new VM name (1–48 letters, digits, dots, dashes).",
+                    "invalid_argument");
+        op = "snapshots.clone";
+        input["id"] = args["snapshot"];
+        input["name"] = args["name"];
+    }
+    return {};
+}
 }
 
+// vm_details, diagnose_vm, update_vm_resources, clone_vm, manage_iso and manage_network_adapter. Changes ask the
+// user first, unless a session grant covers them.
 void AgentBridge::managementTool(const QString &tool, const QVariantMap &vm, const QVariantMap &args, Reply reply) {
     const auto uuid = vm["uuid"].toString();
     if (tool == "manage_iso" && args["action"] == "list") return reply(success({{"items", localIsos()}}));
     callAgent("vm.details", {{"uuid", uuid}}, [this, tool, vm, uuid, args, reply](bool ok, const QVariantMap &details) {
         if (!ok) return reply(failure(details["message"].toString(), "operation_failed"));
-        auto view = publicDetails(details);
-        if (tool == "vm_details" || tool == "diagnose_vm") {
-            const bool ssh = !vmLab(uuid).isEmpty();
-            view["transports"] = QVariantMap{{"guest_agent_connected", details["agentConnected"]},
-                    {"lab_ssh_configured", ssh}, {"ssh_reachability_verified", false},
-                    {"transfer", "Linux guest with python3; guest agent or lab SSH"}};
-            view["capabilities"] = QVariantMap{{"clone_modes", QStringList{"full"}},
-                    {"clone_source", "existing independent checkpoint"}, {"transfer_max_bytes", AgentTransfer::limit},
-                    {"transfer_directory", Paths::root() + "/transfers"}};
-            view["restrictions"] = QStringList{"Owned, persistent, non-contained VMs only",
-                    "Hardware and ISO changes apply on next full start", "Adapter edits may apply live",
-                    "Mutations require approval in OmaWare",
-                    "No linked clones, host shell, arbitrary host paths, credentials or raw XML"};
-            if (tool == "diagnose_vm") {
-                QVariantList checks;
-                checks.append(QVariantMap{{"check", "running"}, {"ok", details["active"]}});
-                checks.append(QVariantMap{{"check", "guest_agent_connected"}, {"ok", details["agentConnected"]}});
-                checks.append(QVariantMap{
-                        {"check", "configuration_consistent"}, {"ok", !details["pendingConflict"].toBool()}});
-                view["checks"] = checks;
-                view["scope"] = "Configuration, guest-agent connection, address and local disk/filesystem metadata "
-                                "checks; no guest commands, raw logs, repairs or connectivity probes.";
-                // Hints need the VM's addresses, read on the agent's worker.
-                callAgent("vm.addresses", {{"uuid", uuid}},
-                        [this, details, view, reply](bool ok, const QVariantMap &r) mutable {
-                            view["hints"] = AgentDiagnosis::hints(details, ok ? r : QVariantMap{});
-                            reply(success(view));
-                        });
-                return;
-            }
-            reply(success(view));
-            return;
-        }
-        QString op;
-        QVariantMap input{{"uuid", uuid}, {"revision", details["revision"]}};
+        if (tool == "vm_details" || tool == "diagnose_vm") return describeVm(tool, uuid, details, reply);
         if (args.contains("revision") && args["revision"] != details["revision"])
             return reply(failure("The configuration changed; refresh vm_details.", "stale_revision"));
-        if (tool == "update_vm_resources") {
-            if ((!args.contains("cpus") && !args.contains("memory_mib")) ||
-                    (args.contains("cpus") && !integer(args, "cpus", 1, 256)) ||
-                    (args.contains("memory_mib") && !integer(args, "memory_mib", 256, 1048576)))
-                return reply(
-                        failure("Supply integer cpus (1–256) and/or memory_mib (256–1048576).", "invalid_argument"));
-            op = "hardware.save";
-            input["cpus"] = args.value("cpus", details["vcpus"]);
-            input["memoryMiB"] = args.value("memory_mib", details["currentMemoryMiB"]);
-        } else if (tool == "manage_iso") {
-            if (args["action"] != "attach" && args["action"] != "eject")
-                return reply(failure("action must be list, attach or eject.", "invalid_argument"));
-            op = "hardware.save";
-            input["iso"] = QString{};
-            if (args["action"] == "attach") {
-                bool found = false;
-                for (const auto &v : localIsos())
-                    if (v.toMap()["name"] == args["iso"]) found = true;
-                if (!found) return reply(failure("Choose an ISO name from manage_iso list.", "invalid_argument"));
-                input["iso"] = Paths::isos() + "/" + args["iso"].toString();
-            }
-        } else if (tool == "manage_network_adapter") {
-            if (args["action"] == "list") return reply(success(view));
-            const auto action = args["action"].toString();
-            if (!QStringList{"add", "remove", "update"}.contains(action))
-                return reply(failure("action must be list, add, remove or update.", "invalid_argument"));
-            if (args.contains("restart_timeout_seconds") && !integer(args, "restart_timeout_seconds", 10, 300))
-                return reply(failure("restart_timeout_seconds must be 10–300.", "invalid_argument"));
-            QVariantMap nic;
-            for (const auto &v : details["interfaces"].toList())
-                if (v.toMap()["mac"].toString().compare(args["mac"].toString(), Qt::CaseInsensitive) == 0)
-                    nic = v.toMap();
-            if (action != "add" && nic.isEmpty())
-                return reply(failure("Select an existing adapter by MAC.", "invalid_argument"));
-            if (action == "add" && !args["mac"].toString().isEmpty())
-                return reply(failure("New adapters receive an automatically generated MAC.", "invalid_argument"));
-            op = "adapter.save";
-            input["mac"] = action == "add" ? QString{} : nic["mac"].toString();
-            input["networkId"] = args.value("network_id", nic["networkId"]);
-            input["model"] = args.value("model", nic.value("model", "virtio"));
-            input["linkUp"] = args.value("plugged", nic.value("linkUp", true));
-            input["remove"] = action == "remove";
-            if (action != "remove") {
-                bool found = false;
-                for (const auto &v : details["networkOptions"].toList())
-                    if (v.toMap()["id"] == input["networkId"] && v.toMap()["available"].toBool()) found = true;
-                if (!found)
-                    return reply(failure("Choose an available network_id from the adapter list.", "invalid_argument"));
-            }
-        } else if (tool == "clone_vm") {
-            if (args.value("mode", "full") != "full")
-                return reply(failure(
-                        "Only independent full clones from an existing checkpoint are supported.", "unsupported"));
-            if (!QRegularExpression("^[A-Za-z0-9][A-Za-z0-9_.-]{0,47}$").match(args["name"].toString()).hasMatch() ||
-                    !QRegularExpression("^[0-9a-fA-F]{8}(-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}$")
-                            .match(args["snapshot"].toString())
-                            .hasMatch())
-                return reply(failure("Supply a checkpoint id and a new VM name (1–48 letters, digits, dots, dashes).",
-                        "invalid_argument"));
-            op = "snapshots.clone";
-            input["id"] = args["snapshot"];
-            input["name"] = args["name"];
-        }
-        const bool restart = tool == "manage_network_adapter" && args.value("apply", "live") == "restart_if_needed";
-        const int restartTimeout = args.value("restart_timeout_seconds", 120).toInt();
-        auto execute = [this, op, input, reply, vm, restart, restartTimeout](bool yes, const QString &by) {
-            if (!yes) return reply(failure("The user declined the operation.", "declined"));
-            note(op + (by == "session_grant" ? QString(": auto-approved by the session approval for ") +
-                                                       AgentGrants::label(AgentGrants::privateAdapters)
-                                             : QString(": approved VM management operation")));
-            // Every answer says who approved it, including after a restart.
-            Reply tagged = [reply, by](const QVariantMap &out) {
-                auto r = out;
-                auto result = r["result"].toMap();
-                result["approved_by"] = by;
-                r["result"] = result;
-                reply(r);
-            };
-            call(op, input, [this, reply = tagged, vm, restart, restartTimeout](bool ok, const QVariantMap &r) {
-                auto result = r;
-                result.remove("requestTag");
-                if (!ok) return reply(failure(r["message"].toString(), "operation_failed"));
-                if (result.contains("pending_change_count"))
-                    result["restart_needed"] = result["active"].toBool() && result["pending_change_count"].toInt() > 0;
-                if (restart && result["restart_needed"].toBool()) {
-                    restartForPending(vm, result, restartTimeout, reply);
-                    return;
-                }
-                if (restart) result["restart"] = QVariantMap{{"state", "not_needed"}};
-                reply(success(result));
-            });
-        };
-        if (op == "hardware.save") {
-            auto preview = input;
-            preview["dryRun"] = true;
-            call("hardware.save", preview, [this, args, vm, reply, execute](bool valid, const QVariantMap &r) {
-                if (!valid) return reply(failure(r["message"].toString(), "operation_failed"));
-                auto result = r;
-                result.remove("requestTag");
-                if (args.value("dry_run", false).toBool()) return reply(success(result));
-                ask("Change " + vm["short"].toString() + "?",
-                        "An AI agent requests these saved configuration changes (effective on next full start):\n" +
-                                QString::fromUtf8(QJsonDocument::fromVariant(r["changes"]).toJson()),
-                        "Save changes", [execute](bool yes) { execute(yes, "user"); });
-            });
-        } else {
-            QString effect = tool == "clone_vm" ? "\nCreates a stopped independent copy, with new MACs and "
-                                                  "disconnected cables. Guest identities and credentials are copied."
-                                                : "\nThis may interrupt the VM's network immediately; unsupported live "
-                                                  "edits remain pending.";
-            if (restart)
-                effect = QString("\nThis may interrupt the VM's network immediately. If the change can't be applied to "
-                                 "the running VM, OmaWare then restarts %1: it resumes it if paused, asks the guest to "
-                                 "shut down, waits up to %2 seconds and starts it again. It never forces power off.")
-                                 .arg(vm["short"].toString())
-                                 .arg(restartTimeout);
-            // Low-risk adapter changes the user allowed for this session skip the question; the worker still
-            // checks revision, ownership, availability and containment as for any change.
-            QString grantKind;
-            if (tool == "manage_network_adapter") {
-                QVariantMap target;
-                for (const auto &v : details["networkOptions"].toList())
-                    if (v.toMap()["id"] == input["networkId"]) target = v.toMap();
-                grantKind = AgentGrants::forAdapterChange(
-                        args["action"].toString(), args["action"] == "remove" ? QVariantMap{} : target);
-            }
-            if (granted(grantKind)) {
-                execute(true, "session_grant");
-                return;
-            }
-            ask(
-                    "Change " + vm["short"].toString() + "?",
-                    "An AI agent requests " + tool + ":\n" +
-                            QString::fromUtf8(QJsonDocument::fromVariant(args).toJson()) + effect,
-                    "Approve", [execute](bool yes) { execute(yes, "user"); }, grantKind);
-        }
+        if (tool == "manage_network_adapter" && args["action"] == "list") return reply(success(publicDetails(details)));
+        QString op;
+        QVariantMap input{{"uuid", uuid}, {"revision", details["revision"]}};
+        if (const auto problem = prepareChange(tool, args, details, op, input); !problem.isEmpty())
+            return reply(problem);
+        approveChange(tool, vm, args, details, op, input, reply);
     });
+}
+
+// vm_details and diagnose_vm: the VM's configuration as agents may see it, how OmaWare can reach its guest, and
+// for diagnose_vm a few checks and hints.
+void AgentBridge::describeVm(const QString &tool, const QString &uuid, const QVariantMap &details, Reply reply) {
+    auto view = publicDetails(details);
+    view["transports"] = QVariantMap{{"guest_agent_connected", details["agentConnected"]},
+            {"lab_ssh_configured", !vmLab(uuid).isEmpty()}, {"ssh_reachability_verified", false},
+            {"transfer", "Linux guest with python3; guest agent or lab SSH"}};
+    view["capabilities"] =
+            QVariantMap{{"clone_modes", QStringList{"full"}}, {"clone_source", "existing independent checkpoint"},
+                    {"transfer_max_bytes", AgentTransfer::limit}, {"transfer_directory", Paths::root() + "/transfers"}};
+    view["restrictions"] = QStringList{"Owned, persistent, non-contained VMs only",
+            "Hardware and ISO changes apply on next full start", "Adapter edits may apply live",
+            "Mutations require approval in OmaWare",
+            "No linked clones, host shell, arbitrary host paths, credentials or raw XML"};
+    if (tool != "diagnose_vm") return reply(success(view));
+    view["checks"] = QVariantList{QVariantMap{{"check", "running"}, {"ok", details["active"]}},
+            QVariantMap{{"check", "guest_agent_connected"}, {"ok", details["agentConnected"]}},
+            QVariantMap{{"check", "configuration_consistent"}, {"ok", !details["pendingConflict"].toBool()}}};
+    view["scope"] = "Configuration, guest-agent connection, address and local disk/filesystem metadata checks; no "
+                    "guest commands, raw logs, repairs or connectivity probes.";
+    // Hints need the VM's addresses, read on the agent's worker.
+    callAgent("vm.addresses", {{"uuid", uuid}}, [details, view, reply](bool ok, const QVariantMap &r) mutable {
+        view["hints"] = AgentDiagnosis::hints(details, ok ? r : QVariantMap{});
+        reply(success(view));
+    });
+}
+
+// Asks the user to approve a prepared change (hardware changes show what would change, from a dry run), then
+// runs it. manage_network_adapter with apply "restart_if_needed" also restarts the VM when the change can't
+// be applied live.
+void AgentBridge::approveChange(const QString &tool, const QVariantMap &vm, const QVariantMap &args,
+        const QVariantMap &details, const QString &op, const QVariantMap &input, Reply reply) {
+    const bool restart = tool == "manage_network_adapter" && args.value("apply", "live") == "restart_if_needed";
+    const int restartTimeout = args.value("restart_timeout_seconds", 120).toInt();
+    auto execute = [this, op, input, reply, vm, restart, restartTimeout](bool yes, const QString &by) {
+        if (!yes) return reply(failure("The user declined the operation.", "declined"));
+        note(op + (by == "session_grant" ? QString(": auto-approved by the session approval for ") +
+                                                   AgentGrants::label(AgentGrants::privateAdapters)
+                                         : QString(": approved VM management operation")));
+        // Every answer says who approved it, including after a restart.
+        Reply tagged = [reply, by](const QVariantMap &out) {
+            auto r = out;
+            auto result = r["result"].toMap();
+            result["approved_by"] = by;
+            r["result"] = result;
+            reply(r);
+        };
+        call(op, input, [this, reply = tagged, vm, restart, restartTimeout](bool ok, const QVariantMap &r) {
+            auto result = r;
+            result.remove("requestTag");
+            if (!ok) return reply(failure(r["message"].toString(), "operation_failed"));
+            if (result.contains("pending_change_count"))
+                result["restart_needed"] = result["active"].toBool() && result["pending_change_count"].toInt() > 0;
+            if (restart && result["restart_needed"].toBool())
+                return restartForPending(vm, result, restartTimeout, reply);
+            if (restart) result["restart"] = QVariantMap{{"state", "not_needed"}};
+            reply(success(result));
+        });
+    };
+    if (op == "hardware.save") {
+        auto preview = input;
+        preview["dryRun"] = true;
+        call("hardware.save", preview, [this, args, vm, reply, execute](bool valid, const QVariantMap &r) {
+            if (!valid) return reply(failure(r["message"].toString(), "operation_failed"));
+            auto result = r;
+            result.remove("requestTag");
+            if (args.value("dry_run", false).toBool()) return reply(success(result));
+            ask("Change " + vm["short"].toString() + "?",
+                    "An AI agent requests these saved configuration changes (effective on next full start):\n" +
+                            QString::fromUtf8(QJsonDocument::fromVariant(r["changes"]).toJson()),
+                    "Save changes", [execute](bool yes) { execute(yes, "user"); });
+        });
+        return;
+    }
+    QString effect = tool == "clone_vm"
+                             ? "\nCreates a stopped independent copy, with new MACs and disconnected cables. "
+                               "Guest identities and credentials are copied."
+                             : "\nThis may interrupt the VM's network immediately; unsupported live edits "
+                               "remain pending.";
+    if (restart)
+        effect = QString("\nThis may interrupt the VM's network immediately. If the change can't be applied to the "
+                         "running VM, OmaWare then restarts %1: it resumes it if paused, asks the guest to shut down, "
+                         "waits up to %2 seconds and starts it again. It never forces power off.")
+                         .arg(vm["short"].toString())
+                         .arg(restartTimeout);
+    // Low-risk adapter changes the user allowed for this session skip the question; the worker still checks
+    // revision, ownership, availability and containment as for any change.
+    QString grantKind;
+    if (tool == "manage_network_adapter") {
+        QVariantMap target;
+        for (const auto &v : details["networkOptions"].toList())
+            if (v.toMap()["id"] == input["networkId"]) target = v.toMap();
+        grantKind = AgentGrants::forAdapterChange(
+                args["action"].toString(), args["action"] == "remove" ? QVariantMap{} : target);
+    }
+    if (granted(grantKind)) return execute(true, "session_grant");
+    ask(
+            "Change " + vm["short"].toString() + "?",
+            "An AI agent requests " + tool + ":\n" + QString::fromUtf8(QJsonDocument::fromVariant(args).toJson()) +
+                    effect,
+            "Approve", [execute](bool yes) { execute(yes, "user"); }, grantKind);
 }
 
 void AgentBridge::waitForVm(const QVariantMap &vm, const QVariantMap &args, Reply reply) {

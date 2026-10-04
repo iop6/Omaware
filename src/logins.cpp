@@ -184,14 +184,6 @@ struct Keyring {
         return true;
     }
 
-    void erase(const QString &name) {
-        for (const auto &item : items(name)) {
-            auto reply = QDBusInterface(service, item.path(), "org.freedesktop.Secret.Item", bus).call("Delete");
-            if (reply.type() == QDBusMessage::ReplyMessage && !reply.arguments().isEmpty())
-                runPrompt(reply.arguments().at(0).value<QDBusObjectPath>());
-        }
-    }
-
     ~Keyring() {
         if (!session.path().isEmpty())
             QDBusInterface(service, session.path(), "org.freedesktop.Secret.Session", bus).call("Close");
@@ -273,19 +265,6 @@ bool Logins::password(const QString &name, QString &password, QString &error) {
         return false;
     }
     return true;
-}
-
-bool Logins::remove(const QString &name) {
-    auto index = readJson(indexPath());
-    const auto entry = index.take(name).toMap();
-    if (entry.isEmpty()) return false;
-    if (entry["store"] == "keyring") {
-        Keyring keyring;
-        if (keyring.open()) keyring.erase(name);
-    }
-    auto secrets = readJson(privatePath());
-    if (secrets.remove(name)) writeJson(privatePath(), secrets, true);
-    return writeJson(indexPath(), index, false);
 }
 
 QString Logins::generate() {

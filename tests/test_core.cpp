@@ -1745,9 +1745,8 @@ private slots:
                   (QFile::ReadGroup | QFile::ReadOther | QFile::ExeGroup | QFile::ExeOther)));
         QCOMPARE(Logins::list().size(), 1);
         QVERIFY(!Logins::save("x", "alex", "", store, error));
-        QVERIFY(Logins::remove("Web lab"));
-        QVERIFY(!Logins::exists("Web lab"));
-        QVERIFY(!Logins::password("Web lab", password, error));
+        QVERIFY(!Logins::exists("Elsewhere"));
+        QVERIFY(!Logins::password("Elsewhere", password, error));
         const auto generated = Logins::generate();
         QVERIFY(QRegularExpression("^[A-Za-z2-9]{4}(-[A-Za-z2-9]{4}){3}$").match(generated).hasMatch());
         QVERIFY(generated != Logins::generate());
