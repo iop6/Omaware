@@ -124,6 +124,10 @@ void Updater::check() {
     });
 }
 
+namespace {
+const QString incomplete = "The update package is incomplete, so it wasn't used.";
+}
+
 void Updater::download() {
     if (status_ != "available" && !(status_ == "error" && !latest_.isEmpty() && newer(latest_, current_))) return;
     if (!canInstall()) {
@@ -142,10 +146,7 @@ void Updater::download() {
     progress_ = 0;
     set("downloading");
     // First the checksum list, then the package itself.
-    QNetworkRequest sumsRequest{QUrl(sumsUrl_)};
-    sumsRequest.setHeader(QNetworkRequest::UserAgentHeader, "OmaWare/" + current_);
-    sumsRequest.setAttribute(QNetworkRequest::RedirectPolicyAttribute, QNetworkRequest::NoLessSafeRedirectPolicy);
-    auto sums = network_.get(sumsRequest);
+    auto sums = network_.get(request(QUrl(sumsUrl_)));
     connect(sums, &QNetworkReply::finished, this, [this, sums] {
         sums->deleteLater();
         QString expected;
@@ -153,96 +154,98 @@ void Updater::download() {
             const auto m = QRegularExpression(R"(^([0-9a-f]{64})\s+\*?(\S+)\s*$)").match(line.trimmed());
             if (m.hasMatch() && m.captured(2) == package_) expected = m.captured(1);
         }
-        if (sums->error() != QNetworkReply::NoError || expected.isEmpty()) {
-            QDir(stageRoot()).removeRecursively();
-            set("error", "The update's checksum couldn't be downloaded.");
-            return;
-        }
-        auto file = std::make_shared<QFile>(stageRoot() + "/" + package_);
-        auto hash = std::make_shared<QCryptographicHash>(QCryptographicHash::Sha256);
-        if (!file->open(QIODevice::WriteOnly)) {
-            set("error", "Couldn't save the update.");
-            return;
-        }
-        QNetworkRequest request{QUrl(packageUrl_)};
-        request.setHeader(QNetworkRequest::UserAgentHeader, "OmaWare/" + current_);
-        request.setAttribute(QNetworkRequest::RedirectPolicyAttribute, QNetworkRequest::NoLessSafeRedirectPolicy);
-        reply_ = network_.get(request);
-        auto reply = reply_.data();
-        connect(reply, &QNetworkReply::readyRead, this, [reply, file, hash] {
-            const auto data = reply->readAll();
-            hash->addData(data);
-            file->write(data);
-        });
-        connect(reply, &QNetworkReply::downloadProgress, this, [this](qint64 got, qint64 total) {
-            if (total > 0) {
-                progress_ = double(got) / total;
-                emit changed();
-            }
-        });
-        connect(reply, &QNetworkReply::finished, this, [this, reply, file, hash, expected] {
-            reply->deleteLater();
-            const auto rest = reply->readAll();
-            hash->addData(rest);
-            file->write(rest);
-            file->close();
-            if (reply->error() != QNetworkReply::NoError) {
-                QDir(stageRoot()).removeRecursively();
-                set("error", "The update couldn't be downloaded: " + reply->errorString());
-                return;
-            }
-            if (QString::fromLatin1(hash->result().toHex()) != expected) {
-                QDir(stageRoot()).removeRecursively();
-                set("error", "The update doesn't match its published checksum, so it was deleted.");
-                return;
-            }
-            // Unpack it beside the package, then check every file against the package's own checksums.
-            auto tar = new QProcess(this);
-            connect(tar, &QProcess::finished, this, [this, tar](int code, QProcess::ExitStatus status) {
-                tar->deleteLater();
-                QFile::remove(stageRoot() + "/" + package_);
-                const auto dirs = QDir(stageRoot()).entryList(QDir::Dirs | QDir::NoDotAndDotDot);
-                const auto dir = dirs.size() == 1 ? stageRoot() + "/" + dirs.first() : QString{};
-                if (status != QProcess::NormalExit || code != 0 || dir.isEmpty() ||
-                        !QFileInfo(dir + "/omaware").isExecutable() || !mismatches(dir).isEmpty()) {
-                    QDir(stageRoot()).removeRecursively();
-                    set("error", "The update package is incomplete, so it wasn't used.");
-                    return;
-                }
-                // Refuse anything that isn't a plain file or folder inside the package (symlinks may only point
-                // inside).
-                QDirIterator it(dir, QDir::AllEntries | QDir::NoDotAndDotDot | QDir::System | QDir::Hidden,
-                        QDirIterator::Subdirectories);
-                while (it.hasNext()) {
-                    const QFileInfo info(it.next());
-                    if (info.isSymLink() && !QFileInfo(info.symLinkTarget())
-                                                    .canonicalFilePath()
-                                                    .startsWith(QFileInfo(dir).canonicalFilePath() + "/")) {
-                        QDir(stageRoot()).removeRecursively();
-                        set("error", "The update package contains an unexpected link, so it wasn't used.");
-                        return;
-                    }
-                }
-                // Release packages carry their own VERSION, covered by their checksums; only older ones
-                // without it get one. Either way it is complete on disk before "ready": an update applied
-                // straight away restarts into this folder, and the launcher checks every file first.
-                if (!QFile::exists(dir + "/VERSION")) {
-                    QFile version(dir + "/VERSION");
-                    if (!version.open(QIODevice::WriteOnly) || version.write((latest_ + "\n").toUtf8()) < 0 ||
-                            !version.flush()) {
-                        QDir(stageRoot()).removeRecursively();
-                        set("error", "The update couldn't be prepared.");
-                        return;
-                    }
-                    version.close();
-                }
-                staged_ = dir;
-                progress_ = 1;
-                set("ready");
-            });
-            tar->start("tar", {"-xzf", stageRoot() + "/" + package_, "-C", stageRoot(), "--no-same-owner"});
-        });
+        if (sums->error() != QNetworkReply::NoError || expected.isEmpty())
+            return discard("The update's checksum couldn't be downloaded.");
+        downloadPackage(expected);
     });
+}
+
+QNetworkRequest Updater::request(const QUrl &url) const {
+    QNetworkRequest request(url);
+    request.setHeader(QNetworkRequest::UserAgentHeader, "OmaWare/" + current_);
+    request.setAttribute(QNetworkRequest::RedirectPolicyAttribute, QNetworkRequest::NoLessSafeRedirectPolicy);
+    return request;
+}
+
+void Updater::discard(const QString &error) {
+    QDir(stageRoot()).removeRecursively();
+    set("error", error);
+}
+
+// Downloads the package into the staging folder, hashing it on the way, and keeps it only if it matches the
+// published checksum.
+void Updater::downloadPackage(const QString &expected) {
+    auto file = std::make_shared<QFile>(stageRoot() + "/" + package_);
+    auto hash = std::make_shared<QCryptographicHash>(QCryptographicHash::Sha256);
+    if (!file->open(QIODevice::WriteOnly)) {
+        set("error", "Couldn't save the update.");
+        return;
+    }
+    reply_ = network_.get(request(QUrl(packageUrl_)));
+    auto reply = reply_.data();
+    connect(reply, &QNetworkReply::readyRead, this, [reply, file, hash] {
+        const auto data = reply->readAll();
+        hash->addData(data);
+        file->write(data);
+    });
+    connect(reply, &QNetworkReply::downloadProgress, this, [this](qint64 got, qint64 total) {
+        if (total > 0) {
+            progress_ = double(got) / total;
+            emit changed();
+        }
+    });
+    connect(reply, &QNetworkReply::finished, this, [this, reply, file, hash, expected] {
+        reply->deleteLater();
+        const auto rest = reply->readAll();
+        hash->addData(rest);
+        file->write(rest);
+        file->close();
+        if (reply->error() != QNetworkReply::NoError)
+            return discard("The update couldn't be downloaded: " + reply->errorString());
+        if (QString::fromLatin1(hash->result().toHex()) != expected)
+            return discard("The update doesn't match its published checksum, so it was deleted.");
+        unpack();
+    });
+}
+
+// Unpacks the package beside itself, then checks the result before offering it.
+void Updater::unpack() {
+    auto tar = new QProcess(this);
+    connect(tar, &QProcess::finished, this, [this, tar](int code, QProcess::ExitStatus status) {
+        tar->deleteLater();
+        QFile::remove(stageRoot() + "/" + package_);
+        const auto dirs = QDir(stageRoot()).entryList(QDir::Dirs | QDir::NoDotAndDotDot);
+        const auto dir = dirs.size() == 1 ? stageRoot() + "/" + dirs.first() : QString{};
+        if (status != QProcess::NormalExit || code != 0 || dir.isEmpty()) return discard(incomplete);
+        if (const auto problem = checkUnpacked(dir); !problem.isEmpty()) return discard(problem);
+        staged_ = dir;
+        progress_ = 1;
+        set("ready");
+    });
+    tar->start("tar", {"-xzf", stageRoot() + "/" + package_, "-C", stageRoot(), "--no-same-owner"});
+}
+
+// Why the unpacked package in `dir` can't be used, or empty when it can: every file must match the package's
+// own checksums, and links may only point inside it.
+QString Updater::checkUnpacked(const QString &dir) const {
+    if (!QFileInfo(dir + "/omaware").isExecutable() || !mismatches(dir).isEmpty()) return incomplete;
+    QDirIterator it(
+            dir, QDir::AllEntries | QDir::NoDotAndDotDot | QDir::System | QDir::Hidden, QDirIterator::Subdirectories);
+    const auto root = QFileInfo(dir).canonicalFilePath() + "/";
+    while (it.hasNext()) {
+        const QFileInfo info(it.next());
+        if (info.isSymLink() && !QFileInfo(info.symLinkTarget()).canonicalFilePath().startsWith(root))
+            return "The update package contains an unexpected link, so it wasn't used.";
+    }
+    // Release packages carry their own VERSION, covered by their checksums; only older ones without it get one.
+    // Either way it is complete on disk before "ready": an update applied straight away restarts into this
+    // folder, and the launcher checks every file first.
+    if (!QFile::exists(dir + "/VERSION")) {
+        QFile version(dir + "/VERSION");
+        if (!version.open(QIODevice::WriteOnly) || version.write((latest_ + "\n").toUtf8()) < 0 || !version.flush())
+            return "The update couldn't be prepared.";
+    }
+    return {};
 }
 
 bool Updater::install() {

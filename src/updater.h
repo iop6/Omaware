@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
 #include <QNetworkAccessManager>
+#include <QNetworkRequest>
 #include <QObject>
 #include <QPointer>
 #include <QUrl>
@@ -89,6 +90,12 @@ signals:
 
 private:
     void set(const QString &status, const QString &error = {});
+    // The stages of download(); discard() ends one with an error and removes what it staged.
+    QNetworkRequest request(const QUrl &url) const;
+    void discard(const QString &error);
+    void downloadPackage(const QString &expected);
+    void unpack();
+    QString checkUnpacked(const QString &dir) const;
 
     QString stageRoot() const { return appDir_ + ".update"; }
 
