@@ -20,7 +20,13 @@ class CloudImages : public QObject {
     Q_OBJECT
 public:
     explicit CloudImages(QObject *parent = nullptr);
-    struct Image { QString id, name, preset, file, url, hash; QCryptographicHash::Algorithm algorithm = QCryptographicHash::Sha256; QString version; };
+
+    struct Image {
+        QString id, name, preset, file, url, hash;
+        QCryptographicHash::Algorithm algorithm = QCryptographicHash::Sha256;
+        QString version;
+    };
+
     // Ids offered in plans: "ubuntu", "debian", "fedora".
     static QStringList ids();
     static QString folder();
@@ -32,11 +38,12 @@ public:
     QVariantMap progress() const;
     void cancelAll();
     // Parsers, public for tests.
-    static QVariantMap ubuntuLts(const QByteArray &metaRelease);   // {codename, version}
+    static QVariantMap ubuntuLts(const QByteArray &metaRelease); // {codename, version}
     static Image fedoraCloud(const QByteArray &releasesJson);
     static QString hashFor(const QByteArray &sums, const QString &file);
 signals:
     void changed();
+
 private:
     struct Job {
         Image image;
@@ -46,6 +53,7 @@ private:
         qint64 received = 0, total = 0;
         QList<std::function<void(bool, const QString &)>> waiting;
     };
+
     void resolve(const QString &id, std::function<void(const Image &, const QString &error)> done);
     void get(const QUrl &url, std::function<void(bool, const QByteArray &)> done);
     void download(const QString &id, const Image &image);

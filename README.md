@@ -4,7 +4,7 @@ OmaWare is a virtual machine manager for Linux desktops. It runs QEMU/KVM virtua
 
 ## Features
 
-- **Create VMs** from an ISO or an existing disk image, and change processors, memory, disks, boot order and network adapters.
+- **Create VMs** from an ISO or an existing disk image, and change processors, memory, disks, boot order and network adapters. **Set it up for me** installs Windows 11 or Ubuntu Server without questions.
 - **OS Shop:** official installers for 26 systems (Ubuntu, Mint, Fedora, Debian, Arch, Rocky, Alma, Kali, Parrot, Security Onion, OPNsense, Windows 11 and more) and a ready-made Kali VM, one click each, with earlier versions where publishers offer them, checked against the publisher's checksum (or clearly marked unverified), with update alerts.
 - **Built-in console** with fullscreen, a detachable window, clipboard sharing and display resizing.
 - **Snapshots** in a branching tree. Snapshots of a running VM include its memory, so going back resumes it exactly where it was, without rebooting.
@@ -35,13 +35,14 @@ The **download button** at the bottom of the sidebar checks GitHub for a new ver
 - OmaWare manages VMs in your own libvirt session (`qemu:///session`), which needs no root. It only changes VMs it created itself; other VMs are shown read-only.
 - Removing a VM never deletes its disk files.
 - Snapshots are stored on the same disk as the VM, so they don't replace backups.
-- Not supported yet: unattended OS installation, creating LAN bridges, port forwarding, device hotplug, backups, system-wide VMs, shared folders, audio and 3D graphics.
+- Not supported yet: creating LAN bridges, port forwarding, device hotplug, backups, system-wide VMs, shared folders, audio and 3D graphics.
 
 ## Documentation
 
 - [User guide](docs/USER-GUIDE.md): everything in the interface, step by step, including [AI agents and labs](docs/USER-GUIDE.md#ai-agents-and-labs).
 - [Networks](docs/NETWORKS.md): connection types, switches, the network map and containment.
-- [Development](docs/DEVELOPMENT.md): project layout, building, tests and how the code fits together.
+- [Development](docs/DEVELOPMENT.md): project layout, building, code style, tests and how the code fits together.
+- [Creating VMs and networks through MCP](docs/MCP-PROVISIONING.md): the reference for AI agents creating VMs and networks from local media.
 - [VNC compatibility](docs/VNC-COMPATIBILITY.md): why OmaWare ships a patched LibVNCClient.
 - [Security](SECURITY.md): how OmaWare protects you, the October 2026 review, and how to report a problem.
 - [Changelog](CHANGELOG.md) and [third-party software](THIRD_PARTY_NOTICES.md).

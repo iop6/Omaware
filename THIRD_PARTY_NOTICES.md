@@ -19,13 +19,18 @@ The modified file, `src/libvncclient/rfbclient.c`, credits Constantin Kaplinsky 
 
 | Project | License | How it's used |
 | --- | --- | --- |
-| [Qt 6](https://www.qt.io) (Core, Gui, Quick, QML, Quick Controls, XML, Network; Test for tests) | LGPL-3.0 or GPL-3.0 | The interface and application framework. Linked dynamically, unmodified. |
+| [Qt 6](https://www.qt.io) (Core, Gui, Quick, QML, Quick Controls, XML, Network, D-Bus; Test for tests) | LGPL-3.0 or GPL-3.0 | The interface and application framework. Linked dynamically, unmodified. |
 | [libvirt](https://libvirt.org) | LGPL-2.1-or-later | Manages VMs, snapshots, statistics and networks. Linked dynamically, unmodified, through its public API. |
-| [toml++](https://github.com/marzer/tomlplusplus) 3 | MIT | Reads the Omarchy theme file. Unmodified. License text below. |
+| [toml++](https://github.com/marzer/tomlplusplus) 3 | MIT | Reads the Omarchy theme file and lab files. Unmodified. License text below. |
+| [libarchive](https://libarchive.org) | BSD-2-Clause | Reads OVA appliances, compressed downloads and files from installation ISOs. Linked dynamically, unmodified. |
+| [zlib](https://zlib.net) | Zlib | Decompresses gzip-compressed appliance disks. Linked dynamically, unmodified. |
+| [libxcrypt](https://github.com/besser82/libxcrypt) | LGPL-2.1-or-later | Makes the SHA-512 password hashes for new VMs. Linked dynamically, unmodified. |
 | [QEMU](https://www.qemu.org) and `qemu-img` | GPL-2.0 (some files under other compatible licenses) | Runs the VMs (through libvirt) and converts and creates disk images. Run as separate programs, unmodified. |
 | [virt-install](https://github.com/virt-manager/virt-manager) with [libosinfo](https://libosinfo.org) | GPL-2.0-or-later / LGPL-2.1-or-later | Produces a VM definition with sensible defaults for the chosen OS (`virt-install --print-xml`). Run as a separate program, unmodified. |
 | UEFI firmware (OVMF / EDK II) | BSD-2-Clause-Patent | Firmware for UEFI VMs, loaded by QEMU. |
 | [swtpm](https://github.com/stefanberger/swtpm) (optional) | BSD-3-Clause | Emulates the TPM 2.0 that Windows 11 VMs need, started by libvirt. |
+| [OpenSSH](https://www.openssh.com) client | BSD-style | `ssh-keygen` makes lab keys and `ssh` runs commands in lab VMs. Run as separate programs, unmodified. |
+| [polkit](https://github.com/polkit-org/polkit) (`pkexec`) | LGPL-2.0-or-later | Asks for administrator authorization before the bridge helper runs. Run as a separate program, unmodified. |
 
 When distributing OmaWare together with any of these, include their license notices as shipped by your distribution.
 
@@ -33,7 +38,7 @@ When distributing OmaWare together with any of these, include their license noti
 
 These projects were read for ideas or compared as alternatives; none of their code is in OmaWare: virt-manager's interface, Quickemu, Cockpit Machines, spice-gtk, virt-viewer, CXX-Qt, KDE's KCommandBar and Omarchy's theme scripts.
 
-The ISO Shop's Windows download follows the sequence of requests that [Fido](https://github.com/pbatard/Fido) (GPL-3.0) and [Mido](https://github.com/ElliotKillick/Mido) / Quickemu's quickget (MIT) send to Microsoft's download service; OmaWare implements it independently in C++.
+The OS Shop's Windows download follows the sequence of requests that [Fido](https://github.com/pbatard/Fido) (GPL-3.0) and [Mido](https://github.com/ElliotKillick/Mido) / Quickemu's quickget (MIT) send to Microsoft's download service; OmaWare implements it independently in C++.
 
 ## toml++ license
 

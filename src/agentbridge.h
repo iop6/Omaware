@@ -17,20 +17,10 @@ class QLocalSocket;
 class QTimer;
 class VmWorker;
 
-// Lets AI agents use OmaWare, when the user turns it on in Settings. Agents connect through
-// `omaware mcp`, which speaks the Model Context Protocol and forwards each tool call to this bridge
-// over a socket only this user can open (in the user's private runtime folder).
-//
-// What an agent can do, and the safety rules:
-// - Only VMs and networks OmaWare created; other VMs aren't shown.
-// - Building a lab is a proposal: OmaWare shows the plan and the user approves it and sets the VMs'
-//   password in OmaWare itself. The agent never sees passwords; type_login types one for it.
-// - Deleting a lab and restoring a snapshot ask the user first.
-// - The agent sees and uses a VM's screen (screenshots, mouse, keyboard); OmaWare shows a banner while
-//   it does, with a button that turns agent access off.
-// - Every action goes into OmaWare's activity log.
 // What diagnose_vm suggests from a VM's details (vm.details) and addresses (vm.addresses): {code, hint}.
-namespace AgentDiagnosis { QVariantList hints(const QVariantMap &details, const QVariantMap &addresses); }
+namespace AgentDiagnosis {
+QVariantList hints(const QVariantMap &details, const QVariantMap &addresses);
+}
 
 // Session grants: kinds of low-risk change the user can let an agent make without asking each time.
 namespace AgentGrants {
@@ -43,6 +33,21 @@ QString label(const QString &kind);
 QString forAdapterChange(const QString &action, const QVariantMap &target);
 }
 
+// Lets AI agents use OmaWare, when the user turns it on in Settings. Agents connect through
+// `omaware mcp`, which speaks the Model Context Protocol and forwards each tool call to this bridge
+// over a socket only this user can open (in the user's private runtime folder).
+//
+// What an agent can do, and the safety rules:
+// - Only VMs and networks OmaWare created; other VMs aren't shown.
+// - Building a lab is a proposal: OmaWare shows the plan and the user approves it and sets the VMs'
+//   password in OmaWare itself. The agent never sees passwords; type_login types one for it.
+// - Deleting a lab and restoring a snapshot ask the user first.
+// - The agent sees and uses a VM's screen (screenshots, mouse, keyboard); OmaWare shows a banner while
+//   it does, with a button that turns agent access off.
+// - Every action goes into OmaWare's activity log.
+//
+// The tools are in agentbridge.cpp (labs, screens, commands, snapshots), agentmanagement.cpp (VM settings,
+// networks, readiness, file transfers, media) and agentprovisionbridge.cpp (local VM and network creation).
 class AgentBridge : public QObject {
     Q_OBJECT
     Q_PROPERTY(bool enabled READ enabled WRITE setEnabled NOTIFY changed)
@@ -65,6 +70,7 @@ class AgentBridge : public QObject {
 public:
     explicit AgentBridge(Backend *backend, QObject *parent = nullptr);
     ~AgentBridge() override;
+
     bool enabled() const { return enabled_; }
     void setEnabled(bool on);
     QString error() const { return error_; }
@@ -80,7 +86,8 @@ public:
 
     // The user's answers.
     // Build the proposed lab. With `saved`, use the saved login `login`; otherwise save user/password under it.
-    Q_INVOKABLE void approve(const QString &id, const QString &login, const QString &user, const QString &password, bool saved);
+    Q_INVOKABLE void approve(
+            const QString &id, const QString &login, const QString &user, const QString &password, bool saved);
     Q_INVOKABLE void decline(const QString &id);
     // With `grant`, a yes also allows the question's kind of change for the rest of the session.
     Q_INVOKABLE void answer(const QString &id, bool yes, bool grant = false);
@@ -92,7 +99,6 @@ public:
     Q_INVOKABLE QString revealPassword(const QString &login) const;
     // Lab files (TOML): a built lab's plan to share or keep, and one to review and build, even with
     // agent access off. importLab returns what's wrong, or "" once the plan is shown for review.
-    Q_INVOKABLE QString labFile(const QString &slug) const;
     Q_INVOKABLE bool exportLab(const QString &slug, const QString &url) const;
     Q_INVOKABLE QString importLab(const QString &url);
     // Turns agent access off and disconnects agents (the banner's Stop button).
@@ -126,7 +132,8 @@ private:
     // Finds an OmaWare VM by name or UUID; empty with an error otherwise.
     QVariantMap findVm(const QString &name, QString &error) const;
     // `grantKind` (see AgentGrants) lets the user allow this kind of change for the session in the same dialog.
-    void ask(const QString &title, const QString &text, const QString &action, std::function<void(bool)> then, const QString &grantKind = {});
+    void ask(const QString &title, const QString &text, const QString &action, std::function<void(bool)> then,
+            const QString &grantKind = {});
     bool granted(const QString &kind) const;
     void note(const QString &message, bool ok = true);
     void markScreen(const QString &uuid, const QString &name);
@@ -147,10 +154,19 @@ private:
     void runOverSsh(const QVariantMap &vm, const QVariantMap &lab, const QString &command, int timeout, Reply reply);
     void deleteLab(const QString &slug, Reply reply);
     void setCable(const QVariantMap &vm, const QVariantMap &args, Reply reply);
+    void vmPower(const QVariantMap &vm, const QVariantMap &args, Reply reply);
+    void listSnapshots(const QVariantMap &vm, const QVariantMap &args, Reply reply);
+    void snapshotVm(const QVariantMap &vm, const QVariantMap &args, Reply reply);
+    void restoreSnapshot(const QVariantMap &vm, const QVariantMap &args, Reply reply);
+    // A built lab's plan as a lab file, or empty.
+    QString labFile(const QString &slug) const;
 
     void provisioningTool(const QString &tool, const QVariantMap &args, Reply reply);
     QHash<QString, QVariantMap> provisioningStates_, provisioningRequests_;
     void managementTool(const QString &tool, const QVariantMap &vm, const QVariantMap &args, Reply reply);
+    void describeVm(const QString &tool, const QString &uuid, const QVariantMap &details, Reply reply);
+    void approveChange(const QString &tool, const QVariantMap &vm, const QVariantMap &args, const QVariantMap &details,
+            const QString &op, const QVariantMap &input, Reply reply);
     void manageNetwork(const QVariantMap &args, Reply reply);
     // get_media: the OS Shop's catalogue, and downloads from it after the user approves.
     void getMedia(const QVariantMap &args, Reply reply);
@@ -173,24 +189,31 @@ private:
     VmWorker *agentWorker_;
     QLocalServer server_;
     bool enabled_ = false;
-    bool localLab_ = false;   // the waiting proposal or running build came from a lab file
+    bool localLab_ = false; // the waiting proposal or running build came from a lab file
     QString error_;
     QVariantMap screen_, proposal_, confirmation_, build_;
     QHash<QString, Done> pending_;
     QHash<QString, std::function<void(bool)>> questions_;
-    QHash<QString, QString> questionGrants_;   // question id -> the kind of change it can grant
-    QHash<QString, qint64> grants_;            // kind -> expiry (ms since epoch)
+    QHash<QString, QString> questionGrants_; // question id -> the kind of change it can grant
+    QHash<QString, qint64> grants_;          // kind -> expiry (ms since epoch)
     QHash<QString, QSize> screenSizes_;
     QVariantMap host_;
     // Lab states by id, and lab_status calls waiting for a change.
     QHash<QString, QVariantMap> states_;
-    struct Waiter { QString lab, token; std::function<void()> answer; };
+
+    struct Waiter {
+        QString lab, token;
+        std::function<void()> answer;
+    };
+
     QList<Waiter> statusWaiters_;
+
     // The build in progress.
     struct Build {
         QString id, login, user, passwordHash;
         QVariantMap plan, lab;
         QList<QPair<QString, std::function<void(std::function<void(const QString &)>)>>> steps;
     } current_;
+
     QList<std::function<void()>> linkWaiters_;
 };

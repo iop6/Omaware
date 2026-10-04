@@ -17,10 +17,11 @@ namespace LabPlan {
 struct Host {
     int cpus = 1;
     qint64 memoryMiB = 0;
-    QStringList images;         // operating systems available as cloud images, e.g. "ubuntu"
-    QStringList existingVms;    // names already used by VMs (without the omaware- prefix)
+    QStringList images;      // operating systems available as cloud images, e.g. "ubuntu"
+    QStringList existingVms; // names already used by VMs (without the omaware- prefix)
     QStringList existingNetworks;
 };
+
 // {ok, problems: [..], warnings: [..], plan: normalized}. The normalized plan has
 // networks [{name, fullName, type, mode, subnet, prefix}] and
 // vms [{name, os, cpus, memoryMiB, diskGiB, nics: [{network, ip}], packages, setup, internet, reachable}].

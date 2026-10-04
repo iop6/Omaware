@@ -2,6 +2,7 @@
 
 - [Project layout](#project-layout)
 - [Building](#building)
+- [Code style](#code-style)
 - [Tests](#tests)
 - [How it fits together](#how-it-fits-together)
 - [Rules the code relies on](#rules-the-code-relies-on)
@@ -12,37 +13,41 @@
 
 | Path | Contents |
 | --- | --- |
-| `src/main.cpp` | Starts the app: sets up Qt, the backend and the theme, loads the QML. |
-| `src/backend.*` | The facade QML talks to (`backend`), and `VmWorker`, which does all libvirt work on background threads: inventory, power actions, console connection, details, network edits, cables. |
-| `src/management.cpp` | `VmWorker::manage`: VM creation, hardware edits, disks, statistics and host network management. |
-| `src/checkpoints.*`, `src/snapshothistory.*` | Snapshots: capture, restore, revert, delete, verify, clone, storage cleanup and recovery after interruptions. |
-| `src/configuration.*` | Editing saved VM definitions safely, and the record of pending changes for running VMs. |
+| `src/main.cpp` | Starts the app (or `omaware mcp`): sets up Qt, the backend and the theme, and loads the QML. |
+| `src/backend.*` | `Backend`, the facade QML talks to (`backend`), and `VmWorker`, which does all libvirt work on background threads: inventory, power actions, the console connection, details, network adapters and cables. |
+| `src/management.*` | `VmWorker::manage()`: one operation per request ("vm.create", "networks.save", "snapshots.restore", …), its dispatch and statistics. The operations are grouped in `hostnetworks.cpp` (host networks and the bridge helper), `vmcreation.cpp` (new VMs and their unattended first boots), `vmoperations.cpp` (details, power, deletion, screen, input, guest agent, containment, hardware edits) and `snapshotoperations.cpp`. |
+| `src/virtutil.*` | Small libvirt helpers: owning handles (`Domain`, `Network`, …), `Virt::lastError()` and domain XML. |
+| `src/checkpoints.*`, `src/snapshothistory.*` | Snapshots ("checkpoints" in the code): capture, restore, delete, verify, clone, storage cleanup and recovery after interruptions; and the snapshot tree. |
+| `src/configuration.*` | Editing saved VM definitions safely, and `PendingChanges`, the record of changes waiting for a running VM's next start. |
 | `src/domainconfig.*` | Reading a libvirt domain XML into plain values for the UI, and writing network adapter XML. |
-| `src/networkcatalog.*` | Finding the networks and bridges a VM can use, and whether each is usable. |
+| `src/networkcatalog.*` | The networks and bridges a VM can use, and whether each is usable. |
 | `src/containment.*` | The containment policy and live isolation checks. |
+| `src/bridgehelper.*` | Finding and trusting the root helper (`scripts/authorize-bridge.py`), and explaining its failures. |
 | `src/console.*` | The VNC console: a Qt Quick item plus a worker thread running LibVNCClient. |
-| `src/theme.*` | Reads and watches the Omarchy palette; provides the colors QML uses. |
+| `src/theme.*` | Reads and watches the Omarchy palette, and the built-in themes; provides the colors QML uses. |
 | `src/workspace.*` | Per-user settings (`preferences` in QML). |
-| `src/diagnostics.*` | Activity history and friendlier explanations of libvirt errors. |
+| `src/diagnostics.*` | The activity log and friendlier explanations of libvirt errors. |
 | `src/paths.*` | Where VMs and ISOs live (`~/.local/share/omaware/{vms,isos}`), with fallback to folders from earlier versions. |
-| `src/unattended.*` | "Set it up for me": which ISOs can install without questions, and their answers (Windows `autounattend.xml`, Ubuntu autoinstall on `cidata`). `VmWorker::start` boots Ubuntu's installer kernel with `autoinstall` the first time; `VmWorker::finishSetup` removes the answers and media once the guest powers off. |
-| `src/isolibrary.*` | The media library behind the OS Shop (`qml/IsoShopPage.qml` with `ShopCard`, `ShopDetails` and `ShopChip`): each source's lookup of the publisher's releases (newest first, a few earlier versions), checked downloads (SHA-256, SHA-512, MD5, or none for sources marked unverified), unpacking (`.bz2` ISOs, `.7z` VM images into `appliances/`) and kept files (`IsoLibrary` in QML). Agents reach it through `get_media` (`src/agentmanagement.cpp`). |
+| `src/vmfiles.*` | What deleting a VM removes, and what it keeps because another VM uses it. |
+| `src/applianceimport.*` | Importing OVA, VMDK and qcow2 appliances: checked, private staging and conversion to an independent disk. |
+| `src/unattended.*` | "Set it up for me": which ISOs can install without questions, and their answers (Windows `autounattend.xml`, Ubuntu autoinstall). |
+| `src/isolibrary.*` | The media library behind the OS Shop (`IsoLibrary` in QML): each publisher's release lookup, checked downloads, unpacking and kept files. |
 | `src/instance.*` | Keeps OmaWare to one running copy per user. |
 | `src/updater.*` | Built-in updates from GitHub Releases (`Updater` in QML): checks, verified download, in-place swap and restart. |
-| `src/agentbridge.*` | AI agent access (`agent` in QML): the local socket `omaware mcp` talks to, the tools, the user's approvals, and building and deleting labs. |
-| `src/agentmanagement.cpp`, `src/agenttransfer.*` | Agent VM-management tools, bounded readiness checks, and confined file transfers. |
-| `src/agentprovision.*`, `src/agentprovisionbridge.cpp` | Local media schemas, confined read-only preparation, worker envelope validation and approval/status orchestration; mutations reuse `management.cpp`. |
+| `src/agentbridge.*` | AI agent access (`agent` in QML): the local socket `omaware mcp` talks to, the tools, the user's approvals, and building and deleting labs. Tool results are built with `agentreply.h`. |
+| `src/agentmanagement.cpp`, `src/agenttransfer.*` | Agent tools for VM settings, networks, readiness and media, and confined file transfers. |
+| `src/agentprovision.*`, `src/agentprovisionbridge.cpp` | Agents creating VMs and networks from local media ([MCP-PROVISIONING.md](MCP-PROVISIONING.md)): media checks, request records and approval. The work itself reuses `VmWorker::manage()`. |
 | `src/mcpserver.*` | `omaware mcp`: the Model Context Protocol server agents start; describes the tools and forwards calls to the app. |
-| `src/labplan.*`, `src/labs.*` | Checking an agent's lab plan; the record of built labs (their networks, VMs, login name and SSH keys). |
+| `src/labplan.*`, `src/labs.*`, `src/labfile.*` | Checking a lab plan; the record of built labs (networks, VMs, login name, SSH keys); lab files (TOML). |
 | `src/cloudimages.*`, `src/cloudseed.*` | Cloud images for labs (download and checksum), and the cloud-init setup disc (an ISO 9660 image OmaWare writes itself). |
 | `src/logins.*` | Saved VM logins: passwords in the Secret Service over D-Bus, or a private file without one. |
 | `src/guestinput.*` | Text and key names to keyboard codes for typing into a VM. |
-| `packaging/` | Desktop entry, and the release package's `omaware.sh` launcher and `install.sh`. |
-| `qml/` | The interface. `Main.qml` is the window; `App*.qml` are shared controls. |
+| `qml/` | The interface. `Main.qml` is the window; `App*.qml` are shared controls; the pages, dialogs and menus each have their own file (`NetworkTopology.qml` and `Topology*.qml` are the network map). |
+| `packaging/` | Desktop entry, the release package's `omaware.sh` launcher and `install.sh`, and `get-omaware.sh` (the one-command install). |
 | `scripts/build.sh` | Builds everything, including the patched LibVNCClient. |
-| `scripts/authorize-bridge.py` | The root helper that lets session VMs use a switch's bridge. |
+| `scripts/authorize-bridge.py` | The root helper that lets session VMs use a network's bridge. |
 | `patches/` | The two LibVNCClient fixes, their upstream license and a regression test ([why](VNC-COMPATIBILITY.md)). |
-| `tests/` | Unit tests (`test_core.cpp`) and the VM test suites (`integration.cpp`, `test_management.cpp`). |
+| `tests/` | Unit tests and the VM test suites (see [Tests](#tests)). |
 
 ## Building
 
@@ -54,15 +59,28 @@ scripts/build.sh                  # builds into build/ and runs the unit tests
 scripts/build.sh --install        # also installs to ~/.local
 ```
 
-Requirements: CMake 3.22+, a C++20 compiler, Qt 6.4+ (Base including Network, D-Bus, Declarative, Wayland), libvirt, libcrypt (libxcrypt), toml++, libarchive (OVA import), zlib, libjpeg and libpng. At runtime OmaWare also uses QEMU/KVM, `qemu-img`, `virt-install` with libosinfo, UEFI firmware (OVMF) for UEFI VMs, `swtpm` for TPMs, and the OpenSSH client (`ssh`, `ssh-keygen`) for labs.
+Requirements: CMake 3.22+, a C++20 compiler, Qt 6.4+ (Base including Network, D-Bus, Declarative, Wayland), libvirt, libcrypt (libxcrypt), toml++, libarchive, zlib, libjpeg and libpng. At runtime OmaWare also uses QEMU/KVM, `qemu-img`, `virt-install` with libosinfo, UEFI firmware (OVMF) for UEFI VMs, `swtpm` for TPMs, and the OpenSSH client (`ssh`, `ssh-keygen`) for labs.
 
 The script downloads LibVNCServer 0.9.15 at a pinned commit, checks both patch files against their SHA-256 hashes, and builds the library privately in `build/deps`. It is installed next to OmaWare and found through RPATH; nothing is installed system-wide. Always build OmaWare against the headers of the exact LibVNCClient it loads: libraries built with and without SASL have different struct layouts, and mixing them corrupts memory.
 
+## Code style
+
+C++ is formatted with clang-format (`.clang-format`) and QML with qmlformat from Qt 6.8 or later (`.qmlformat.ini`):
+
+```sh
+clang-format -i src/*.cpp src/*.h tests/*.cpp tests/*.c
+qmlformat -i qml/*.qml
+```
+
+qmlformat crashes on a function declared inside a property binding; write such helpers as function expressions (`const place = function(…) {…}`).
+
+In `VmWorker::manage()`'s handlers, a request ends with exactly one `request.done()` or `request.fail()`; a failed check returns straight away with `return request.fail("…")`. The agent tools do the same with `return reply(failure("…"))`.
+
 ## Tests
 
-- **Unit tests** (`ctest`, run by `build.sh`): palette handling, domain XML, network rules, snapshot bookkeeping and the patched VNC decoder. Safe anywhere.
+- **Unit tests** (`ctest`, run by `build.sh`): palette handling, domain XML, network rules, snapshot bookkeeping, the OS Shop's release-list parsers, the network map and the patched VNC decoder. Safe anywhere.
 - **Appliance tests** (also in `ctest`): `appliance-import` builds real OVA/VMDK/qcow2 fixtures with `qemu-img` and libarchive in temporary folders and checks conversion (plain and gzip-compressed VMDKs, manifests, a hostile extent name), every rejection rule, private staging and library routing. `appliance-ui` loads the actual QML with an inert backend to check that OVA/qcow2 media go to disk import and ISOs stay installers. Neither touches libvirt. To convert a real downloaded appliance as well (read-only on the original), run `OMAWARE_REAL_APPLIANCE=/path/to/x.ova OMAWARE_REAL_APPLIANCE_WORK=/dir/with/space build/app/omaware-appliance-tests realAppliance`.
-- **Agent regression tests** (also in `ctest`): `agent-tools` checks MCP schemas and transfer validation; `agent-transfer-io` exercises binary transfers, overwrite protection and unsafe-file rejection in temporary directories, including the generated guest-side Python commands. `mcp-stdio` starts the actual MCP executable with a fresh runtime directory, checking protocol responses without connecting to a running OmaWare app. These tests do not contact or change any VM and need Python 3.
+- **Agent tests** (also in `ctest`, need Python 3): `agent-tools` checks the MCP schemas, argument types and bounds, media confinement (symlinks, hard links, FIFOs, empty files), storage confinement, changed media and revisions, request preparation and replay, the ordered `networks` list, the failure codes, the trusted-helper check and the install commands, all without libvirt; with `qemu-img` installed it also copies a small raw image through a pinned descriptor while its file name is replaced. `agent-transfer-io` exercises binary transfers, overwrite protection and unsafe-file rejection, including the generated guest-side Python commands. `mcp-stdio` starts the real MCP executable with a fresh runtime folder and checks its protocol answers without a running OmaWare. None of them reads real media or changes VMs or networks.
 - **VM test suites** (`omaware-integration`, `omaware-management-tests`): create, start, pause, snapshot and power off real VMs in your libvirt session, and render the interface offscreen. **Run them only on a disposable machine or VM.** The management tests' pause-on-close test pauses every running OmaWare VM in the session. They refuse to start without an explicit opt-in:
 
   ```sh
@@ -72,11 +90,11 @@ The script downloads LibVNCServer 0.9.15 at a pinned commit, checks both patch f
   build/app/omaware-management-tests
   ```
 
-  Set `OMAWARE_SCREENSHOT_DIR` to save screenshots of each UI state. Test VMs are named `omaware-test-*`, and cleanup removes only the exact VMs and files a test created. If a run is killed, check leftover VMs by UUID before removing anything.
+  Set `OMAWARE_SCREENSHOT_DIR` to save screenshots of each UI state. Test VMs are named `omaware-test-*` (and `omaware-ui-*`, `omaware-net-*`), and cleanup removes only the exact VMs and files a test created. If a run is killed, check leftover VMs by UUID before removing anything: a VM left running makes the pause-on-close test count one too many.
 - **Guest agent tests** need a tiny test kernel and initrd: copy the host kernel to `artifacts/agent-fixture/vmlinuz`, then run `tests/fixtures/make-agent-initrd.py`. The memory-snapshot and filesystem-flush tests fail without them.
-- **Online ISO checks** (not run by default, as they contact the publishers): `OMAWARE_ONLINE_TEST=1 build/app/omaware-tests isoLatestOnline` looks up every source and checks each ISO link exists; add `OMAWARE_ONLINE_DOWNLOAD=1` to also download and verify the Debian ISO (about 750 MB), or a list of source ids such as `alpine,opnsense`.
-- **Agent and lab tests** (`agentLabOnScreen`, `agentLabNetwork` in the management tests) build real labs from a cloud image. Give them an Ubuntu cloud image so they don't download one: `OMAWARE_CLOUD_IMAGE=/path/to/noble-server-cloudimg-amd64.img`. The first logs in on the VM's screen with the saved login and shuts it down with sudo; the second creates a private network, so it needs `OMAWARE_AGENT_NETWORK_TEST=1` and a machine where the installed bridge helper may run without a password prompt (a polkit rule for `org.freedesktop.policykit.exec` on that program).
+- **Agent and lab tests** in the management suite: `agentLabOnScreen` and `agentLabNetwork` build real labs from a cloud image. Give them an Ubuntu cloud image so they don't download one: `OMAWARE_CLOUD_IMAGE=/path/to/noble-server-cloudimg-amd64.img`. The first logs in on the VM's screen with the saved login and shuts it down with sudo; the second creates a private network, so it needs `OMAWARE_AGENT_NETWORK_TEST=1` and a machine where the installed bridge helper may run without a password prompt (a polkit rule for `org.freedesktop.policykit.exec` on that program). `agentRestartTimesOut` checks that a guest ignoring shutdown is resumed, never forced off, and reported as `restart_timed_out`. `agentNetworkWorkflow` needs `OMAWARE_ALLOWED_NETWORK_UUID`, a network whose bridge that machine's `bridge.conf` already allows; it covers `set_autostart`, stale revisions, `create_vm` with `["user", <network>]` (definition, PCI and guest NIC order), `run_command` on an isolated network, guest-agent addresses, `in_use` refusals, `restart_if_needed` on a paused VM and `delete`.
 - **Host network test:** creates, edits, starts, stops and removes system networks, authorizes a bridge and boots a VM on it. It changes host networking and the bridge helper's permissions, so it needs a further opt-in, `OMAWARE_NETWORK_ADMIN_TEST=1`, and the installed helper.
+- **Online OS Shop check** (not run by default, as it contacts the publishers): `OMAWARE_ONLINE_TEST=1 build/app/omaware-tests isoLatestOnline` looks up every source and checks each ISO link exists; add `OMAWARE_ONLINE_DOWNLOAD=1` to also download and verify the Debian ISO (about 750 MB), or a list of source ids such as `alpine,opnsense`.
 
 ## How it fits together
 
@@ -107,7 +125,7 @@ agent ── stdio (MCP JSON-RPC) ── omaware mcp ── local socket, one JS
 
 - The socket lives in the user's runtime folder (`$XDG_RUNTIME_DIR/omaware-agent.sock`, user-only), and exists only while agent access is on.
 - Agents only reach OmaWare-owned VMs (`findVm`), never get passwords (lab logins are typed by `type_login`), and can't restore or delete without a yes in `agent.confirmation`.
-- Local media provisioning dispatches before `findVm`: six tools list confined media/owned networks, create stopped VMs and owned networks, authorize bridges and observe asynchronous request status. See [MCP-PROVISIONING.md](MCP-PROVISIONING.md) for arguments, dry-run scope and session-local replay limits. Mutations return before waiting for approval or disk copying; worker input is rebuilt from the exact approved arguments and fresh identities. An atomic access epoch prevents a revoked request from reviving after re-enabling agents. No new host shell/XML/path facility is exposed.
+- Creating VMs and networks from local media ([MCP-PROVISIONING.md](MCP-PROVISIONING.md)) answers at once and runs in the background. The worker rebuilds its input from the exact approved arguments and checks the media and networks again before each change. Turning agent access off changes a counter that revokes every earlier approval, so a request can't come back to life when access is turned on again.
 - A lab build is a list of steps run one after another (images, networks, one helper call for all bridges, keys, VMs, snapshots, start); each finished step is saved in the lab's record so a failed build can still be deleted.
 - Lab VMs get a cloud-init seed with the user, a SHA-512 password hash, OmaWare's lab SSH key and a host key OmaWare made, which it pins in the lab's `known_hosts` under the VM's UUID.
 
@@ -137,6 +155,8 @@ The main branch is always the next version in development, and its builds end in
 2. In `CMakeLists.txt`, set the version and remove the `-dev` suffix.
 3. Build and run the tests.
 4. Commit, then tag: `git tag -a vX.Y.Z -m "OmaWare X.Y.Z"`.
-5. Build the app package (the binary, its private LibVNCClient in `lib/`, `vnc-abi-test`, `packaging/omaware.sh`, `packaging/install.sh` and `scripts/authorize-bridge.py` as `authorize-bridge`, the license files and a `SHA256SUMS` covering all of them except `VERSION`) and the source archive, and publish them with a `SHA256SUMS` for both as the GitHub Release for the tag. Also attach `packaging/get-omaware.sh` as `install.sh`: the one-command install in the README downloads it from the latest release. The built-in updater looks for `omaware-X.Y.Z-linux-x86_64.tar.gz` and `SHA256SUMS` there. `VERSION` stays out of the package's own `SHA256SUMS` because updaters up to 1.8.0 rewrite it while restarting, and the launcher would then refuse the new version.
+5. Build the app package and the source archive, and publish them as the GitHub Release for the tag, with a `SHA256SUMS` for both:
+   - The package `omaware-X.Y.Z-linux-x86_64.tar.gz` holds the binary, its private LibVNCClient in `lib/`, `vnc-abi-test`, `packaging/omaware.sh`, `packaging/install.sh`, `scripts/authorize-bridge.py` as `authorize-bridge`, the license files, `VERSION`, and a `SHA256SUMS` covering everything except `VERSION`. (Updaters up to 1.8.0 rewrite `VERSION` while restarting, and the launcher would then refuse the new version.)
+   - Also attach `packaging/get-omaware.sh` as `install.sh`: the one-command install in the README downloads it from the latest release.
+   - The built-in updater looks for the package and its `SHA256SUMS` in the latest release.
 6. Set `CMakeLists.txt` to the next version, put the `-dev` suffix back, and commit.
-

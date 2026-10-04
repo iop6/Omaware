@@ -3,14 +3,17 @@
 #include <QVariantMap>
 #include <QVariantList>
 #include <QHash>
+
 namespace AgentProvision {
 QVariantList tools();
 bool handles(const QString &tool);
 bool validate(const QString &tool, const QVariantMap &args, QString &error);
 // Read-only preparation. Network inventory must come from the current backend.
-bool prepare(const QString &tool, const QVariantMap &args, const QVariantList &networks, QVariantMap &input, QString &error);
+bool prepare(
+        const QString &tool, const QVariantMap &args, const QVariantList &networks, QVariantMap &input, QString &error);
 bool verifyEnvelope(const QString &op, const QVariantMap &input, const QVariantList &networks, QString &error);
-QString admission(const QString &id, const QVariantMap &request, const QHash<QString,QVariantMap> &requests, const QHash<QString,QVariantMap> &states);
+QString admission(const QString &id, const QVariantMap &request, const QHash<QString, QVariantMap> &requests,
+        const QHash<QString, QVariantMap> &states);
 QVariantList media();
 // What provision_status shows for a finished worker operation: {result, message}. An explicit allowlist:
 // no XML, paths, subprocess output or credentials. `reason` is the worker's fixed text for `code`.

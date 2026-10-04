@@ -2,6 +2,7 @@
 #pragma once
 #include <QByteArray>
 #include <QString>
+
 namespace AgentTransfer {
 inline constexpr int limit = 32768;
 bool validName(const QString &name);

@@ -4,7 +4,8 @@
 
 namespace {
 QVariantMap snapshot(const QVariantList &items, const QString &id) {
-    for (const auto &v : items) if (v.toMap()["id"].toString() == id) return v.toMap();
+    for (const auto &v : items)
+        if (v.toMap()["id"].toString() == id) return v.toMap();
     return {};
 }
 }
@@ -19,14 +20,21 @@ QVariantMap SnapshotHistory::view(const QVariantList &items, const QVariantMap &
 QVariantMap SnapshotHistory::captured(QVariantMap marker, const QVariantMap &item) {
     // Retain older labels and unknown metadata without interpreting them. Named
     // branch registries no longer control snapshot ancestry.
-    marker["id"] = item["id"]; marker["name"] = item["name"]; marker["action"] = "captured";
+    marker["id"] = item["id"];
+    marker["name"] = item["name"];
+    marker["action"] = "captured";
     return marker;
 }
 
 QVariantMap SnapshotHistory::restored(const QVariantList &items, QVariantMap marker, QString id, QString &error) {
     const auto target = snapshot(items, id);
-    if (target.isEmpty()) { error = "The selected snapshot no longer exists."; return {}; }
-    marker["id"] = id; marker["name"] = target["name"]; marker["action"] = "restored";
+    if (target.isEmpty()) {
+        error = "The selected snapshot no longer exists.";
+        return {};
+    }
+    marker["id"] = id;
+    marker["name"] = target["name"];
+    marker["action"] = "restored";
     return marker;
 }
 
@@ -37,16 +45,19 @@ void SnapshotHistory::removed(QVariantMap &marker, const QVariantMap &item) {
     deleted[item["id"].toString()] = QVariantMap{{"parentId", item["parentId"]}, {"name", item["name"]}};
     marker["deletedSnapshots"] = deleted;
     if (marker["id"] == item["id"]) {
-        marker["id"] = item["parentId"]; marker["name"] = item["parent"];
+        marker["id"] = item["parentId"];
+        marker["name"] = item["parent"];
         marker["action"] = "removed";
     }
 }
 
 QString SnapshotHistory::survivingParent(const QVariantMap &marker, QString id) {
-    const auto deleted = marker["deletedSnapshots"].toMap(); QSet<QString> seen;
+    const auto deleted = marker["deletedSnapshots"].toMap();
+    QSet<QString> seen;
     while (deleted.contains(id)) {
         if (seen.contains(id)) return {};
-        seen.insert(id); id = deleted[id].toMap()["parentId"].toString();
+        seen.insert(id);
+        id = deleted[id].toMap()["parentId"].toString();
     }
     return id;
 }

@@ -1,35 +1,54 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
+#include "diagnostics.h"
+#include <QElapsedTimer>
 #include <QObject>
 #include <QThread>
+#include <QTimer>
 #include <QVariantList>
 #include <libvirt/libvirt.h>
 #include <atomic>
-#include <thread>
 #include <memory>
-#include <QTimer>
-#include <QElapsedTimer>
-#include "diagnostics.h"
+#include <thread>
 #include <unistd.h>
 
+// A connected socket to a VM's VNC display, handed over by libvirt. Closed with the last reference.
 struct GraphicsSocket {
     explicit GraphicsSocket(int value, QString domainUuid = {}) : fd(value), uuid(std::move(domainUuid)) {}
-    ~GraphicsSocket() { if (fd >= 0) ::close(fd); }
+    ~GraphicsSocket() {
+        if (fd >= 0) ::close(fd);
+    }
     int fd;
     QString uuid;
 };
+
 using GraphicsHandle = std::shared_ptr<GraphicsSocket>;
 Q_DECLARE_METATYPE(GraphicsHandle)
 
+// Does all libvirt work, on its own thread: the inventory, power actions, the console connection, details,
+// network changes and every operation of manage(). Reports through signals. Implemented in backend.cpp,
+// with manage() and its operations in management.cpp and the files it lists.
 class VmWorker : public QObject {
     Q_OBJECT
 public:
+    // `storageOnly`: a second worker for long snapshot jobs, which opens its connection on first use and
+    // leaves inventory and unattended setup to the main worker.
     explicit VmWorker(QString uri, bool storageOnly = false) : uri_(std::move(uri)), storageOnly_(storageOnly) {}
-    // Only atomics cross threads directly; all libvirt work stays on the worker.
-    void setProvisionAccess(bool enabled) { if (bool(provisionEpoch_.load() & 1) != enabled) ++provisionEpoch_; }
+
+    // Only these atomics are used from other threads; all libvirt work stays on the worker.
+    // Agent provisioning (see agentprovision.h) is allowed while the epoch is odd. Every change of access
+    // bumps it, which revokes approvals given under the previous epoch.
+    void setProvisionAccess(bool enabled) {
+        if (bool(provisionEpoch_.load() & 1) != enabled) ++provisionEpoch_;
+    }
     quint64 provisionEpoch() const { return provisionEpoch_.load(); }
     void requestCheckpointCancel() { checkpointCancel_ = true; }
     void resetCheckpointCancel() { checkpointCancel_ = false; }
+
+    // One manage() call and the VM it is about, as manage()'s handlers see them (see management.h).
+    struct Request;
+    struct Target;
+
 public slots:
     void open();
     void refresh();
@@ -38,17 +57,23 @@ public slots:
     void bulk(QVariantList uuids, QString operation);
     // Pauses every running OmaWare-managed VM except `skip` before the app closes.
     void pauseForExit(QString skip);
+    // A diskless VM without network, for trying things out.
     void createTest();
     void openConsole(QString uuid);
     void inspect(QString uuid, quint64 request, bool guestInfo);
-    void configureNetwork(QString uuid, QString mac, QString networkId, QString model, bool linkUp, bool remove, QString revision);
+    void configureNetwork(
+            QString uuid, QString mac, QString networkId, QString model, bool linkUp, bool remove, QString revision);
     // Adds an adapter on this network to each VM, live on running ones where the guest allows.
     void connectVms(QVariantList uuids, QString networkId);
     // Plugs or pulls virtual cables: [{uuid, mac}], live on running VMs and in the saved definition.
     void setLinks(QVariantList targets, bool up);
+    // Runs one operation ("vm.create", "networks.save", "snapshots.restore", …) and reports it with
+    // managed() and, unless it only reads, finished().
     void manage(QString operation, QVariantMap input);
+    // Cancels the start that follows a "vm.restart" shutdown.
     void cancelRestart();
     void stop();
+
 signals:
     void inventory(QVariantList rows);
     void connection(bool connected, QString message);
@@ -63,9 +88,11 @@ signals:
     void managed(QString operation, bool ok, QVariantMap result);
     void progress(QString message);
     void checkpointProgress(QVariantMap job);
+
 private:
-    QString error(const QString &context);
+    // Whether OmaWare created this VM: its name starts with "omaware-" and it carries OmaWare's marker.
     bool owned(virDomainPtr domain);
+    // Runs one power operation on a VM; returns an empty string on success.
     QString power(virDomainPtr domain, const QString &operation);
     // Starts a VM. One being set up unattended (see unattended.h) first boots its installer: Ubuntu's
     // kernel directly with "autoinstall", Windows on UEFI with a few key presses for "Press any key".
@@ -74,20 +101,48 @@ private:
     // and starts a Linux VM again into its new system.
     void finishSetup(const QString &uuid, int detail);
     void pressKeys(const QString &uuid, int times);
+    // Saves an adapter change and, on a running VM, applies it live when the guest allows.
     bool changeNetwork(const QString &uuid, const QString &mac, const QString &networkId, const QString &model,
-        bool linkUp, bool remove, const QString &revision, QString &message);
+            bool linkUp, bool remove, const QString &revision, QString &message);
     bool detachLive(virDomainPtr domain, const QString &device, const QString &mac, QString &why);
     bool attachLive(virDomainPtr domain, const QString &device, QString &why);
     static int event(virConnectPtr, virDomainPtr, int, int, void *opaque);
     static void closed(virConnectPtr, int, void *opaque);
+
+    // manage()'s operations. Each reports its result through the request.
+    void manageVm(const Request &request);
+    void fleetStats(const Request &request);
+    void capabilities(const Request &request);
+    void createVm(const Request &request);
+    void manageHostNetworks(const Request &request);
+    void vmStats(const Request &request, const Target &vm);
+    void vmReadiness(const Request &request, const Target &vm);
+    void vmDetails(const Request &request, const Target &vm);
+    void saveAdapter(const Request &request, const Target &vm);
+    void deleteVm(const Request &request, const Target &vm);
+    void vmPower(const Request &request, const Target &vm);
+    void serialConsole(const Request &request, const Target &vm);
+    void screenshot(const Request &request, const Target &vm);
+    void sendInput(const Request &request, const Target &vm);
+    void guestExec(const Request &request, const Target &vm);
+    void guestAddresses(const Request &request, const Target &vm);
+    void restartVm(const Request &request, const Target &vm);
+    void setContainment(const Request &request, const Target &vm);
+    void listSnapshots(const Request &request, const Target &vm);
+    void manageSnapshots(const Request &request, const Target &vm);
+    void editConfiguration(const Request &request, const Target &vm);
+
     QString uri_;
     virConnectPtr conn_ = nullptr;
     int callback_ = -1;
     int timer_ = -1;
     std::atomic_bool running_{false};
     std::thread events_;
+    // Bumped by stop(), so events queued from an earlier connection are ignored.
     std::atomic_uint64_t generation_{0};
+    // The last CPU time sample of each VM, for its CPU percentage: {cpu time (ns), when (ms)}.
     QHash<QString, QPair<qulonglong, qint64>> cpuSamples_;
+    // A "vm.restart" waiting for the guest to shut down.
     QTimer *restartTimer_ = nullptr;
     QString restartUuid_;
     int restartTicks_ = 0;
@@ -96,6 +151,9 @@ private:
     bool storageOnly_ = false;
 };
 
+// The facade QML talks to (`backend`). Forwards requests to the workers' threads as queued calls and keeps
+// their latest results: the VM inventory, the selected VM's details, each operation's last result, the
+// activity log and the running snapshot job.
 class Backend : public QObject {
     Q_OBJECT
     Q_PROPERTY(QVariantList domains READ domains NOTIFY changed)
@@ -112,6 +170,7 @@ class Backend : public QObject {
 public:
     explicit Backend(QString uri, QObject *parent = nullptr);
     ~Backend() override;
+
     QVariantList domains() const { return rows_; }
     QString message() const { return message_; }
     QString uri() const { return uri_; }
@@ -122,10 +181,11 @@ public:
     QVariantMap management() const { return management_; }
     QVariantList activity() const { return activity_; }
     QString activityWarning() const { return activityWarning_; }
+    QVariantMap checkpointJob() const { return checkpointJob_; }
+
     Q_INVOKABLE void clearActivity();
     Q_INVOKABLE QVariantMap errorAdvice(QString message) const { return Diagnostics::advice(message); }
     Q_INVOKABLE void showRecovery(QString action, QString uuid = {}) { emit recoveryRequested(action, uuid); }
-    QVariantMap checkpointJob() const { return checkpointJob_; }
     Q_INVOKABLE void refresh();
     Q_INVOKABLE void reconnect();
     Q_INVOKABLE void createTest();
@@ -135,17 +195,21 @@ public:
     Q_INVOKABLE void pauseForExit();
     Q_INVOKABLE void openConsole(QString uuid);
     Q_INVOKABLE void inspect(QString uuid, bool guestInfo = false);
-    Q_INVOKABLE bool configureNetwork(QString uuid, QString mac, QString networkId, QString model, bool linkUp, bool remove, QString revision);
+    Q_INVOKABLE bool configureNetwork(
+            QString uuid, QString mac, QString networkId, QString model, bool linkUp, bool remove, QString revision);
     Q_INVOKABLE bool connectVms(QVariantList uuids, QString networkId);
     // Never waits for the busy flag: pulling a cable is a safety action and is queued behind any running operation.
     Q_INVOKABLE void setLinks(QVariantList targets, bool up);
+    // Starts a VmWorker::manage() operation. False when another operation is still running.
     Q_INVOKABLE bool request(QString operation, QVariantMap input = {});
+    Q_INVOKABLE void cancelRestart();
+    Q_INVOKABLE void cancelCheckpoint();
+
     void setProvisionAccess(bool enabled) { worker_->setProvisionAccess(enabled); }
     quint64 provisionEpoch() const { return worker_->provisionEpoch(); }
     // Adds a line to the activity log without reporting it as the result of an operation (used for agent actions).
     void note(const QString &message, bool ok);
-    Q_INVOKABLE void cancelRestart();
-    Q_INVOKABLE void cancelCheckpoint();
+
 signals:
     void changed();
     void graphics(GraphicsHandle socket);
@@ -161,7 +225,9 @@ signals:
     void activityChanged();
     void recoveryRequested(QString action, QString uuid);
     void checkpointJobChanged();
+
 private:
+    // Marks the backend busy for a new operation; false when one is already running.
     bool begin();
     QThread thread_;
     VmWorker *worker_;

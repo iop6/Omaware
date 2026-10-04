@@ -15,6 +15,7 @@ struct FrameMailbox {
     QImage latest;
     bool pending = false;
 };
+
 using FrameHandle = std::shared_ptr<FrameMailbox>;
 Q_DECLARE_METATYPE(FrameHandle)
 
@@ -32,6 +33,7 @@ signals:
     void status(QString text, bool connected, quint64 generation);
     void clipboardReceived(QString text, quint64 generation);
     void notice(QString text, quint64 generation);
+
 private:
     static rfbBool allocate(rfbClient *client);
     static void updated(rfbClient *client);
@@ -56,11 +58,17 @@ public:
     explicit Console(QQuickItem *parent = nullptr);
     ~Console() override;
     void paint(QPainter *painter) override;
+
     QString status() const { return status_; }
+
     bool captured() const { return captured_; }
+
     bool connected() const { return connected_; }
+
     bool hasFrame() const { return !image_.isNull(); }
+
     QString clipboardMode() const { return clipboardMode_; }
+
     void setClipboardMode(QString mode);
     void attach(GraphicsHandle socket);
     Q_INVOKABLE void attachForVm(GraphicsHandle socket, QString uuid);
@@ -70,12 +78,15 @@ public:
     Q_INVOKABLE void pasteClipboard();
     Q_INVOKABLE void resizeGuest(int width, int height);
     Q_INVOKABLE QString checkpointPreview() const;
+
     QImage frame() const { return image_; }
+
 signals:
     void statusChanged();
     void frameReceived();
     void frameChanged();
     void clipboardModeChanged();
+
 protected:
     void mousePressEvent(QMouseEvent *event) override;
     void mouseReleaseEvent(QMouseEvent *event) override;
@@ -85,6 +96,7 @@ protected:
     void keyPressEvent(QKeyEvent *event) override;
     void keyReleaseEvent(QKeyEvent *event) override;
     void focusOutEvent(QFocusEvent *event) override;
+
 private:
     void sendCtrlAltDelete();
     void sendPointer(QMouseEvent *event);
@@ -100,6 +112,6 @@ private:
     bool connected_ = false;
     quint64 generation_ = 0;
     QString clipboardMode_ = "off";
-    QString clipboardVm_;   // the VM clipboardMode_ was chosen for
+    QString clipboardVm_; // the VM clipboardMode_ was chosen for
     bool receivingClipboard_ = false;
 };

@@ -14,9 +14,12 @@ public:
     static QString mediaType(const QString &path);
     bool prepare(const QString &source, const QString &originalName, QString &error);
     bool convert(const QString &destination, QString &error) const;
+
     quint64 capacity() const { return capacity_; }
+
     // Plain-language notes on what was checked and what was not carried over.
     QStringList notes() const { return notes_; }
+
 private:
     bool stageOva(int fd, QString &error);
     bool stageCopy(int fd, QString &error);
