@@ -17,9 +17,22 @@ Item {
             readonly property bool onBottom: index > 1
             x: onRight ? marks.width - marks.size : 0
             y: onBottom ? marks.height - marks.size : 0
-            width: marks.size; height: marks.size
-            Rectangle { x: 0; y: parent.onBottom ? parent.height - marks.weight : 0; width: parent.width; height: marks.weight; color: marks.ink }
-            Rectangle { x: parent.onRight ? parent.width - marks.weight : 0; y: 0; width: marks.weight; height: parent.height; color: marks.ink }
+            width: marks.size
+            height: marks.size
+            Rectangle {
+                x: 0
+                y: parent.onBottom ? parent.height - marks.weight : 0
+                width: parent.width
+                height: marks.weight
+                color: marks.ink
+            }
+            Rectangle {
+                x: parent.onRight ? parent.width - marks.weight : 0
+                y: 0
+                width: marks.weight
+                height: parent.height
+                color: marks.ink
+            }
         }
     }
 }

@@ -20,10 +20,26 @@ Rectangle {
         id: row
         anchors.centerIn: parent
         spacing: 5
-        AppIcon { visible: chip.iconName !== ""; name: chip.iconName; color: chip.ink; width: 13; height: 13; anchors.verticalCenter: parent.verticalCenter }
-        Label { text: chip.text; color: chip.ink; font.pixelSize: Math.round(11 * theme.textScale); font.weight: Font.Medium; anchors.verticalCenter: parent.verticalCenter }
+        AppIcon {
+            visible: chip.iconName !== ""
+            name: chip.iconName
+            color: chip.ink
+            width: 13
+            height: 13
+            anchors.verticalCenter: parent.verticalCenter
+        }
+        Label {
+            text: chip.text
+            color: chip.ink
+            font.pixelSize: Math.round(11 * theme.textScale)
+            font.weight: Font.Medium
+            anchors.verticalCenter: parent.verticalCenter
+        }
     }
-    HoverHandler { id: hover; enabled: chip.hint !== "" }
+    HoverHandler {
+        id: hover
+        enabled: chip.hint !== ""
+    }
     ToolTip.visible: hover.hovered && hint !== ""
     ToolTip.text: hint
     ToolTip.delay: 450

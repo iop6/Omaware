@@ -13,9 +13,36 @@ Row {
     spacing: 0
     Accessible.role: Accessible.ProgressBar
     Accessible.name: fraction < 0 ? "No data" : Math.round(fraction * 100) + "% " + suffix
-    Label { text: "["; color: theme.colors.muted; font.family: "monospace"; font.pixelSize: Math.round(12 * theme.textScale) }
-    Label { text: "|".repeat(meter.filled); color: meter.ink; font.family: "monospace"; font.pixelSize: Math.round(12 * theme.textScale); font.weight: Font.DemiBold }
-    Label { text: (meter.fraction < 0 ? "·" : " ").repeat(meter.cells - meter.filled); color: theme.colors.line; font.family: "monospace"; font.pixelSize: Math.round(12 * theme.textScale) }
-    Label { text: "]"; color: theme.colors.muted; font.family: "monospace"; font.pixelSize: Math.round(12 * theme.textScale) }
-    Label { visible: meter.suffix !== ""; text: " " + meter.suffix; color: theme.colors.foreground; font.family: "monospace"; font.pixelSize: Math.round(12 * theme.textScale) }
+    Label {
+        text: "["
+        color: theme.colors.muted
+        font.family: "monospace"
+        font.pixelSize: Math.round(12 * theme.textScale)
+    }
+    Label {
+        text: "|".repeat(meter.filled)
+        color: meter.ink
+        font.family: "monospace"
+        font.pixelSize: Math.round(12 * theme.textScale)
+        font.weight: Font.DemiBold
+    }
+    Label {
+        text: (meter.fraction < 0 ? "·" : " ").repeat(meter.cells - meter.filled)
+        color: theme.colors.line
+        font.family: "monospace"
+        font.pixelSize: Math.round(12 * theme.textScale)
+    }
+    Label {
+        text: "]"
+        color: theme.colors.muted
+        font.family: "monospace"
+        font.pixelSize: Math.round(12 * theme.textScale)
+    }
+    Label {
+        visible: meter.suffix !== ""
+        text: " " + meter.suffix
+        color: theme.colors.foreground
+        font.family: "monospace"
+        font.pixelSize: Math.round(12 * theme.textScale)
+    }
 }
