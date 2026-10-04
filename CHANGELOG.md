@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.10.0 (2026-10-04)
+
+- **Containment** closes more ways out of a contained VM: raw QEMU settings, disks other than local image files (network storage, host block or NVMe devices, host folders, SCSI passthrough), serial ports and channels that reach host devices or services, keyboard and input passthrough, smartcards, host audio, network entropy sources, 3D acceleration, and VNC's default local TCP port. A VM that finishes setting itself up is checked before it starts.
+- Everything OmaWare shows from guests, files, AI agents and other programs is plain text, so markup in a file name or an agent's request can't change the window or disguise what you approve.
+- AI agents ask before plugging a cable into anything but an isolated or host-only network OmaWare created. The agent connection is only ever created in your private runtime folder.
+- Cleaner code throughout: the VM operations, snapshots, agent tools, OS Shop and updater are split into smaller named parts, the C++ and QML are consistently formatted, unused code is removed, and the documentation is updated.
+
 ## 1.9.0 (2026-10-04)
 
 - The ISO Shop is now the **OS Shop**, with a new look: a spotlight for updates and favourites, a shelf per category, cards in each system's colors that show how the download is checked, a details panel, a downloads tray, and a storage bar over **Your media**. Press `/` to search.
