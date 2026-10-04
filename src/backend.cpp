@@ -1,21 +1,21 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
+// VmWorker's connection, inventory, power actions, console, details and network changes, and Backend.
 #include "backend.h"
-#include "management.h"
-#include "containment.h"
-#include "domainconfig.h"
-#include "networkcatalog.h"
 #include "configuration.h"
+#include "containment.h"
 #include "diagnostics.h"
+#include "domainconfig.h"
+#include "management.h"
+#include "networkcatalog.h"
 #include <QDateTime>
 #include <QDomDocument>
-#include <QRegularExpression>
-#include <QJsonDocument>
-#include <algorithm>
 #include <QFileInfo>
+#include <QJsonDocument>
 #include <QMetaObject>
+#include <QThread>
 #include <QUuid>
 #include <QXmlStreamReader>
-#include <libvirt/virterror.h>
+#include <algorithm>
 #include <cstdlib>
 
 bool VmWorker::owned(virDomainPtr d) {
@@ -28,11 +28,7 @@ bool VmWorker::owned(virDomainPtr d) {
 int VmWorker::event(virConnectPtr, virDomainPtr domain, int event, int detail, void *opaque) {
     auto self = static_cast<VmWorker *>(opaque);
     auto generation = self->generation_.load();
-    QString stopped;
-    if (event == VIR_DOMAIN_EVENT_STOPPED) {
-        char uuid[VIR_UUID_STRING_BUFLEN];
-        if (virDomainGetUUIDString(domain, uuid) == 0) stopped = QString::fromLatin1(uuid);
-    }
+    const QString stopped = event == VIR_DOMAIN_EVENT_STOPPED ? Virt::uuidOf(domain) : QString{};
     QMetaObject::invokeMethod(
             self,
             [self, generation, stopped, detail] {
@@ -137,8 +133,6 @@ void VmWorker::refresh() {
     }
     QVariantList rows;
     for (int i = 0; i < count; ++i) {
-        char uuid[VIR_UUID_STRING_BUFLEN];
-        virDomainGetUUIDString(domains[i], uuid);
         virDomainInfo info{};
         if (virDomainGetInfo(domains[i], &info) == 0) {
             bool diskless = true;
@@ -154,7 +148,7 @@ void VmWorker::refresh() {
             free(xml);
             const QStringList states = {
                     "Unknown", "Running", "Blocked", "Paused", "Shutting down", "Stopped", "Crashed", "Suspended"};
-            rows.append(QVariantMap{{"uuid", QString::fromUtf8(uuid)},
+            rows.append(QVariantMap{{"uuid", Virt::uuidOf(domains[i])},
                     {"name", QString::fromUtf8(virDomainGetName(domains[i]))},
                     {"state", states.value(info.state, "Unknown")}, {"stateCode", info.state},
                     {"memoryMiB", double(info.maxMem) / 1024}, {"cpus", info.nrVirtCpu}, {"owned", owned(domains[i])},
@@ -180,15 +174,12 @@ void VmWorker::createTest() {
       <features><acpi/></features><devices><graphics type='vnc'><listen type='none'/></graphics>
       <video><model type='vga'/></video><input type='tablet' bus='usb'/></devices></domain>)")
                                 .arg(type, name);
-    auto d = virDomainDefineXML(conn_, xml.toUtf8().constData());
+    Domain d(virDomainDefineXML(conn_, xml.toUtf8().constData()), virDomainFree);
     if (!d) {
         emit finished(Virt::lastError("Define test VM"), false);
         return;
     }
-    char uuid[VIR_UUID_STRING_BUFLEN];
-    virDomainGetUUIDString(d, uuid);
-    emit created(QString::fromUtf8(uuid));
-    virDomainFree(d);
+    emit created(Virt::uuidOf(d.get()));
     refresh();
     emit finished("Created " + name + " · diskless, no network", true);
 }
@@ -224,13 +215,12 @@ void VmWorker::action(QString uuid, QString operation) {
         emit finished("Connect first", false);
         return;
     }
-    auto d = virDomainLookupByUUIDString(conn_, uuid.toUtf8().constData());
+    Domain d(virDomainLookupByUUIDString(conn_, uuid.toUtf8().constData()), virDomainFree);
     if (!d) {
         emit finished(Virt::lastError("Find VM"), false);
         return;
     }
-    const auto message = power(d, operation);
-    virDomainFree(d);
+    const auto message = power(d.get(), operation);
     refresh();
     emit finished(message.isEmpty() ? operation + " requested" : message, message.isEmpty());
 }
@@ -243,7 +233,8 @@ void VmWorker::bulk(QVariantList uuids, QString operation) {
     QMap<QString, int> counts;
     QStringList failures;
     for (const auto &entry : uuids) {
-        auto d = virDomainLookupByUUIDString(conn_, entry.toString().toUtf8().constData());
+        Domain handle(virDomainLookupByUUIDString(conn_, entry.toString().toUtf8().constData()), virDomainFree);
+        const auto d = handle.get();
         if (!d) {
             failures << "A VM is no longer available.";
             continue;
@@ -267,7 +258,6 @@ void VmWorker::bulk(QVariantList uuids, QString operation) {
             else
                 failures << Virt::displayName(d) + ": " + message;
         }
-        virDomainFree(d);
     }
     refresh();
     const QMap<QString, QString> verbs{{"start", "started"}, {"resume", "resumed"}, {"pause", "paused"},
@@ -288,14 +278,13 @@ void VmWorker::pauseForExit(QString skip) {
     virDomainPtr *domains = nullptr;
     const int count = conn_ ? virConnectListAllDomains(conn_, &domains, VIR_CONNECT_LIST_DOMAINS_RUNNING) : 0;
     for (int i = 0; i < count; ++i) {
-        char uuid[VIR_UUID_STRING_BUFLEN];
-        virDomainGetUUIDString(domains[i], uuid);
+        const auto uuid = Virt::uuidOf(domains[i]);
         const QString name = Virt::displayName(domains[i]);
         if (owned(domains[i])) {
-            if (QString::fromUtf8(uuid) == skip)
+            if (uuid == skip)
                 failures << name + ": left running because a snapshot was in progress.";
             else if (virDomainSuspend(domains[i]) == 0)
-                paused << QString::fromUtf8(uuid);
+                paused << uuid;
             else
                 failures << name + ": " + Virt::lastError("pause");
         }
@@ -311,13 +300,13 @@ void VmWorker::openConsole(QString uuid) {
         emit finished("Connect first", false);
         return;
     }
-    auto d = virDomainLookupByUUIDString(conn_, uuid.toUtf8().constData());
+    Domain handle(virDomainLookupByUUIDString(conn_, uuid.toUtf8().constData()), virDomainFree);
+    const auto d = handle.get();
     if (!d) {
         emit finished(Virt::lastError("Find VM"), false);
         return;
     }
     if (!owned(d)) {
-        virDomainFree(d);
         emit finished("The console only works with VMs OmaWare created.", false);
         return;
     }
@@ -336,7 +325,6 @@ void VmWorker::openConsole(QString uuid) {
     QString message = !vnc     ? "The console needs the VM's first display to be VNC."
                       : fd < 0 ? Virt::lastError("Open console")
                                : "Console connected through libvirt";
-    virDomainFree(d);
     if (fd >= 0) emit graphics(std::make_shared<GraphicsSocket>(fd, uuid));
     emit finished(message, fd >= 0);
 }
@@ -369,7 +357,8 @@ void VmWorker::inspect(QString uuid, quint64 request, bool guestInfo) {
         fail("Connect to your local session to load VM details.");
         return;
     }
-    auto domain = virDomainLookupByUUIDString(conn_, uuid.toUtf8().constData());
+    Domain handle(virDomainLookupByUUIDString(conn_, uuid.toUtf8().constData()), virDomainFree);
+    const auto domain = handle.get();
     if (!domain) {
         fail(Virt::lastError("Load VM details"));
         return;
@@ -381,7 +370,6 @@ void VmWorker::inspect(QString uuid, quint64 request, bool guestInfo) {
     details = DomainConfig::describe(xml, failure);
     details["uuid"] = uuid;
     if (!failure.isEmpty()) {
-        virDomainFree(domain);
         fail(failure);
         return;
     }
@@ -476,7 +464,6 @@ void VmWorker::inspect(QString uuid, quint64 request, bool guestInfo) {
     details["networkOptions"] = NetworkCatalog::discover(conn_, networkStatus);
     details["networkStatus"] = networkStatus;
     details["loadedAt"] = QDateTime::currentDateTime().toString("HH:mm:ss");
-    virDomainFree(domain);
     emit inspected(uuid, request, details);
 }
 
@@ -560,7 +547,8 @@ bool VmWorker::attachLive(virDomainPtr domain, const QString &device, QString &w
 // Saves an adapter change and, on a running VM, applies it live when the guest allows.
 bool VmWorker::changeNetwork(const QString &uuid, const QString &mac, const QString &networkId, const QString &model,
         bool linkUp, bool remove, const QString &revision, QString &message) {
-    auto domain = virDomainLookupByUUIDString(conn_, uuid.toUtf8().constData());
+    Domain handle(virDomainLookupByUUIDString(conn_, uuid.toUtf8().constData()), virDomainFree);
+    const auto domain = handle.get();
     if (!domain) {
         message = Virt::lastError("Find VM");
         return false;
@@ -629,13 +617,11 @@ bool VmWorker::changeNetwork(const QString &uuid, const QString &mac, const QStr
         }
     }
     if (result < 0) {
-        virDomainFree(domain);
         message = failure;
         return false;
     }
     const QString verb = remove ? "Adapter removed" : mac.isEmpty() ? "Adapter added" : "Adapter updated";
     if (!active) {
-        virDomainFree(domain);
         message = verb + ".";
         return true;
     }
@@ -672,7 +658,6 @@ bool VmWorker::changeNetwork(const QString &uuid, const QString &mac, const QStr
         QString ignored;
         pending.rebase(withInterface(pending.baseline(), target, next), saved, ignored);
     }
-    virDomainFree(domain);
     message =
             applied ? verb + " on the running VM."
                     : verb + ". The running VM keeps its current connection until a full shutdown and start, because " +
@@ -706,7 +691,8 @@ void VmWorker::connectVms(QVariantList uuids, QString networkId) {
     int connected = 0;
     for (const auto &entry : uuids) {
         const auto uuid = entry.toString();
-        auto domain = virDomainLookupByUUIDString(conn_, uuid.toUtf8().constData());
+        Domain handle(virDomainLookupByUUIDString(conn_, uuid.toUtf8().constData()), virDomainFree);
+        const auto domain = handle.get();
         if (!domain) {
             failures << "A VM is no longer available.";
             continue;
@@ -714,7 +700,6 @@ void VmWorker::connectVms(QVariantList uuids, QString networkId) {
         const QString name = Virt::displayName(domain);
         const auto revision =
                 DomainConfig::revision(Virt::domainXml(domain, VIR_DOMAIN_XML_INACTIVE | VIR_DOMAIN_XML_SECURE));
-        virDomainFree(domain);
         QString message;
         if (changeNetwork(uuid, "", networkId, "virtio", true, false, revision, message))
             ++connected;
@@ -764,7 +749,8 @@ void VmWorker::setLinks(QVariantList targets, bool up) {
     bool bridgesLoaded = false;
     for (const auto &row : targets) {
         const auto uuid = row.toMap()["uuid"].toString(), mac = row.toMap()["mac"].toString();
-        auto domain = virDomainLookupByUUIDString(conn_, uuid.toUtf8().constData());
+        Domain handle(virDomainLookupByUUIDString(conn_, uuid.toUtf8().constData()), virDomainFree);
+        const auto domain = handle.get();
         if (!domain) {
             failures << "A VM is no longer available.";
             continue;
@@ -776,7 +762,6 @@ void VmWorker::setLinks(QVariantList targets, bool up) {
         const bool active = virDomainIsActive(domain) == 1, persistent = virDomainIsPersistent(domain) == 1;
         if (!owned(domain)) {
             fail("cables can only be changed on OmaWare-managed VMs.");
-            virDomainFree(domain);
             continue;
         }
         const auto live = active ? Virt::domainXml(domain, VIR_DOMAIN_XML_SECURE) : QString{};
@@ -787,7 +772,6 @@ void VmWorker::setLinks(QVariantList targets, bool up) {
         const auto savedNext = persistent ? withLink(saved, mac, up, savedDevice, type, source) : QString{};
         if (liveDevice.isEmpty() && savedDevice.isEmpty()) {
             fail("this adapter no longer exists.");
-            virDomainFree(domain);
             continue;
         }
         // A contained VM may only be plugged into a verified isolated switch.
@@ -798,7 +782,6 @@ void VmWorker::setLinks(QVariantList targets, bool up) {
             }
             if (type != "bridge" || !bridges.value(source)["isolated"].toBool()) {
                 fail("contained VMs can only connect to a verified isolated switch.");
-                virDomainFree(domain);
                 continue;
             }
         }
@@ -823,7 +806,6 @@ void VmWorker::setLinks(QVariantList targets, bool up) {
             ++changed;
         else
             fail(failure);
-        virDomainFree(domain);
     }
     refresh();
     const QString verb = up ? "plugged in" : "pulled";
