@@ -1,38 +1,42 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
+// Snapshots ("checkpoints" in the code): independent copies of a VM's disks, firmware variables, TPM state
+// and, for live snapshots, its memory, kept per VM under the app data folder in checkpoints/<vm>/<id>/ with a
+// manifest.json each. current.json marks where the VM is in the snapshot tree (see snapshothistory.h).
+// Journals (restore.json, freeze.json, building.json) let interrupted work be recovered or rolled back, and
+// files are only deleted once nothing can still need them (references()).
 #include "checkpoints.h"
-#include "paths.h"
-#include "snapshothistory.h"
-#include "domainconfig.h"
 #include "configuration.h"
 #include "containment.h"
+#include "domainconfig.h"
+#include "paths.h"
+#include "snapshothistory.h"
+#include "virtutil.h"
+#include <QBuffer>
+#include <QCoreApplication>
+#include <QCryptographicHash>
 #include <QDateTime>
 #include <QDir>
+#include <QDirIterator>
 #include <QDomDocument>
+#include <QElapsedTimer>
 #include <QFileInfo>
+#include <QImageReader>
 #include <QJsonDocument>
 #include <QProcess>
+#include <QRegularExpression>
 #include <QSaveFile>
+#include <QScopeGuard>
 #include <QSet>
 #include <QStandardPaths>
 #include <QStorageInfo>
-#include <QUuid>
-#include <QElapsedTimer>
 #include <QThread>
-#include <QDirIterator>
-#include <QRegularExpression>
-#include <QImage>
-#include <QImageReader>
-#include <QBuffer>
 #include <QUrl>
-#include <QCryptographicHash>
-#include <QScopeGuard>
-#include <QCoreApplication>
-#include <csignal>
-#include <cerrno>
-#include <sys/stat.h>
-#include <libvirt/virterror.h>
+#include <QUuid>
 #include <libvirt/libvirt-qemu.h>
 #include <algorithm>
+#include <cerrno>
+#include <csignal>
+#include <sys/stat.h>
 
 namespace {
 QString rootPath(QString uuid) {
@@ -55,11 +59,6 @@ bool write(QString path, QVariantMap values, QString &error) {
         return false;
     }
     return true;
-}
-
-QString uuidOf(virDomainPtr domain) {
-    char uuid[VIR_UUID_STRING_BUFLEN];
-    return virDomainGetUUIDString(domain, uuid) == 0 ? QString::fromUtf8(uuid) : QString{};
 }
 
 // A libvirt numeric domain ID can be reused after a daemon/host restart.
@@ -86,18 +85,6 @@ QString runtimeToken(QString uuid) {
     return {};
 }
 
-QString lastError(QString context) {
-    auto e = virGetLastError();
-    return context + ": " + QString::fromUtf8(e && e->message ? e->message : "Unknown libvirt error");
-}
-
-QString xmlOf(virDomainPtr domain, unsigned flags) {
-    char *raw = virDomainGetXMLDesc(domain, flags | VIR_DOMAIN_XML_SECURE);
-    QString xml = raw ? QString::fromUtf8(raw) : QString{};
-    free(raw);
-    return xml;
-}
-
 qulonglong allocated(QString path) {
     struct stat info{};
     return ::stat(path.toUtf8().constData(), &info) == 0 ? qulonglong(info.st_blocks) * 512 : 0;
@@ -107,7 +94,7 @@ QVariantMap jobStats(virDomainPtr domain, unsigned flags, QString &error) {
     int type = VIR_DOMAIN_JOB_NONE, count = 0;
     virTypedParameterPtr params = nullptr;
     if (virDomainGetJobStats(domain, &type, &params, &count, flags) < 0) {
-        error = lastError("Read checkpoint copy status");
+        error = Virt::lastError("Read checkpoint copy status");
         return {};
     }
     QVariantMap result{{"type", type}};
@@ -142,12 +129,11 @@ bool ownBackup(virDomainPtr domain, QString directory) {
     return valid && found;
 }
 
+// Whether the VM is still stopped with this saved definition.
 bool unchanged(virDomainPtr domain, QString xml) {
     if (virDomainIsActive(domain) != 0) return false;
-    char *raw = virDomainGetXMLDesc(domain, VIR_DOMAIN_XML_INACTIVE | VIR_DOMAIN_XML_SECURE);
-    bool same = raw && DomainConfig::revision(QString::fromUtf8(raw)) == DomainConfig::revision(xml);
-    free(raw);
-    return same;
+    const auto saved = Virt::definition(domain);
+    return !saved.isEmpty() && DomainConfig::revision(saved) == DomainConfig::revision(xml);
 }
 
 bool process(QStringList args, const std::atomic_bool *cancel, Checkpoints::Progress progress, QString &error,
@@ -218,10 +204,6 @@ bool validManifest(QVariantMap manifest, QString uuid, QString id) {
     return !QUuid(id).isNull() && manifest["uuid"] == uuid && manifest["id"] == id && manifest["kind"] == "copy";
 }
 
-QString vmRoot(QString uuid) {
-    return Paths::vmDir(uuid);
-}
-
 // An emulated TPM (Windows 11 needs one) keeps its state outside the VM definition: libvirt's session
 // daemon stores it per VM UUID in the user's config folder and keeps it when the VM is redefined.
 QString tpmState(const QString &uuid) {
@@ -288,7 +270,7 @@ bool safeFile(QString directory, QString file) {
 QString memoryRestoreXml(virConnectPtr connection, QString file, QString targetXml, QString &error) {
     char *raw = virDomainSaveImageGetXMLDesc(connection, file.toUtf8().constData(), VIR_DOMAIN_SAVE_IMAGE_XML_SECURE);
     if (!raw) {
-        error = lastError("Read saved VM memory");
+        error = Virt::lastError("Read saved VM memory");
         return {};
     }
     QDomDocument saved, target;
@@ -466,6 +448,198 @@ bool finishManifest(QString directory, QVariantMap manifest, QVariantMap options
     return write(rootPath(uuid) + "/current.json", SnapshotHistory::captured(marker, manifest), error);
 }
 
+// The push-mode backup libvirt runs for a live checkpoint: each disk ({target, file}) copied to its file in
+// `directory`, only the changes since checkpoint bitmap `since` when one is given.
+QString backupXml(const QVariantList &disks, const QString &directory, const QString &since) {
+    QDomDocument backup;
+    auto root = backup.createElement("domainbackup");
+    root.setAttribute("mode", "push");
+    backup.appendChild(root);
+    auto list = backup.createElement("disks");
+    root.appendChild(list);
+    for (const auto &value : disks) {
+        const auto disk = value.toMap();
+        auto d = backup.createElement("disk");
+        d.setAttribute("name", disk["target"].toString());
+        d.setAttribute("type", "file");
+        d.setAttribute("backup", "yes");
+        list.appendChild(d);
+        auto target = backup.createElement("target");
+        target.setAttribute("file", directory + "/" + disk["file"].toString());
+        d.appendChild(target);
+        auto driver = backup.createElement("driver");
+        driver.setAttribute("type", "qcow2");
+        d.appendChild(driver);
+    }
+    if (!since.isEmpty()) {
+        auto incremental = backup.createElement("incremental");
+        incremental.appendChild(backup.createTextNode(since));
+        root.appendChild(incremental);
+    }
+    return backup.toString(-1);
+}
+
+// The libvirt checkpoint `name` that starts tracking each disk's changes (a dirty bitmap), so the next
+// checkpoint of this run can copy only what changed.
+QString bitmapCheckpointXml(const QString &name, const QVariantList &disks) {
+    QDomDocument checkpoint;
+    auto root = checkpoint.createElement("domaincheckpoint");
+    checkpoint.appendChild(root);
+    auto nameElement = checkpoint.createElement("name");
+    nameElement.appendChild(checkpoint.createTextNode(name));
+    root.appendChild(nameElement);
+    auto list = checkpoint.createElement("disks");
+    root.appendChild(list);
+    for (const auto &disk : disks) {
+        auto e = checkpoint.createElement("disk");
+        e.setAttribute("name", disk.toMap()["target"].toString());
+        e.setAttribute("checkpoint", "bitmap");
+        list.appendChild(e);
+    }
+    return checkpoint.toString(-1);
+}
+
+// A snapshot of only the VM's memory and device state, saved to `file`; the backup captures the disks.
+QString memorySnapshotXml(const QString &file, const QVariantList &allDisks) {
+    QDomDocument snapshot;
+    auto root = snapshot.createElement("domainsnapshot");
+    snapshot.appendChild(root);
+    auto memory = snapshot.createElement("memory");
+    memory.setAttribute("snapshot", "external");
+    memory.setAttribute("file", file);
+    root.appendChild(memory);
+    auto skipped = snapshot.createElement("disks");
+    root.appendChild(skipped);
+    for (const auto &value : allDisks) {
+        auto disk = snapshot.createElement("disk");
+        disk.setAttribute("name", value.toMap()["target"].toString());
+        disk.setAttribute("snapshot", "no");
+        skipped.appendChild(disk);
+    }
+    return snapshot.toString(-1);
+}
+
+// Whether libvirt still has the checkpoint `bitmap`. If it reports how much changed since then, `required`
+// becomes that plus some headroom: all an incremental backup needs.
+bool incrementalSize(virDomainPtr domain, const QString &bitmap, qulonglong &required) {
+    auto prior = virDomainCheckpointLookupByName(domain, bitmap.toUtf8().constData(), 0);
+    if (!prior) return false;
+    char *raw = virDomainCheckpointGetXMLDesc(prior, VIR_DOMAIN_CHECKPOINT_XML_SIZE);
+    QDomDocument sizes;
+    if (raw && sizes.setContent(QString::fromUtf8(raw))) {
+        required = 64 * 1024 * 1024;
+        for (auto d = sizes.documentElement().firstChildElement("disks").firstChildElement("disk"); !d.isNull();
+                d = d.nextSiblingElement("disk"))
+            required += d.attribute("size").toULongLong();
+    }
+    free(raw);
+    virDomainCheckpointFree(prior);
+    return true;
+}
+
+// Checks each disk a finished backup wrote: present, qcow2, and backed by exactly its disk in the base
+// checkpoint (`baseDirectory`, with `baseDisks`), or by nothing for a full backup.
+bool checkBackupDisks(const QVariantList &disks, const QString &directory, const QString &baseDirectory,
+        const QVariantList &baseDisks, const std::atomic_bool &cancel, QString &error) {
+    for (const auto &v : disks) {
+        const auto path = directory + "/" + v.toMap()["file"].toString();
+        if (!QFileInfo(path).isFile() || QFileInfo(path).size() == 0) {
+            error = "A completed checkpoint disk is missing.";
+            return false;
+        }
+        QFile::setPermissions(path, QFile::ReadOwner | QFile::WriteOwner);
+        QByteArray output;
+        if (!process({"info", "--output=json", "-f", "qcow2", path}, &cancel, {}, error, &output)) return false;
+        const auto image = QJsonDocument::fromJson(output).toVariant().toMap();
+        QString expected;
+        if (!baseDirectory.isEmpty())
+            for (const auto &d : baseDisks)
+                if (d.toMap()["target"] == v.toMap()["target"])
+                    expected = baseDirectory + "/" + d.toMap()["file"].toString();
+        if (image["format"] != "qcow2" || image["full-backing-filename"].toString() != expected) {
+            error = "Completed backup has an unexpected disk dependency; it was not published.";
+            return false;
+        }
+    }
+    return true;
+}
+
+// Whether a checkpoint's disk records match its saved definition (`doc`): one record per writable disk, and
+// firmware variables exactly when the definition has them.
+bool checkDiskRecords(const QDomDocument &doc, const QVariantMap &manifest, QString &error) {
+    const auto devices = doc.documentElement().firstChildElement("devices");
+    QSet<QString> expectedTargets, recordedTargets, files;
+    for (auto disk = devices.firstChildElement("disk"); !disk.isNull(); disk = disk.nextSiblingElement("disk"))
+        if (disk.attribute("device") == "disk" && disk.firstChildElement("readonly").isNull())
+            expectedTargets.insert(disk.firstChildElement("target").attribute("dev"));
+    for (const auto &disk : manifest["disks"].toList()) {
+        const auto target = disk.toMap()["target"].toString(), file = disk.toMap()["file"].toString();
+        if (target.isEmpty() || file.isEmpty() || QFileInfo(file).fileName() != file ||
+                recordedTargets.contains(target) || files.contains(file)) {
+            error = "The checkpoint disk list is invalid.";
+            return false;
+        }
+        recordedTargets.insert(target);
+        files.insert(file);
+    }
+    const bool hasNvram = !doc.documentElement().firstChildElement("os").firstChildElement("nvram").text().isEmpty();
+    if (expectedTargets.isEmpty() || expectedTargets != recordedTargets ||
+            hasNvram == manifest["nvram"].toString().isEmpty()) {
+        error = "The checkpoint is missing a disk or firmware record. The VM was not changed.";
+        return false;
+    }
+    return true;
+}
+
+// Prepares the files a restore switches the VM to, in `destination`, and points the checkpoint's saved
+// definition (`doc`) at them: a thin overlay on each snapshot disk, which makes restoring instant whatever
+// the disk size, and a copy of the firmware variables. The snapshot images stay read-only underneath;
+// deleting a snapshot keeps the files a live backing chain still uses.
+bool prepareRestoredFiles(QDomDocument &doc, const QVariantMap &manifest, const QString &directory,
+        const QString &destination, const std::atomic_bool *cancel, QString &error) {
+    auto devices = doc.documentElement().firstChildElement("devices");
+    for (const auto &v : manifest["disks"].toList()) {
+        const auto record = v.toMap();
+        const auto file = record["file"].toString();
+        if (QFileInfo(file).fileName() != file || QFileInfo(directory + "/" + file).isSymLink() ||
+                !QFileInfo(directory + "/" + file).isFile()) {
+            error = "A checkpoint disk image is missing.";
+            return false;
+        }
+        if (!process({"create", "-q", "-f", "qcow2", "-b", directory + "/" + file, "-F", "qcow2",
+                             destination + "/" + file},
+                    cancel, {}, error))
+            return false;
+        QFile::setPermissions(destination + "/" + file, QFile::ReadOwner | QFile::WriteOwner);
+        bool found = false;
+        for (auto d = devices.firstChildElement("disk"); !d.isNull(); d = d.nextSiblingElement("disk"))
+            if (d.firstChildElement("target").attribute("dev") == record["target"].toString()) {
+                d.firstChildElement("source").setAttribute("file", destination + "/" + file);
+                d.firstChildElement("driver").setAttribute("type", "qcow2");
+                d.removeChild(d.firstChildElement("backingStore"));
+                found = true;
+            }
+        if (!found) {
+            error = "A checkpoint disk could not be matched to its VM configuration.";
+            return false;
+        }
+    }
+    if (!manifest["nvram"].toString().isEmpty()) {
+        const auto file = manifest["nvram"].toString();
+        if (QFileInfo(file).fileName() != file || QFileInfo(directory + "/" + file).isSymLink() ||
+                !QFile::copy(directory + "/" + file, destination + "/firmware-vars")) {
+            error = "Could not restore the UEFI variable store.";
+            return false;
+        }
+        auto nvram = doc.documentElement().firstChildElement("os").firstChildElement("nvram");
+        while (!nvram.firstChild().isNull())
+            nvram.removeChild(nvram.firstChild());
+        nvram.appendChild(doc.createTextNode(destination + "/firmware-vars"));
+    }
+    return true;
+}
+
+// Removes OmaWare's checkpoint bitmap `name` from the VM's disks (or at least libvirt's record of it).
 void forgetBitmap(virDomainPtr domain, QString name) {
     if (!name.startsWith("omaware-cp-")) return;
     auto checkpoint = virDomainCheckpointLookupByName(domain, name.toUtf8().constData(), 0);
@@ -538,8 +712,8 @@ QVariantList Checkpoints::list(QString uuid) {
 
 bool Checkpoints::create(virDomainPtr domain, QString xml, QString name, QString notes, QString &error,
         QVariantMap options, const std::atomic_bool *cancel, Progress progress) {
-    const auto uuid = uuidOf(domain), root = rootPath(uuid), id = QUuid::createUuid().toString(QUuid::WithoutBraces),
-               directory = root + "/" + id;
+    const auto uuid = Virt::uuidOf(domain), root = rootPath(uuid),
+               id = QUuid::createUuid().toString(QUuid::WithoutBraces), directory = root + "/" + id;
     if (root.isEmpty() || !unchanged(domain, xml)) {
         error = "The VM must remain stopped and unchanged while creating a checkpoint.";
         return false;
@@ -641,8 +815,8 @@ bool Checkpoints::create(virDomainPtr domain, QString xml, QString name, QString
 
 bool Checkpoints::createLive(virDomainPtr domain, QString xml, QString name, QString notes,
         const std::atomic_bool &cancel, Progress progress, QString &error, QVariantMap options, bool holdForRestore) {
-    const auto uuid = uuidOf(domain), root = rootPath(uuid), id = QUuid::createUuid().toString(QUuid::WithoutBraces),
-               directory = root + "/" + id;
+    const auto uuid = Virt::uuidOf(domain), root = rootPath(uuid),
+               id = QUuid::createUuid().toString(QUuid::WithoutBraces), directory = root + "/" + id;
     const bool memory = options.value("memory", false).toBool();
     if (memory && options.value("clean", false).toBool()) {
         error = "Memory snapshots already preserve the running filesystem state. Disable filesystem freezing for this "
@@ -660,7 +834,7 @@ bool Checkpoints::createLive(virDomainPtr domain, QString xml, QString name, QSt
             error = "A checkpoint with this name already exists.";
             return false;
         }
-    const auto liveXml = xmlOf(domain, 0);
+    const auto liveXml = Virt::definition(domain, true);
     if (liveXml.isEmpty() || !Configuration::changes(xml, liveXml).isEmpty()) {
         error = "Saved hardware differs from the running VM. Discard pending changes or apply them before creating a "
                 "checkpoint.";
@@ -692,35 +866,17 @@ bool Checkpoints::createLive(virDomainPtr domain, QString xml, QString name, QSt
     auto info = DomainConfig::describe(xml, failure);
     QVariantList disks;
     qulonglong capacity = 0;
-    QDomDocument backup;
-    auto b = backup.createElement("domainbackup");
-    b.setAttribute("mode", "push");
-    backup.appendChild(b);
-    auto diskList = backup.createElement("disks");
-    b.appendChild(diskList);
     for (auto v : info["disks"].toList()) {
         auto disk = v.toMap();
         if (disk["device"] != "disk" || disk["readOnly"].toBool()) continue;
         virDomainBlockInfo size{};
         if (virDomainGetBlockInfo(domain, disk["target"].toString().toUtf8().constData(), &size, 0) < 0) {
-            error = lastError("Read checkpoint disk capacity");
+            error = Virt::lastError("Read checkpoint disk capacity");
             rollback();
             return false;
         }
         capacity += size.capacity;
-        const auto file = QString("disk-%1.qcow2").arg(disks.size());
-        auto d = backup.createElement("disk");
-        d.setAttribute("name", disk["target"].toString());
-        d.setAttribute("type", "file");
-        d.setAttribute("backup", "yes");
-        diskList.appendChild(d);
-        auto target = backup.createElement("target");
-        target.setAttribute("file", directory + "/" + file);
-        d.appendChild(target);
-        auto driver = backup.createElement("driver");
-        driver.setAttribute("type", "qcow2");
-        d.appendChild(driver);
-        disks.append(QVariantMap{{"target", disk["target"]}, {"file", file}});
+        disks.append(QVariantMap{{"target", disk["target"]}, {"file", QString("disk-%1.qcow2").arg(disks.size())}});
     }
     if (disks.isEmpty()) {
         error = "Attach a writable disk first.";
@@ -753,22 +909,7 @@ bool Checkpoints::createLive(virDomainPtr domain, QString xml, QString name, QSt
         rollback();
         return false;
     }
-    if (incremental) {
-        auto prior = virDomainCheckpointLookupByName(domain, base["bitmap"].toString().toUtf8().constData(), 0);
-        incremental = prior;
-        if (prior) {
-            char *raw = virDomainCheckpointGetXMLDesc(prior, VIR_DOMAIN_CHECKPOINT_XML_SIZE);
-            QDomDocument sizes;
-            if (raw && sizes.setContent(QString::fromUtf8(raw))) {
-                required = 64 * 1024 * 1024;
-                for (auto d = sizes.documentElement().firstChildElement("disks").firstChildElement("disk"); !d.isNull();
-                        d = d.nextSiblingElement("disk"))
-                    required += d.attribute("size").toULongLong();
-            }
-            free(raw);
-            virDomainCheckpointFree(prior);
-        }
-    }
+    if (incremental) incremental = incrementalSize(domain, base["bitmap"].toString(), required);
     if (memory) required += info["memoryMiB"].toULongLong() * 1048576 + 256 * 1048576;
     if (QStorageInfo(directory).bytesAvailable() < qint64(required)) {
         error = "Not enough free space for the snapshot's disks and requested memory.";
@@ -776,9 +917,7 @@ bool Checkpoints::createLive(virDomainPtr domain, QString xml, QString name, QSt
         return false;
     }
     if (incremental) {
-        auto inc = backup.createElement("incremental");
-        inc.appendChild(backup.createTextNode(base["bitmap"].toString()));
-        b.appendChild(inc);
+        // Each new disk is an overlay on its disk in the base checkpoint; the backup fills in what changed.
         const auto previousDisks = base["disks"].toList();
         for (auto disk : disks) {
             auto record = disk.toMap();
@@ -794,21 +933,6 @@ bool Checkpoints::createLive(virDomainPtr domain, QString xml, QString name, QSt
             }
         }
     }
-    QDomDocument checkpoint;
-    auto cp = checkpoint.createElement("domaincheckpoint");
-    checkpoint.appendChild(cp);
-    auto cpName = checkpoint.createElement("name");
-    cpName.appendChild(checkpoint.createTextNode(bitmap));
-    cp.appendChild(cpName);
-    auto cpDisks = checkpoint.createElement("disks");
-    cp.appendChild(cpDisks);
-    for (auto disk : disks) {
-        auto e = checkpoint.createElement("disk");
-        e.setAttribute("name", disk.toMap()["target"].toString());
-        e.setAttribute("checkpoint", "bitmap");
-        cpDisks.appendChild(e);
-    }
-
     QVariantMap manifest{{"uuid", uuid}, {"id", id}, {"name", name}, {"notes", notes}, {"kind", "copy"},
             {"time", QDateTime::currentSecsSinceEpoch()}, {"xml", xml}, {"disks", disks}, {"capacity", capacity},
             {"parentId", current["id"]}, {"parent", current["name"]},
@@ -915,7 +1039,7 @@ bool Checkpoints::createLive(virDomainPtr domain, QString xml, QString name, QSt
         frozen = true;
         const int frozenCount = virDomainFSFreeze(domain, nullptr, 0, 0);
         if (frozenCount <= 0) {
-            error = frozenCount < 0 ? lastError("Flush and freeze guest filesystems")
+            error = frozenCount < 0 ? Virt::lastError("Flush and freeze guest filesystems")
                                     : "The guest agent did not freeze any filesystems. Use an ordinary disk capture "
                                       "for this guest.";
             thaw();
@@ -936,7 +1060,7 @@ bool Checkpoints::createLive(virDomainPtr domain, QString xml, QString name, QSt
             }
             pausedByUs = true;
             if (virDomainSuspend(domain) < 0) {
-                error = lastError("Pause for a consistent snapshot");
+                error = Virt::lastError("Pause for a consistent snapshot");
                 resume();
                 rollback();
                 return false;
@@ -944,26 +1068,12 @@ bool Checkpoints::createLive(virDomainPtr domain, QString xml, QString name, QSt
         }
     }
     if (memory) {
-        QDomDocument snapshot;
-        auto root = snapshot.createElement("domainsnapshot");
-        snapshot.appendChild(root);
-        auto mem = snapshot.createElement("memory");
-        mem.setAttribute("snapshot", "external");
-        mem.setAttribute("file", directory + "/memory.save");
-        root.appendChild(mem);
-        auto skipped = snapshot.createElement("disks");
-        root.appendChild(skipped);
-        for (auto value : info["disks"].toList()) {
-            auto disk = snapshot.createElement("disk");
-            disk.setAttribute("name", value.toMap()["target"].toString());
-            disk.setAttribute("snapshot", "no");
-            skipped.appendChild(disk);
-        }
         progress("Saving VM memory and device state", 0, 0);
+        const auto snapshot = memorySnapshotXml(directory + "/memory.save", info["disks"].toList());
         auto point = virDomainSnapshotCreateXML(
-                domain, snapshot.toString(-1).toUtf8().constData(), VIR_DOMAIN_SNAPSHOT_CREATE_NO_METADATA);
+                domain, snapshot.toUtf8().constData(), VIR_DOMAIN_SNAPSHOT_CREATE_NO_METADATA);
         if (!point) {
-            error = lastError("Save VM memory");
+            error = Virt::lastError("Save VM memory");
             resume();
             rollback();
             return false;
@@ -1006,19 +1116,20 @@ bool Checkpoints::createLive(virDomainPtr domain, QString xml, QString name, QSt
         rollback();
         return false;
     }
-    if (cancel || DomainConfig::revision(xmlOf(domain, VIR_DOMAIN_XML_INACTIVE)) != DomainConfig::revision(xml) ||
-            !Configuration::changes(xml, xmlOf(domain, 0)).isEmpty()) {
+    if (cancel || DomainConfig::revision(Virt::definition(domain)) != DomainConfig::revision(xml) ||
+            !Configuration::changes(xml, Virt::definition(domain, true)).isEmpty()) {
         error = cancel ? "Checkpoint cancelled."
                        : "VM configuration changed while preparing the checkpoint. Try again.";
         resume();
         rollback();
         return false;
     }
-    const auto checkpointXml = checkpoint.toString(-1).toUtf8();
-    const auto started = virDomainBackupBegin(domain, backup.toString(-1).toUtf8().constData(),
-            tracked ? checkpointXml.constData() : nullptr, incremental ? VIR_DOMAIN_BACKUP_BEGIN_REUSE_EXTERNAL : 0);
+    const auto backup = backupXml(disks, directory, incremental ? base["bitmap"].toString() : QString{}).toUtf8();
+    const auto checkpointXml = bitmapCheckpointXml(bitmap, disks).toUtf8();
+    const auto started = virDomainBackupBegin(domain, backup.constData(), tracked ? checkpointXml.constData() : nullptr,
+            incremental ? VIR_DOMAIN_BACKUP_BEGIN_REUSE_EXTERNAL : 0);
     if (started < 0) {
-        error = lastError("Start live disk checkpoint");
+        error = Virt::lastError("Start live disk checkpoint");
         resume();
         rollback();
         return false;
@@ -1069,32 +1180,9 @@ bool Checkpoints::createLive(virDomainPtr domain, QString xml, QString name, QSt
                 rollback();
                 return false;
             }
-            for (auto v : disks) {
-                const auto path = directory + "/" + v.toMap()["file"].toString();
-                if (!QFileInfo(path).isFile() || QFileInfo(path).size() == 0) {
-                    error = "A completed checkpoint disk is missing.";
-                    rollback();
-                    return false;
-                }
-                QFile::setPermissions(path, QFile::ReadOwner | QFile::WriteOwner);
-                QByteArray output;
-                if (!process({"info", "--output=json", "-f", "qcow2", path}, &cancel, {}, error, &output)) {
-                    rollback();
-                    return false;
-                }
-                const auto image = QJsonDocument::fromJson(output).toVariant().toMap();
-                QString expected;
-                if (incremental)
-                    for (auto d : base["disks"].toList())
-                        if (d.toMap()["target"] == v.toMap()["target"])
-                            expected = root + "/" + base["id"].toString() + "/" + d.toMap()["file"].toString();
-                if (image["format"] != "qcow2" || image["full-backing-filename"].toString() != expected) {
-                    error = "Completed backup has an unexpected disk dependency; it was not published.";
-                    rollback();
-                    return false;
-                }
-            }
-            if (!finishManifest(directory, manifest, options, error)) {
+            const auto baseDirectory = incremental ? root + "/" + base["id"].toString() : QString{};
+            if (!checkBackupDisks(disks, directory, baseDirectory, base["disks"].toList(), cancel, error) ||
+                    !finishManifest(directory, manifest, options, error)) {
                 rollback();
                 return false;
             }
@@ -1131,7 +1219,7 @@ QVariantMap Checkpoints::history(QString uuid) {
 
 bool Checkpoints::restore(virConnectPtr connection, virDomainPtr domain, QString xml, QString id, QString &error,
         bool allowRestart, Progress progress, const std::atomic_bool *cancel, bool safety) {
-    const auto uuid = uuidOf(domain), root = rootPath(uuid), directory = root + "/" + id;
+    const auto uuid = Virt::uuidOf(domain), root = rootPath(uuid), directory = root + "/" + id;
     if (root.isEmpty() || QUuid(id).isNull() || QFileInfo(directory).isSymLink()) {
         error = "Invalid checkpoint identity.";
         return false;
@@ -1150,7 +1238,7 @@ bool Checkpoints::restore(virConnectPtr connection, virDomainPtr domain, QString
     }
     int initialState = 0, reason = 0;
     if (virDomainGetState(domain, &initialState, &reason, 0) < 0) {
-        error = lastError("Read VM state before restoration");
+        error = Virt::lastError("Read VM state before restoration");
         return false;
     }
     const bool restart = initialState == VIR_DOMAIN_RUNNING || initialState == VIR_DOMAIN_PAUSED;
@@ -1163,11 +1251,10 @@ bool Checkpoints::restore(virConnectPtr connection, virDomainPtr domain, QString
         error = "Wait until the VM is running, paused or stopped before restoring.";
         return false;
     }
+    // The domain ID of the VM's current run: a new one once it has been stopped and started again.
     auto currentId = [&] {
-        auto current = virDomainLookupByUUIDString(connection, uuid.toUtf8().constData());
-        const auto id = current ? virDomainGetID(current) : unsigned(-1);
-        if (current) virDomainFree(current);
-        return id;
+        Domain current(virDomainLookupByUUIDString(connection, uuid.toUtf8().constData()), virDomainFree);
+        return current ? virDomainGetID(current.get()) : unsigned(-1);
     };
     const auto runtimeId = currentId();
     bool safetyHeld = false;
@@ -1184,7 +1271,7 @@ bool Checkpoints::restore(virConnectPtr connection, virDomainPtr domain, QString
         int state = 0, why = 0;
         if (virDomainGetState(domain, &state, &why, 0) < 0 ||
                 state != (safetyHeld ? VIR_DOMAIN_PAUSED : initialState) || currentId() != runtimeId ||
-                DomainConfig::revision(xmlOf(domain, VIR_DOMAIN_XML_INACTIVE)) != DomainConfig::revision(xml)) {
+                DomainConfig::revision(Virt::definition(domain)) != DomainConfig::revision(xml)) {
             error = "The VM state or configuration changed during restore preparation. Try again.";
             return false;
         }
@@ -1196,7 +1283,7 @@ bool Checkpoints::restore(virConnectPtr connection, virDomainPtr domain, QString
                                           : failure;
                 return false;
             }
-            if (!Configuration::changes(xml, xmlOf(domain, 0)).isEmpty()) {
+            if (!Configuration::changes(xml, Virt::definition(domain, true)).isEmpty()) {
                 error = "Apply or discard pending hardware settings before restoring.";
                 return false;
             }
@@ -1212,7 +1299,7 @@ bool Checkpoints::restore(virConnectPtr connection, virDomainPtr domain, QString
         if (progress) progress(phase, 0, 0);
     };
     report(restart ? "Preparing restored disks; the current VM stays on" : "Preparing restored disks");
-    auto destination = vmRoot(uuid) + "/restore-" + QUuid::createUuid().toString(QUuid::Id128);
+    auto destination = Paths::vmDir(uuid) + "/restore-" + QUuid::createUuid().toString(QUuid::Id128);
     if (!QDir().mkpath(destination)) {
         error = "Could not create a new restore directory.";
         return false;
@@ -1247,74 +1334,10 @@ bool Checkpoints::restore(virConnectPtr connection, virDomainPtr domain, QString
         error = "Checkpoint configuration belongs to a different VM.";
         return false;
     }
-    auto devices = doc.documentElement().firstChildElement("devices");
-    QSet<QString> expectedTargets, recordedTargets, files;
-    for (auto disk = devices.firstChildElement("disk"); !disk.isNull(); disk = disk.nextSiblingElement("disk"))
-        if (disk.attribute("device") == "disk" && disk.firstChildElement("readonly").isNull())
-            expectedTargets.insert(disk.firstChildElement("target").attribute("dev"));
-    for (auto disk : manifest["disks"].toList()) {
-        const auto target = disk.toMap()["target"].toString(), file = disk.toMap()["file"].toString();
-        if (target.isEmpty() || file.isEmpty() || QFileInfo(file).fileName() != file ||
-                recordedTargets.contains(target) || files.contains(file)) {
-            rollback();
-            error = "The checkpoint disk list is invalid.";
-            return false;
-        }
-        recordedTargets.insert(target);
-        files.insert(file);
-    }
-    if (expectedTargets.isEmpty() || expectedTargets != recordedTargets ||
-            doc.documentElement().firstChildElement("os").firstChildElement("nvram").text().isEmpty() !=
-                    manifest["nvram"].toString().isEmpty()) {
+    if (!checkDiskRecords(doc, manifest, error) ||
+            !prepareRestoredFiles(doc, manifest, directory, destination, cancel, error)) {
         rollback();
-        error = "The checkpoint is missing a disk or firmware record. The VM was not changed.";
         return false;
-    }
-    for (auto v : manifest["disks"].toList()) {
-        auto record = v.toMap();
-        auto file = record["file"].toString();
-        // A thin overlay makes restoration instant regardless of disk size. The snapshot image stays
-        // read-only underneath; snapshot deletion already retains files that a live backing chain uses.
-        if (QFileInfo(file).fileName() != file || QFileInfo(directory + "/" + file).isSymLink() ||
-                !QFileInfo(directory + "/" + file).isFile()) {
-            rollback();
-            error = "A checkpoint disk image is missing.";
-            return false;
-        }
-        if (!process({"create", "-q", "-f", "qcow2", "-b", directory + "/" + file, "-F", "qcow2",
-                             destination + "/" + file},
-                    cancel, {}, error)) {
-            rollback();
-            return false;
-        }
-        QFile::setPermissions(destination + "/" + file, QFile::ReadOwner | QFile::WriteOwner);
-        bool found = false;
-        for (auto d = devices.firstChildElement("disk"); !d.isNull(); d = d.nextSiblingElement("disk"))
-            if (d.firstChildElement("target").attribute("dev") == record["target"].toString()) {
-                auto source = d.firstChildElement("source");
-                source.setAttribute("file", destination + "/" + file);
-                d.firstChildElement("driver").setAttribute("type", "qcow2");
-                d.removeChild(d.firstChildElement("backingStore"));
-                found = true;
-            }
-        if (!found) {
-            rollback();
-            error = "A checkpoint disk could not be matched to its VM configuration.";
-            return false;
-        }
-    }
-    if (!manifest["nvram"].toString().isEmpty()) {
-        const auto file = manifest["nvram"].toString();
-        if (QFileInfo(file).fileName() != file || QFileInfo(directory + "/" + file).isSymLink() ||
-                !QFile::copy(directory + "/" + file, destination + "/firmware-vars")) {
-            rollback();
-            error = "Could not restore the UEFI variable store.";
-            return false;
-        }
-        auto nvram = doc.documentElement().firstChildElement("os").firstChildElement("nvram");
-        while (!nvram.firstChild().isNull())
-            nvram.removeChild(nvram.firstChild());
-        nvram.appendChild(doc.createTextNode(destination + "/firmware-vars"));
     }
     auto memoryXml = memory ? memoryRestoreXml(connection, directory + "/" + manifest["memory"].toString(),
                                       doc.toString(-1), error)
@@ -1397,19 +1420,18 @@ bool Checkpoints::restore(virConnectPtr connection, virDomainPtr domain, QString
     const unsigned startFlags = initialState == VIR_DOMAIN_PAUSED ? VIR_DOMAIN_START_PAUSED : 0;
     auto recover = [&](QString expectedXml) {
         if (virDomainIsActive(domain) != 0 ||
-                DomainConfig::revision(xmlOf(domain, VIR_DOMAIN_XML_INACTIVE)) != DomainConfig::revision(expectedXml)) {
+                DomainConfig::revision(Virt::definition(domain)) != DomainConfig::revision(expectedXml)) {
             error += " VM state changed again; automatic rollback was skipped. Previous files and prepared files were "
                      "retained at " +
                      destination + ".";
             return;
         }
-        auto previous = virDomainDefineXMLFlags(connection, xml.toUtf8().constData(), VIR_DOMAIN_DEFINE_VALIDATE);
-        if (!previous) {
-            error += " " + lastError("Restore previous VM configuration") +
+        if (!Domain(virDomainDefineXMLFlags(connection, xml.toUtf8().constData(), VIR_DOMAIN_DEFINE_VALIDATE),
+                    virDomainFree)) {
+            error += " " + Virt::lastError("Restore previous VM configuration") +
                      ". Previous files and prepared files were retained at " + destination + ".";
             return;
         }
-        virDomainFree(previous);
         putBackTpm(uuid, journal["tpmBackup"].toString());
         rollback();
         QString markerError;
@@ -1426,11 +1448,11 @@ bool Checkpoints::restore(virConnectPtr connection, virDomainPtr domain, QString
                     virDomainRestoreFlags(connection, file.toUtf8().constData(), restoredMemory.toUtf8().constData(),
                             initialState == VIR_DOMAIN_PAUSED ? VIR_DOMAIN_SAVE_PAUSED : VIR_DOMAIN_SAVE_RUNNING) < 0)
                 error += " Previous memory is retained in the recovery snapshot. " +
-                         (failure.isEmpty() ? lastError("Resume previous VM") : failure);
+                         (failure.isEmpty() ? Virt::lastError("Resume previous VM") : failure);
             else
                 error += " The previous running state was recovered without rebooting.";
         } else if (restart && virDomainCreateWithFlags(domain, startFlags) < 0)
-            error += " " + lastError("Restart previous VM") +
+            error += " " + Virt::lastError("Restart previous VM") +
                      ". Its previous disks and configuration are selected; try Start again.";
         else
             error += restart ? " The previous disks and configuration were restored and restarted."
@@ -1441,7 +1463,7 @@ bool Checkpoints::restore(virConnectPtr connection, virDomainPtr domain, QString
                       : "Switching VM configuration");
     if (restart) {
         if (virDomainDestroy(domain) < 0) {
-            error = lastError("Stop VM for checkpoint restoration");
+            error = Virt::lastError("Stop VM for checkpoint restoration");
             if (virDomainIsActive(domain) == 0)
                 recover(xml);
             else {
@@ -1472,14 +1494,13 @@ bool Checkpoints::restore(virConnectPtr connection, virDomainPtr domain, QString
             return false;
         }
     }
-    auto saved = virDomainDefineXMLFlags(connection, doc.toString(-1).toUtf8().constData(), VIR_DOMAIN_DEFINE_VALIDATE);
-    if (!saved) {
-        error = lastError("Restore checkpoint configuration");
+    if (!Domain(virDomainDefineXMLFlags(connection, doc.toString(-1).toUtf8().constData(), VIR_DOMAIN_DEFINE_VALIDATE),
+                virDomainFree)) {
+        error = Virt::lastError("Restore checkpoint configuration");
         recover(xml);
         return false;
     }
-    virDomainFree(saved);
-    const auto restoredXml = xmlOf(domain, VIR_DOMAIN_XML_INACTIVE);
+    const auto restoredXml = Virt::definition(domain);
     journal["afterXml"] = restoredXml;
     if (!write(root + "/restore.json", journal, error)) {
         recover(restoredXml);
@@ -1490,12 +1511,12 @@ bool Checkpoints::restore(virConnectPtr connection, virDomainPtr domain, QString
                 manifest["memoryState"].toInt() == VIR_DOMAIN_PAUSED ? VIR_DOMAIN_SAVE_PAUSED : VIR_DOMAIN_SAVE_RUNNING;
         if (virDomainRestoreFlags(connection, (directory + "/" + manifest["memory"].toString()).toUtf8().constData(),
                     memoryXml.toUtf8().constData(), flags) < 0) {
-            error = lastError("Resume snapshot memory");
+            error = Virt::lastError("Resume snapshot memory");
             recover(restoredXml);
             return false;
         }
     } else if (restart && virDomainCreateWithFlags(domain, startFlags) < 0) {
-        error = lastError("Start restored VM");
+        error = Virt::lastError("Start restored VM");
         recover(restoredXml);
         return false;
     }
@@ -1545,15 +1566,15 @@ bool consolidate(virConnectPtr connection, QString uuid, QString &error) {
             if (path.startsWith(root + "/" + it.key() + "/")) return true;
         return false;
     };
-    auto domain = virDomainLookupByUUIDString(connection, uuid.toUtf8().constData());
+    Domain handle(virDomainLookupByUUIDString(connection, uuid.toUtf8().constData()), virDomainFree);
+    const auto domain = handle.get();
     if (!domain) {
-        error = lastError("Find VM to consolidate");
+        error = Virt::lastError("Find VM to consolidate");
         return false;
     }
-    auto release = qScopeGuard([&] { virDomainFree(domain); });
     const bool active = virDomainIsActive(domain) == 1;
     QDomDocument doc;
-    if (!doc.setContent(xmlOf(domain, active ? 0 : VIR_DOMAIN_XML_INACTIVE))) {
+    if (!doc.setContent(Virt::definition(domain, active))) {
         error = "Could not read the VM's disks to consolidate them.";
         return false;
     }
@@ -1577,14 +1598,14 @@ bool consolidate(virConnectPtr connection, QString uuid, QString &error) {
             continue;
         }
         if (virDomainBlockPull(domain, target.toUtf8().constData(), 0, 0) < 0) {
-            error = lastError("Consolidate disk " + target);
+            error = Virt::lastError("Consolidate disk " + target);
             return false;
         }
         for (;;) {
             virDomainBlockJobInfo job{};
             const int status = virDomainGetBlockJobInfo(domain, target.toUtf8().constData(), &job, 0);
             if (status < 0) {
-                error = lastError("Read consolidation progress for " + target);
+                error = Virt::lastError("Read consolidation progress for " + target);
                 return false;
             }
             if (status == 0) break; // The pull finished and libvirt pivoted the chain.
@@ -1820,9 +1841,12 @@ bool volumeReferences(virConnectPtr connection, QString path, QSet<QString> &pat
     return backing.isEmpty() || volumeReferences(connection, backing, paths, seen);
 }
 
+}
+
 // `ignoreUuid`: a VM being deleted. Its own snapshot records only point at each other and at its own
 // files, so they don't count as something else still needing them.
-bool references(virConnectPtr connection, QSet<QString> &paths, QString &error, const QString &ignoreUuid = {}) {
+bool Checkpoints::references(
+        virConnectPtr connection, QSet<QString> &paths, QString &error, const QString &ignoreUuid) {
     QSet<QString> activePaths, checkedImages;
     const auto ignored = rootPath(ignoreUuid);
     const auto own = [&](const QString &path) {
@@ -1895,13 +1919,12 @@ bool references(virConnectPtr connection, QSet<QString> &paths, QString &error, 
                 "storage before cleanup.";
         return false;
     }
-    auto system = virConnectOpenReadOnly("qemu:///system");
+    Connection system(virConnectOpenReadOnly("qemu:///system"), virConnectClose);
     if (!system) {
         error = "Host VM references could not be checked; cleanup is unavailable.";
         return false;
     }
-    bool ok = collect(system);
-    virConnectClose(system);
+    bool ok = collect(system.get());
     if (!ok) {
         error = "Host disk dependencies could not be checked; cleanup is unavailable.";
         return false;
@@ -1952,6 +1975,8 @@ bool references(virConnectPtr connection, QSet<QString> &paths, QString &error, 
     return ok;
 }
 
+namespace {
+// Whether `directory` or anything in it is among `paths`.
 bool used(QString directory, const QSet<QString> &paths) {
     for (const auto &path : paths)
         if (path == directory || path.startsWith(directory + "/")) return true;
@@ -1984,9 +2009,9 @@ QVariantMap Checkpoints::storage(virConnectPtr connection, QString uuid) {
                            : failure.isEmpty() ? "In use or retained for recovery"
                                                : failure}});
     };
-    for (auto dir : QDir(vmRoot(uuid)).entryList(QDir::Dirs | QDir::NoDotAndDotDot))
+    for (auto dir : QDir(Paths::vmDir(uuid)).entryList(QDir::Dirs | QDir::NoDotAndDotDot))
         if (QRegularExpression("^restore-[a-f0-9]{32}$").match(dir).hasMatch())
-            candidate(vmRoot(uuid) + "/" + dir, "restore:" + dir, "Retained restore · " + dir.right(8));
+            candidate(Paths::vmDir(uuid) + "/" + dir, "restore:" + dir, "Retained restore · " + dir.right(8));
     for (const auto &allVms : {Paths::legacyVms(), Paths::vms()})
         for (auto dir : QDir(allVms).entryList(QDir::Dirs | QDir::NoDotAndDotDot))
             if (!QUuid(dir).isNull() && read(allVms + "/" + dir + "/building.json")["sourceUuid"] == uuid)
@@ -2023,8 +2048,8 @@ bool Checkpoints::cleanup(virConnectPtr connection, QString uuid, QString key, Q
             error = row["reason"].toString();
             return false;
         }
-        const auto dir = key.startsWith("restore:") ? vmRoot(uuid) + "/" + key.mid(8)
-                         : key.startsWith("clone:") ? vmRoot(key.mid(6))
+        const auto dir = key.startsWith("restore:") ? Paths::vmDir(uuid) + "/" + key.mid(8)
+                         : key.startsWith("clone:") ? Paths::vmDir(key.mid(6))
                                                     : root + "/" + key.mid(key.startsWith("deleted:") ? 8 : 11);
         const auto bitmap = key.startsWith("deleted:") ? read(dir + "/manifest.json")["bitmap"].toString() : QString{};
         if (!QDir(dir).removeRecursively()) {
@@ -2032,11 +2057,8 @@ bool Checkpoints::cleanup(virConnectPtr connection, QString uuid, QString key, Q
             return false;
         }
         if (!bitmap.isEmpty()) {
-            auto d = virDomainLookupByUUIDString(connection, uuid.toUtf8().constData());
-            if (d) {
-                forgetBitmap(d, bitmap);
-                virDomainFree(d);
-            }
+            Domain d(virDomainLookupByUUIDString(connection, uuid.toUtf8().constData()), virDomainFree);
+            if (d) forgetBitmap(d.get(), bitmap);
         }
         return true;
     }
@@ -2053,7 +2075,7 @@ QString Checkpoints::undoId(QString uuid) {
 }
 
 bool Checkpoints::recover(virConnectPtr connection, virDomainPtr domain, QString &error) {
-    const auto uuid = uuidOf(domain), root = rootPath(uuid);
+    const auto uuid = Virt::uuidOf(domain), root = rootPath(uuid);
     if (QFile::exists(root + "/freeze.json")) {
         auto capture = read(root + "/freeze.json");
         if (capture["uuid"] != uuid) {
@@ -2064,7 +2086,7 @@ bool Checkpoints::recover(virConnectPtr connection, virDomainPtr domain, QString
                 (capture["runtimeToken"].toString().isEmpty() || capture["runtimeToken"] == runtimeToken(uuid))) {
             int state = 0, reason = 0;
             if (virDomainGetState(domain, &state, &reason, 0) < 0) {
-                error = lastError("Read interrupted capture state");
+                error = Virt::lastError("Read interrupted capture state");
                 return false;
             }
             if (capture["paused"].toBool() && state == VIR_DOMAIN_PAUSED) {
@@ -2074,7 +2096,7 @@ bool Checkpoints::recover(virConnectPtr connection, virDomainPtr domain, QString
                 }
             }
             if (capture["frozen"].toBool() && virDomainFSThaw(domain, nullptr, 0, 0) < 0) {
-                error = lastError("Recover guest writes");
+                error = Virt::lastError("Recover guest writes");
                 return false;
             }
         }
@@ -2086,7 +2108,7 @@ bool Checkpoints::recover(virConnectPtr connection, virDomainPtr domain, QString
         error = "Restore recovery record does not match this VM.";
         return false;
     }
-    const auto actual = xmlOf(domain, VIR_DOMAIN_XML_INACTIVE), before = record["beforeXml"].toString(),
+    const auto actual = Virt::definition(domain), before = record["beforeXml"].toString(),
                after = record["afterXml"].toString();
     const bool matchesBefore = DomainConfig::revision(actual) == DomainConfig::revision(before);
     const bool matchesAfter = !after.isEmpty() && Configuration::changes(after, actual).isEmpty();
@@ -2116,9 +2138,10 @@ bool Checkpoints::recover(virConnectPtr connection, virDomainPtr domain, QString
                 QFile::remove(root + "/undo.json");
         }
     } else {
-        auto previous = virDomainDefineXMLFlags(connection, before.toUtf8().constData(), VIR_DOMAIN_DEFINE_VALIDATE);
+        Domain previous(virDomainDefineXMLFlags(connection, before.toUtf8().constData(), VIR_DOMAIN_DEFINE_VALIDATE),
+                virDomainFree);
         if (!previous) {
-            error = lastError("Recover previous configuration");
+            error = Virt::lastError("Recover previous configuration");
             return false;
         }
         putBackTpm(uuid, record["tpmBackup"].toString());
@@ -2136,10 +2159,10 @@ bool Checkpoints::recover(virConnectPtr connection, virDomainPtr domain, QString
                          state == VIR_DOMAIN_PAUSED ? VIR_DOMAIN_SAVE_PAUSED : VIR_DOMAIN_SAVE_RUNNING) == 0;
         } else
             ok = (state != VIR_DOMAIN_RUNNING && state != VIR_DOMAIN_PAUSED) ||
-                 virDomainCreateWithFlags(previous, state == VIR_DOMAIN_PAUSED ? VIR_DOMAIN_START_PAUSED : 0) == 0;
-        virDomainFree(previous);
+                 virDomainCreateWithFlags(previous.get(), state == VIR_DOMAIN_PAUSED ? VIR_DOMAIN_START_PAUSED : 0) ==
+                         0;
         if (!ok) {
-            error = lastError("Restart previous VM after interruption");
+            error = Virt::lastError("Restart previous VM after interruption");
             return false;
         }
         if (!write(root + "/current.json", record["beforeMarker"].toMap(), error)) return false;
@@ -2159,15 +2182,13 @@ QString Checkpoints::clone(virConnectPtr connection, QString uuid, QString id, Q
         return {};
     }
     name = "omaware-" + name;
-    auto existing = virDomainLookupByName(connection, name.toUtf8().constData());
-    if (existing) {
-        virDomainFree(existing);
+    if (Domain(virDomainLookupByName(connection, name.toUtf8().constData()), virDomainFree)) {
         error = "A VM with that name already exists.";
         return {};
     }
     if (!chain(uuid, id, error) || !diskChain(uuid, id, &cancel, error)) return {};
     const auto source = rootPath(uuid) + "/" + id, newUuid = QUuid::createUuid().toString(QUuid::WithoutBraces),
-               destination = vmRoot(newUuid);
+               destination = Paths::vmDir(newUuid);
     auto manifest = read(source + "/manifest.json");
     if (!manifest["verificationError"].toString().isEmpty()) {
         error = manifest["verificationError"].toString();
@@ -2266,26 +2287,20 @@ QString Checkpoints::clone(virConnectPtr connection, QString uuid, QString id, Q
         return {};
     }
     // A clone of a contained VM (possibly holding untrusted software) is contained too; it starts only once compliant.
-    if (auto original = virDomainLookupByUUIDString(connection, uuid.toUtf8().constData())) {
-        if (Containment::enabled(xmlOf(original, VIR_DOMAIN_XML_INACTIVE)))
+    if (Domain original(virDomainLookupByUUIDString(connection, uuid.toUtf8().constData()), virDomainFree); original) {
+        if (Containment::enabled(Virt::definition(original.get())))
             doc.setContent(Containment::withMarker(doc.toString(-1), true));
-        virDomainFree(original);
     }
     if (progress) progress("Registering the new VM", 0, 0);
-    auto domain =
-            virDomainDefineXMLFlags(connection, doc.toString(-1).toUtf8().constData(), VIR_DOMAIN_DEFINE_VALIDATE);
-    if (!domain) {
-        error = lastError("Create VM from checkpoint");
+    Domain created(
+            virDomainDefineXMLFlags(connection, doc.toString(-1).toUtf8().constData(), VIR_DOMAIN_DEFINE_VALIDATE),
+            virDomainFree);
+    if (!created) {
+        error = Virt::lastError("Create VM from checkpoint");
         QDir(QFileInfo(tpmState(newUuid)).absolutePath() + "/..").removeRecursively();
         return {};
     }
-    virDomainFree(domain);
     rollback.dismiss();
     QFile::remove(destination + "/building.json");
     return newUuid;
-}
-
-bool Checkpoints::references(
-        virConnectPtr connection, QSet<QString> &paths, QString &error, const QString &ignoreUuid) {
-    return ::references(connection, paths, error, ignoreUuid);
 }
