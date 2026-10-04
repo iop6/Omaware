@@ -318,6 +318,7 @@ Rectangle {
                             Label {
                                 width: parent.width
                                 visible: graph.renamingId !== node.modelData.id
+                                textFormat: Text.PlainText
                                 text: node.modelData.snapshot.name
                                 elide: Text.ElideRight
                                 font.pixelSize: Math.round((12) * theme.textScale)
@@ -325,6 +326,7 @@ Rectangle {
                             }
                             Label {
                                 width: parent.width
+                                textFormat: Text.PlainText
                                 text: node.modelData.working ? "Not saved yet" : graph.sizeLabel(node.modelData.snapshot)
                                 font.pixelSize: Math.round((11) * theme.textScale)
                                 color: node.modelData.working ? theme.colors.accent : theme.colors.muted
@@ -332,6 +334,7 @@ Rectangle {
                             }
                             Label {
                                 width: parent.width
+                                textFormat: Text.PlainText
                                 text: node.modelData.working ? graph.vmState || "Current VM state" : (node.modelData.snapshot.memory ? "Memory · " : "Disk · ") + Qt.formatDateTime(new Date(node.modelData.snapshot.time * 1000), "MMM d · HH:mm")
                                 font.pixelSize: Math.round((10) * theme.textScale)
                                 color: theme.colors.muted
@@ -342,6 +345,7 @@ Rectangle {
                             objectName: "snapshotState_" + node.modelData.id
                             x: 12
                             y: parent.height - height - 9
+                            textFormat: Text.PlainText
                             text: node.modelData.working ? "WORKING VM" : node.currentSaved ? "CURRENT SNAPSHOT" : node.modelData.snapshot.healthy === false ? "! Needs attention" : node.modelData.snapshot.safety ? "RECOVERY POINT" : ""
                             font.pixelSize: Math.round((9) * theme.textScale)
                             font.weight: Font.DemiBold
@@ -438,12 +442,14 @@ Rectangle {
                 fillMode: Image.PreserveAspectFit
             }
             Label {
+                textFormat: Text.PlainText
                 text: hoverPreview.snapshot.name || ""
                 Layout.fillWidth: true
                 elide: Text.ElideRight
                 font.weight: Font.DemiBold
             }
             Label {
+                textFormat: Text.PlainText
                 text: graph.sizeLabel(hoverPreview.snapshot)
                 color: theme.colors.muted
             }

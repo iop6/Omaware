@@ -268,6 +268,7 @@ Rectangle {
                 Label {
                     objectName: "reach_" + box.nodeId
                     visible: text !== ""
+                    textFormat: Text.PlainText
                     text: box.kind === "vm" && box.reach ? "● " + box.reach.label : box.kind === "switch" && box.node.needsPermission ? "! NEEDS PERMISSION" : box.kind === "switch" && !box.node.running ? "STOPPED" : box.kind === "switch" && box.node.category === "Isolated" ? (box.node.sealed ? "✓ VERIFIED ISOLATED" : "✗ NOT VERIFIED") : box.kind === "switch" ? box.node.vmCount + (box.node.vmCount === 1 ? " VM" : " VMs") : ""
                     color: box.kind === "vm" && box.reach ? box.reach.ink : box.node.needsPermission ? theme.colors.warning : box.kind === "switch" && box.node.category === "Isolated" && box.node.running ? (box.node.sealed ? theme.colors.success : theme.colors.danger) : theme.colors.muted
                     font.pixelSize: Math.round(10 * theme.textScale)

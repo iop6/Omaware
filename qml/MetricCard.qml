@@ -23,6 +23,7 @@ Rectangle {
         RowLayout {
             Layout.fillWidth: true
             Label {
+                textFormat: Text.PlainText
                 text: card.label
                 color: theme.colors.muted
                 font.pixelSize: Math.round((11) * theme.textScale)
@@ -37,6 +38,7 @@ Rectangle {
             }
         }
         Label {
+            textFormat: Text.PlainText
             text: card.value
             color: theme.colors.foreground
             font.pixelSize: Math.round((22) * theme.textScale)
@@ -46,6 +48,7 @@ Rectangle {
             Layout.fillWidth: true
         }
         Label {
+            textFormat: Text.PlainText
             text: card.detail
             color: theme.colors.muted
             font.pixelSize: Math.round((11) * theme.textScale)
@@ -74,6 +77,7 @@ Rectangle {
         }
         Label {
             visible: card.fraction >= 0 && text !== ""
+            textFormat: Text.PlainText
             text: card.fractionText
             color: theme.colors.muted
             font.pixelSize: Math.round((10) * theme.textScale)

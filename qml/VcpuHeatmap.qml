@@ -55,6 +55,7 @@ ColumnLayout {
                     required property var modelData
                     height: map.rowHeight
                     verticalAlignment: Text.AlignVCenter
+                    textFormat: Text.PlainText
                     text: "vCPU " + modelData.id
                     color: theme.colors.muted
                     font.pixelSize: Math.round(10 * theme.textScale)
@@ -130,6 +131,7 @@ ColumnLayout {
                     height: map.rowHeight
                     horizontalAlignment: Text.AlignRight
                     verticalAlignment: Text.AlignVCenter
+                    textFormat: Text.PlainText
                     text: v === null ? "—" : Math.round(v) + "%"
                     color: theme.colors.foreground
                     font.pixelSize: Math.round(10 * theme.textScale)
@@ -143,6 +145,7 @@ ColumnLayout {
         spacing: 8
         Label {
             Layout.fillWidth: true
+            textFormat: Text.PlainText
             text: {
                 if (map.hoverRow < 0 || map.hoverCol < 0)
                     return map.count === 0 ? "Collecting samples…" : "Hover a cell for its value · oldest on the left";

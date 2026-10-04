@@ -143,6 +143,7 @@ AppDialog {
                     visible: missing.length > 0
                     Layout.fillWidth: true
                     wrapMode: Text.WordWrap
+                    textFormat: Text.PlainText
                     text: "Downloads the " + missing.join(" and ") + " cloud image" + (missing.length > 1 ? "s" : "") + " first (a few hundred MB each, once)."
                     color: theme.colors.muted
                     font.pixelSize: Math.round(12 * theme.textScale)
@@ -258,6 +259,7 @@ AppDialog {
                 Label {
                     Layout.fillWidth: true
                     wrapMode: Text.WordWrap
+                    textFormat: Text.PlainText
                     text: "The password is kept in your system's password store and shown on each VM's Details page. Every VM gets this user, with administrator rights (sudo)." + ((dialog.plan.networks || []).length > 0 ? " Creating the networks asks for your computer's password once." : "")
                     color: theme.colors.muted
                     font.pixelSize: Math.round(11 * theme.textScale)
@@ -278,12 +280,14 @@ AppDialog {
                         readonly property bool current: dialog.building && index === dialog.build.step
                         spacing: 8
                         Label {
+                            textFormat: Text.PlainText
                             text: parent.doneStep ? "✓" : parent.current ? "›" : "·"
                             color: parent.doneStep ? theme.colors.success : parent.current ? theme.colors.accent : theme.colors.muted
                             font.weight: Font.Bold
                             Layout.preferredWidth: 14
                         }
                         Label {
+                            textFormat: Text.PlainText
                             text: modelData
                             color: parent.current ? theme.colors.foreground : theme.colors.muted
                             Layout.fillWidth: true

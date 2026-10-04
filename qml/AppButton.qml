@@ -62,6 +62,7 @@ Button {
             }
             Text {
                 visible: control.text !== ""
+                textFormat: Text.PlainText
                 text: control.text
                 font: control.font
                 color: control.ink

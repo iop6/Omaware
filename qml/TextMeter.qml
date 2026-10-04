@@ -20,6 +20,7 @@ Row {
         font.pixelSize: Math.round(12 * theme.textScale)
     }
     Label {
+        textFormat: Text.PlainText
         text: "|".repeat(meter.filled)
         color: meter.ink
         font.family: "monospace"
@@ -27,6 +28,7 @@ Row {
         font.weight: Font.DemiBold
     }
     Label {
+        textFormat: Text.PlainText
         text: (meter.fraction < 0 ? "·" : " ").repeat(meter.cells - meter.filled)
         color: theme.colors.line
         font.family: "monospace"
@@ -40,6 +42,7 @@ Row {
     }
     Label {
         visible: meter.suffix !== ""
+        textFormat: Text.PlainText
         text: " " + meter.suffix
         color: theme.colors.foreground
         font.family: "monospace"

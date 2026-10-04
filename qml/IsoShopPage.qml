@@ -245,6 +245,7 @@ ColumnLayout {
         Label {
             id: chipLabel
             anchors.centerIn: parent
+            textFormat: Text.PlainText
             text: parent.text
             color: "#ffffff"
             font.pixelSize: Math.round(11 * theme.textScale)
@@ -331,6 +332,7 @@ ColumnLayout {
                 readonly property int updates: page.library ? page.library.sources.filter(function (s) {
                     return s.updateAvailable;
                 }).length : 0
+                textFormat: Text.PlainText
                 text: page.countIn("all") + " systems: checked downloads, earlier versions and ready-made VMs" + (updates > 0 ? " · " + updates + (updates === 1 ? " update" : " updates") + " for your media" : "") + ". Drop in your own ISO, OVA or QCOW2."
                 color: theme.colors.muted
                 font.pixelSize: Math.round(12 * theme.textScale)
@@ -494,6 +496,7 @@ ColumnLayout {
                     anchors.right: parent.right
                     anchors.rightMargin: 40
                     anchors.verticalCenter: parent.verticalCenter
+                    textFormat: Text.PlainText
                     text: page.badge(page.spotInfo.name || "")
                     color: "#ffffff"
                     opacity: .16
@@ -538,6 +541,7 @@ ColumnLayout {
                         border.width: 2
                         Label {
                             anchors.centerIn: parent
+                            textFormat: Text.PlainText
                             text: page.badge(page.spotInfo.name || "")
                             color: "#ffffff"
                             font.weight: Font.Bold
@@ -564,6 +568,7 @@ ColumnLayout {
                                     anchors.verticalCenter: parent.verticalCenter
                                 }
                                 Label {
+                                    textFormat: Text.PlainText
                                     text: page.spotInfo.updateAvailable ? "UPDATE FOR YOUR MEDIA" : page.spotInfo.media === "image" ? "READY TO RUN" : "SPOTLIGHT"
                                     color: "#ffffff"
                                     font.pixelSize: Math.round(10 * theme.textScale)
@@ -632,6 +637,7 @@ ColumnLayout {
                             }
                             Label {
                                 visible: hero.busy
+                                textFormat: Text.PlainText
                                 text: page.progressText(page.spotInfo)
                                 color: "#ffffff"
                                 font.pixelSize: Math.round(12 * theme.textScale)
@@ -688,11 +694,13 @@ ColumnLayout {
                         Layout.fillWidth: true
                         spacing: 8
                         Label {
+                            textFormat: Text.PlainText
                             text: shelf.modelData.label
                             font.pixelSize: Math.round(17 * theme.textScale)
                             font.weight: Font.DemiBold
                         }
                         Label {
+                            textFormat: Text.PlainText
                             text: shelf.modelData.ids.length
                             color: theme.colors.muted
                             font.pixelSize: Math.round(12 * theme.textScale)
@@ -742,6 +750,7 @@ ColumnLayout {
                 }
                 Label {
                     Layout.alignment: Qt.AlignHCenter
+                    textFormat: Text.PlainText
                     text: "Nothing matches “" + page.query + "”."
                     color: theme.colors.muted
                 }
@@ -770,6 +779,7 @@ ColumnLayout {
                     Label {
                         objectName: "isoTotals"
                         visible: !!page.library && page.library.files.length > 0
+                        textFormat: Text.PlainText
                         text: page.library ? page.library.files.length + (page.library.files.length === 1 ? " file · " : " files · ") + page.size(page.bytesOf(page.library.files.map(function (f) {
                             return f.name;
                         }))) : ""
@@ -843,6 +853,7 @@ ColumnLayout {
                         }
                     }
                     Label {
+                        textFormat: Text.PlainText
                         text: page.size(storage.used) + " of media · " + page.size(storage.free) + " free on this disk"
                         color: theme.colors.muted
                         font.pixelSize: Math.round(11 * theme.textScale)
@@ -865,6 +876,7 @@ ColumnLayout {
                         anchors.rightMargin: 8
                         spacing: 8
                         Label {
+                            textFormat: Text.PlainText
                             text: "Delete " + bulkConfirm.names.length + (bulkConfirm.names.length === 1 ? " file" : " files") + " and free " + page.size(page.bytesOf(bulkConfirm.names)) + "? This can't be undone."
                             color: theme.colors.danger
                             Layout.fillWidth: true
@@ -909,6 +921,7 @@ ColumnLayout {
                             Layout.fillWidth: true
                             horizontalAlignment: Text.AlignHCenter
                             wrapMode: Text.WordWrap
+                            textFormat: Text.PlainText
                             text: "None yet. Download a system above, or drop an ISO, OVA or QCOW2 appliance anywhere on the window. Appliances live in " + (page.library ? page.library.applianceFolder : "appliances/") + "."
                             color: theme.colors.muted
                             font.pixelSize: Math.round(12 * theme.textScale)
@@ -952,6 +965,7 @@ ColumnLayout {
                                 Label {
                                     visible: !!fileRow.modelData.source
                                     anchors.centerIn: parent
+                                    textFormat: Text.PlainText
                                     text: page.badge(fileRow.modelData.sourceName || "")
                                     color: "#ffffff"
                                     font.weight: Font.Bold
@@ -987,6 +1001,7 @@ ColumnLayout {
                                     font.pixelSize: Math.round(10 * theme.textScale)
                                 }
                                 Label {
+                                    textFormat: Text.PlainText
                                     text: page.fileLine(fileRow.modelData)
                                     color: fileRow.modelData.newest ? theme.colors.muted : theme.colors.warning
                                     font.pixelSize: Math.round(11 * theme.textScale)
@@ -1078,6 +1093,7 @@ ColumnLayout {
                         color: download.modelData.color || theme.colors.accent
                         Label {
                             anchors.centerIn: parent
+                            textFormat: Text.PlainText
                             text: page.badge(download.modelData.name)
                             color: "#ffffff"
                             font.weight: Font.Bold
@@ -1099,6 +1115,7 @@ ColumnLayout {
                         indeterminate: download.modelData.status !== "downloading" || !(download.modelData.total || download.modelData.size)
                     }
                     Label {
+                        textFormat: Text.PlainText
                         text: download.modelData.status === "unpacking" ? "Checked · unpacking…" : download.modelData.status === "starting" ? "Starting…" : page.progressText(download.modelData)
                         color: theme.colors.muted
                         font.pixelSize: Math.round(11 * theme.textScale)

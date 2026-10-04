@@ -79,6 +79,7 @@ Rectangle {
             anchors.margins: 11
             spacing: 4
             Label {
+                textFormat: Text.PlainText
                 text: verdictCard.title
                 color: verdictCard.ink
                 font.weight: Font.Bold
@@ -88,6 +89,7 @@ Rectangle {
             }
             Label {
                 visible: text !== ""
+                textFormat: Text.PlainText
                 text: verdictCard.text
                 color: theme.colors.foreground
                 font.pixelSize: Math.round(12 * theme.textScale)
@@ -260,6 +262,7 @@ Rectangle {
                                 }
                             }
                             Label {
+                                textFormat: Text.PlainText
                                 text: panel.map ? panel.map.reachInfo[modelData.reach].label : ""
                                 color: panel.map ? panel.map.reachInfo[modelData.reach].ink : "transparent"
                                 font.pixelSize: Math.round(9 * theme.textScale)
@@ -308,6 +311,7 @@ Rectangle {
                                     font.pixelSize: Math.round(12 * theme.textScale)
                                 }
                                 Label {
+                                    textFormat: Text.PlainText
                                     text: (panel.map ? panel.map.kindText(modelData) : "") + (modelData.running ? "" : " · stopped")
                                     color: theme.colors.muted
                                     font.pixelSize: Math.round(10 * theme.textScale)
@@ -316,6 +320,7 @@ Rectangle {
                                 }
                             }
                             Label {
+                                textFormat: Text.PlainText
                                 text: modelData.vmCount + (modelData.vmCount === 1 ? " VM" : " VMs")
                                 color: theme.colors.muted
                                 font.pixelSize: Math.round(10 * theme.textScale)
@@ -561,6 +566,7 @@ Rectangle {
                     visible: netSection.sw.category === "Isolated" && netSection.sw.running
                     spacing: 8
                     Label {
+                        textFormat: Text.PlainText
                         text: netSection.sw.sealed ? "✓ Verified isolated" : "✗ Isolation not verified"
                         color: netSection.sw.sealed ? theme.colors.success : theme.colors.danger
                         font.weight: Font.Bold
@@ -585,6 +591,7 @@ Rectangle {
                             Layout.fillWidth: true
                             spacing: 6
                             Label {
+                                textFormat: Text.PlainText
                                 text: modelData.ok ? "✓" : "✗"
                                 color: modelData.ok ? theme.colors.success : theme.colors.danger
                                 font.weight: Font.Bold

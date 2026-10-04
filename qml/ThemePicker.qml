@@ -156,6 +156,7 @@ Grid {
                     Layout.fillWidth: true
                     spacing: 4
                     Label {
+                        textFormat: Text.PlainText
                         text: card.info.title
                         font.weight: Font.DemiBold
                         font.pixelSize: Math.round(12 * theme.textScale)
@@ -171,6 +172,7 @@ Grid {
                     }
                 }
                 Label {
+                    textFormat: Text.PlainText
                     text: card.info.detail
                     color: theme.colors.muted
                     font.pixelSize: Math.round(10 * theme.textScale)

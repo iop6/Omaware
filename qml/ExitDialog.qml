@@ -26,6 +26,7 @@ AppDialog {
                 implicitHeight: 22
             }
             Label {
+                textFormat: Text.PlainText
                 text: backend.busy ? "Waiting for the current operation to finish…" : "OmaWare closes as soon as they are paused."
                 color: theme.colors.muted
                 wrapMode: Text.WordWrap

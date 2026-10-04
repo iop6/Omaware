@@ -2463,6 +2463,7 @@ Item {
                     onClicked: topo.zoomAt(viewport.width / 2, viewport.height / 2, topo.zoom / 1.2)
                 }
                 Label {
+                    textFormat: Text.PlainText
                     text: Math.round(topo.zoom * 100) + "%"
                     color: theme.colors.muted
                     font.pixelSize: Math.round(11 * theme.textScale)
@@ -2573,6 +2574,7 @@ Item {
                 anchors.centerIn: parent
                 spacing: 5
                 Label {
+                    textFormat: Text.PlainText
                     text: legendChip.open ? "Key  ▾" : "Key  ▸"
                     color: theme.colors.muted
                     font.pixelSize: Math.round(10 * theme.textScale)
@@ -2641,6 +2643,7 @@ Item {
                             }
                         }
                         Label {
+                            textFormat: Text.PlainText
                             text: legendRow.modelData.t
                             color: theme.colors.muted
                             font.pixelSize: Math.round(10 * theme.textScale)
@@ -2660,6 +2663,7 @@ Item {
                 id: summary
                 anchors.centerIn: parent
                 objectName: "topologySummary"
+                textFormat: Text.PlainText
                 text: topo.graph.exposed > 0 ? "● " + topo.graph.exposed + " running VM" + (topo.graph.exposed === 1 ? "" : "s") + " can reach the internet" : "✓ No running VM can reach the internet"
                 color: topo.graph.exposed > 0 ? theme.colors.warning : theme.colors.success
                 font.pixelSize: Math.round(11 * theme.textScale)
@@ -2782,6 +2786,7 @@ Item {
                         Layout.fillWidth: true
                     }
                     Label {
+                        textFormat: Text.PlainText
                         text: topo.trace ? "Step " + (topo.trace.index + 1) + " of " + tracePanel.count : ""
                         color: theme.colors.muted
                         font.pixelSize: Math.round(11 * theme.textScale)
@@ -2905,23 +2910,27 @@ Item {
                     rowSpacing: 1
                     Layout.topMargin: 4
                     Label {
+                        textFormat: Text.PlainText
                         text: "↑ " + topo.rateText(trafficCard.stats ? trafficCard.stats.tx : null)
                         color: theme.colors.accent
                         font.pixelSize: Math.round(12 * theme.textScale)
                         font.weight: Font.DemiBold
                     }
                     Label {
+                        textFormat: Text.PlainText
                         text: "↓ " + topo.rateText(trafficCard.stats ? trafficCard.stats.rx : null)
                         color: theme.colors.success
                         font.pixelSize: Math.round(12 * theme.textScale)
                         font.weight: Font.DemiBold
                     }
                     Label {
+                        textFormat: Text.PlainText
                         text: (trafficCard.stats && trafficCard.stats.txPkts !== null ? Math.round(trafficCard.stats.txPkts) : "–") + " packets/s"
                         color: theme.colors.muted
                         font.pixelSize: Math.round(10 * theme.textScale)
                     }
                     Label {
+                        textFormat: Text.PlainText
                         text: (trafficCard.stats && trafficCard.stats.rxPkts !== null ? Math.round(trafficCard.stats.rxPkts) : "–") + " packets/s"
                         color: theme.colors.muted
                         font.pixelSize: Math.round(10 * theme.textScale)
@@ -2958,6 +2967,7 @@ Item {
                 Label {
                     visible: !!trafficCard.stats
                     Layout.fillWidth: true
+                    textFormat: Text.PlainText
                     text: !trafficCard.stats ? "" : (trafficCard.stats.errorsTotal > 0 ? "⚠ " + trafficCard.stats.errorsTotal + " errors or dropped packets" : "No errors or dropped packets")
                     color: trafficCard.stats && trafficCard.stats.errorsTotal > 0 ? theme.colors.warning : theme.colors.muted
                     font.pixelSize: Math.round(10 * theme.textScale)
@@ -2974,6 +2984,7 @@ Item {
                     color: theme.colors.muted
                     font.pixelSize: Math.round(10 * theme.textScale)
                     Layout.topMargin: 2
+                    textFormat: Text.PlainText
                     text: !trafficCard.cable ? "" : "Double-click to " + (trafficCard.cable.up ? "pull" : "plug in") + " · right-click for more"
                 }
             }

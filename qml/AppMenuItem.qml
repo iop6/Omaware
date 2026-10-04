@@ -10,6 +10,7 @@ MenuItem {
     rightPadding: subMenu ? 32 : 14
     opacity: enabled ? 1 : 0.4
     contentItem: Label {
+        textFormat: Text.PlainText
         text: (entry.highlighted ? "▸ " : "  ") + entry.text
         color: theme.colors.foreground
         font.pixelSize: Math.round((13) * theme.textScale)

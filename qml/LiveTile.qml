@@ -36,6 +36,7 @@ Rectangle {
                 height: 16
             }
             Label {
+                textFormat: Text.PlainText
                 text: tile.label
                 color: theme.colors.muted
                 font.pixelSize: Math.round(11 * theme.textScale)
@@ -68,6 +69,7 @@ Rectangle {
                         }
                     }
                     Label {
+                        textFormat: Text.PlainText
                         text: modelData.label
                         color: theme.colors.muted
                         font.pixelSize: Math.round(11 * theme.textScale)
@@ -76,6 +78,7 @@ Rectangle {
             }
         }
         Label {
+            textFormat: Text.PlainText
             text: tile.value
             color: theme.colors.foreground
             font.pixelSize: Math.round(24 * theme.textScale)
@@ -86,6 +89,7 @@ Rectangle {
         }
         Label {
             visible: text !== ""
+            textFormat: Text.PlainText
             text: tile.detail
             color: theme.colors.muted
             font.pixelSize: Math.round(11 * theme.textScale)

@@ -72,6 +72,7 @@ Dialog {
                 Layout.fillWidth: true
                 spacing: 4
                 Label {
+                    textFormat: Text.PlainText
                     text: "» " + dialog.heading
                     color: theme.colors.foreground
                     font.pixelSize: Math.round((21) * theme.textScale)
@@ -82,6 +83,7 @@ Dialog {
                 }
                 Label {
                     visible: text !== ""
+                    textFormat: Text.PlainText
                     text: dialog.subtitle
                     color: theme.colors.muted
                     font.pixelSize: Math.round((12) * theme.textScale)

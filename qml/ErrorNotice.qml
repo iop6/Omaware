@@ -61,6 +61,7 @@ ColumnLayout {
             clip: true
             contentWidth: availableWidth
             AppTextArea {
+                textFormat: Text.PlainText
                 text: notice.message
                 readOnly: true
                 selectByMouse: true

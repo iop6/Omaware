@@ -220,6 +220,7 @@ Popup {
                         Label {
                             id: groupLabel
                             visible: row.first
+                            textFormat: Text.PlainText
                             text: row.modelData.group.toUpperCase()
                             color: theme.colors.muted
                             font.pixelSize: Math.round(10 * theme.textScale)
@@ -244,6 +245,7 @@ Popup {
                                 anchors.rightMargin: 9
                                 spacing: 1
                                 Label {
+                                    textFormat: Text.PlainText
                                     text: row.modelData.title
                                     color: row.picked ? theme.colors.accent : theme.colors.foreground
                                     font.weight: row.picked ? Font.DemiBold : Font.Normal
@@ -252,6 +254,7 @@ Popup {
                                 }
                                 Label {
                                     visible: row.hit !== ""
+                                    textFormat: Text.PlainText
                                     text: row.hit
                                     color: theme.colors.muted
                                     font.pixelSize: Math.round(10 * theme.textScale)
@@ -271,6 +274,7 @@ Popup {
                 }
                 Label {
                     visible: help.shown.length === 0
+                    textFormat: Text.PlainText
                     text: "Nothing matches “" + help.query + "”."
                     color: theme.colors.muted
                     wrapMode: Text.WordWrap
@@ -288,6 +292,7 @@ Popup {
                 Layout.margins: 14
                 Layout.bottomMargin: 0
                 Label {
+                    textFormat: Text.PlainText
                     text: help.topic ? help.topic.group : ""
                     color: theme.colors.muted
                     font.pixelSize: Math.round(11 * theme.textScale)

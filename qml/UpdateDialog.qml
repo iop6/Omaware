@@ -95,6 +95,7 @@ AppDialog {
                 anchors.margins: 10
                 wrapMode: Text.WordWrap
                 color: dialog.runningCount > 0 ? theme.colors.warning : theme.colors.muted
+                textFormat: Text.PlainText
                 text: dialog.runningCount > 0 ? "Updating restarts OmaWare. Your " + (dialog.runningCount === 1 ? "running VM" : dialog.runningCount + " running VMs") + " will be paused first. When OmaWare reopens, choose Resume all and they continue exactly where they left off." : "Updating restarts OmaWare. It only takes a few seconds."
             }
         }
@@ -115,6 +116,7 @@ AppDialog {
                 objectName: "updateProgressText"
                 Layout.fillWidth: true
                 wrapMode: Text.WordWrap
+                textFormat: Text.PlainText
                 text: dialog.phase === "pausing" ? "Pausing " + (dialog.runningCount === 1 ? "your running VM…" : dialog.runningCount + " running VMs…") : dialog.phase === "restarting" ? "Restarting into OmaWare " + (dialog.updater ? dialog.updater.latest : "") + "…" : "Downloading and checking OmaWare " + (dialog.updater ? dialog.updater.latest : "") + "… " + Math.round((dialog.updater ? dialog.updater.progress : 0) * 100) + "%"
             }
             AppProgressBar {

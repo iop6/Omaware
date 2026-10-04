@@ -35,6 +35,7 @@ AppDialog {
             Layout.fillWidth: true
         }
         Label {
+            textFormat: Text.PlainText
             text: (deleteDialog.running ? "The VM is powered off first; anything unsaved inside it is lost. " : "") + "Its disks, all its snapshots, and its firmware and TPM settings are permanently deleted. This can't be undone.\n\nInstallation ISOs, appliance files and any disk another VM uses are kept."
             color: theme.colors.muted
             wrapMode: Text.WordWrap

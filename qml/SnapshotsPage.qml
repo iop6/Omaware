@@ -308,6 +308,7 @@ ColumnLayout {
                 Layout.fillWidth: true
             }
             Label {
+                textFormat: Text.PlainText
                 text: page.ready ? page.snapshots.length + " saved" : "Loading…"
                 color: theme.colors.muted
                 font.pixelSize: Math.round((11) * theme.textScale)
@@ -348,6 +349,7 @@ ColumnLayout {
         }
     }
     Label {
+        textFormat: Text.PlainText
         text: page.snapshotData.blocker || ""
         visible: text !== ""
         color: theme.colors.warning
@@ -359,6 +361,7 @@ ColumnLayout {
         Layout.fillWidth: true
         spacing: 6
         Label {
+            textFormat: Text.PlainText
             text: page.job.phase || "Saving snapshot…"
             color: theme.colors.accent
             Layout.fillWidth: true
@@ -399,6 +402,7 @@ ColumnLayout {
         }
         Label {
             objectName: "currentSnapshotLabel"
+            textFormat: Text.PlainText
             text: page.currentSnapshot.name ? "Current snapshot · " + page.currentSnapshot.name : "No snapshot yet"
             font.weight: Font.DemiBold
             font.pixelSize: Math.round(12 * theme.textScale)
@@ -482,6 +486,7 @@ ColumnLayout {
                 spacing: 4
                 Label {
                     objectName: "selectedSnapshotName"
+                    textFormat: Text.PlainText
                     text: page.workingSelected ? "You are here" : page.selectedSnapshot.name || ""
                     font.pixelSize: Math.round(14 * theme.textScale)
                     font.weight: Font.DemiBold
@@ -489,6 +494,7 @@ ColumnLayout {
                     elide: Text.ElideRight
                 }
                 Label {
+                    textFormat: Text.PlainText
                     text: page.workingSelected ? (page.currentSnapshot.name ? "Unsaved state after " + page.currentSnapshot.name : "Take a snapshot to save this state") : (page.selectedSnapshot.memory ? "Memory + disks · " : "Disk only · ") + (page.selectedSnapshot.kind === "copy" ? page.sizeLabel(page.selectedSnapshot.bytes || 0) + " stored" : "Size unavailable")
                     font.pixelSize: Math.round(11 * theme.textScale)
                     color: theme.colors.muted
@@ -531,6 +537,7 @@ ColumnLayout {
             }
         }
         Label {
+            textFormat: Text.PlainText
             text: page.snapshotData.restoreBlocker || (page.selectedSnapshot.healthy === false ? "Verify or recover this snapshot's files before restoring." : "")
             visible: text !== ""
             color: theme.colors.warning
@@ -793,6 +800,7 @@ ColumnLayout {
             open();
         }
         Label {
+            textFormat: Text.PlainText
             text: "“" + (deletion.snapshot.name || "") + "”"
             Layout.fillWidth: true
             font.pixelSize: Math.round((17) * theme.textScale)
@@ -817,6 +825,7 @@ ColumnLayout {
             ButtonGroup.group: deletionScope
         }
         Label {
+            textFormat: Text.PlainText
             text: wholeBranch.checked ? "All snapshots listed below will be permanently removed. Other branches stay available." : deletion.branch.length > 1 ? "Child snapshots are kept and reconnect to this snapshot’s parent." : "This saved point will be permanently removed."
             Layout.fillWidth: true
             color: theme.colors.muted
@@ -851,6 +860,7 @@ ColumnLayout {
             wrapMode: Text.WordWrap
         }
         Label {
+            textFormat: Text.PlainText
             text: deletion.stoppedRequired ? "Shut down the VM before deleting legacy internal snapshots." : "Your current VM and its working disks stay as they are. Unused files are removed; files needed by surviving snapshots stay in Storage until they are no longer needed."
             color: deletion.stoppedRequired ? theme.colors.warning : theme.colors.muted
             Layout.fillWidth: true
@@ -925,6 +935,7 @@ ColumnLayout {
                 });
         }
         Label {
+            textFormat: Text.PlainText
             text: editor.verb === "clone" ? "New VM name" : "Name"
         }
         AppField {
@@ -1020,6 +1031,7 @@ ColumnLayout {
             Layout.fillWidth: true
             wrapMode: Text.WordWrap
             color: theme.colors.muted
+            textFormat: Text.PlainText
             text: editor.verb === "restore" || editor.verb === "undo" ? (editor.savedMemory ? "The VM jumps back to the exact moment this snapshot was taken: every program, window and byte of memory, with no reboot. The display reconnects for a moment while the saved memory loads. The VM returns " + (editor.savedPaused ? "paused." : "running.") : "This snapshot has no saved memory, so the VM boots from its saved disks. " + (editor.liveCapture ? "Current memory and unsaved work are discarded." : "The VM stays stopped.")) + " Anything since then that isn't in a snapshot is discarded. Other snapshots stay available." : editor.verb === "clone" ? "Creates a separate VM with independent disks, a new VM identity and new adapter MAC addresses. It starts stopped with its adapters disconnected. The new VM boots from disk; saved memory belongs to the original VM. Guest accounts, hostname and operating-system identity are copied; change those before connecting both VMs to the same network." : editor.verb === "verify" ? "Check image structure and checksum the snapshot and its dependencies. This can take time. You can continue browsing in the background." : editor.verb === "remove" ? "Permanently remove this snapshot. Current VM disks are retained." : editor.verb === "edit" ? "Pin protects a snapshot from deletion. Known good is your label; use Verify to check stored files." : (editor.liveCapture && memory.checked ? "Saves RAM, CPU/device state and disks together. Capture pauses while saving memory, then copies disks in the background. Restoring resumes this moment; external network connections may need to reconnect." : "Captures disks and settings only. Restore needs a fresh boot; current memory and unsaved work are not saved.")
         }
         onSubmitted: execute("snapshots." + verb, {
@@ -1064,16 +1076,19 @@ ColumnLayout {
                 width: parent.width
                 spacing: 14
                 Label {
+                    textFormat: Text.PlainText
                     text: page.sizeLabel(page.storage.checkpointBytes || 0) + " snapshots · " + page.sizeLabel(page.storage.retainedBytes || 0) + " working / retained files"
                     Layout.fillWidth: true
                     wrapMode: Text.WordWrap
                 }
                 Label {
+                    textFormat: Text.PlainText
                     text: page.sizeLabel(page.storage.reclaimableBytes || 0) + " eligible for cleanup"
                     color: theme.colors.accent
                     Layout.fillWidth: true
                 }
                 Label {
+                    textFormat: Text.PlainText
                     text: page.storage.cleanupBlocker || "Files in use by a VM, pending settings or recovery are protected."
                     color: theme.colors.muted
                     Layout.fillWidth: true

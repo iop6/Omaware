@@ -95,6 +95,7 @@ Popup {
                 anchors.rightMargin: -10
                 anchors.bottom: parent.bottom
                 anchors.bottomMargin: -36
+                textFormat: Text.PlainText
                 text: panel.shop ? panel.shop.badge(panel.info.name || "") : ""
                 color: "#ffffff"
                 opacity: .12
@@ -138,6 +139,7 @@ Popup {
                     border.width: 2
                     Label {
                         anchors.centerIn: parent
+                        textFormat: Text.PlainText
                         text: panel.shop ? panel.shop.badge(panel.info.name || "") : ""
                         color: "#ffffff"
                         font.weight: Font.Bold
@@ -209,6 +211,7 @@ Popup {
                             spacing: 3
                             Label {
                                 objectName: "isoTrustTitle"
+                                textFormat: Text.PlainText
                                 text: trustBox.unverified ? "Unverified download" : "Checked against the publisher's " + (panel.info.algorithm === "sha512" ? "SHA-512" : "SHA-256") + " checksum"
                                 font.weight: Font.DemiBold
                                 color: trustBox.ink
@@ -216,6 +219,7 @@ Popup {
                                 wrapMode: Text.WordWrap
                             }
                             Label {
+                                textFormat: Text.PlainText
                                 text: trustBox.unverified ? (panel.info.trustNote || "The publisher gives no checksum that proves this file is theirs.") : "OmaWare throws the download away if it doesn't match, so you get exactly the file the publisher released."
                                 color: theme.colors.muted
                                 font.pixelSize: Math.round(12 * theme.textScale)
@@ -227,6 +231,7 @@ Popup {
                 }
                 Label {
                     visible: !!panel.info.note
+                    textFormat: Text.PlainText
                     text: panel.info.note || ""
                     color: theme.colors.warning
                     font.pixelSize: Math.round(12 * theme.textScale)
@@ -382,6 +387,7 @@ Popup {
                         indeterminate: panel.info.status !== "downloading" || !(panel.info.total || panel.info.size)
                     }
                     Label {
+                        textFormat: Text.PlainText
                         text: panel.shop ? panel.shop.progressText(panel.info) : ""
                         color: theme.colors.muted
                         font.pixelSize: Math.round(11 * theme.textScale)
@@ -429,6 +435,7 @@ Popup {
                                         Layout.fillWidth: true
                                     }
                                     Label {
+                                        textFormat: Text.PlainText
                                         text: panel.shop ? panel.shop.fileLine(copy.modelData) : ""
                                         color: copy.modelData.newest ? theme.colors.muted : theme.colors.warning
                                         font.pixelSize: Math.round(11 * theme.textScale)

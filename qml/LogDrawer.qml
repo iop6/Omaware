@@ -139,6 +139,7 @@ Rectangle {
                 width: ListView.view.width - 12
                 spacing: 12
                 Label {
+                    textFormat: Text.PlainText
                     text: drawer.stamp(line.modelData.time)
                     color: theme.colors.muted
                     font.family: "monospace"
@@ -146,6 +147,7 @@ Rectangle {
                     Layout.alignment: Qt.AlignTop
                 }
                 Label {
+                    textFormat: Text.PlainText
                     text: line.modelData.ok ? "ok  " : "FAIL"
                     color: line.modelData.ok ? theme.colors.success : theme.colors.danger
                     font.family: "monospace"
@@ -186,6 +188,7 @@ Rectangle {
                 anchors.top: parent.top
                 anchors.topMargin: 6
                 visible: tail.count === 0
+                textFormat: Text.PlainText
                 text: drawer.entries.length === 0 ? "$ waiting for operations…" : "$ no lines match"
                 color: theme.colors.muted
                 font.family: "monospace"

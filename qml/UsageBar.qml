@@ -75,11 +75,13 @@ ColumnLayout {
                     anchors.verticalCenter: parent.verticalCenter
                 }
                 Label {
+                    textFormat: Text.PlainText
                     text: modelData.label
                     color: theme.colors.muted
                     font.pixelSize: Math.round(11 * theme.textScale)
                 }
                 Label {
+                    textFormat: Text.PlainText
                     text: modelData.text || String(modelData.value)
                     color: theme.colors.foreground
                     font.pixelSize: Math.round(11 * theme.textScale)

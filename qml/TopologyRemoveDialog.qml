@@ -15,6 +15,7 @@ AppDialog {
     heading: "Remove this connection?"
     headerIcon: "network"
     contentItem: Label {
+        textFormat: Text.PlainText
         text: removeConfirm.cable ? "The VM's network adapter " + removeConfirm.cable.mac + " is removed" + (removeConfirm.cable.live ? ", on the running VM too if its OS allows it." : ".") : ""
         wrapMode: Text.WordWrap
         color: theme.colors.muted

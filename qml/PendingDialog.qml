@@ -33,6 +33,7 @@ EditorDialog {
         font.weight: Font.DemiBold
     }
     Label {
+        textFormat: Text.PlainText
         text: dialog.confirmRestart ? "Save your work inside this VM. OmaWare will request a graceful shutdown, wait for it to stop, then start it with the saved configuration." : "These changes are saved for the next full start. Discard restores an individual setting to its earlier value."
         color: theme.colors.muted
         Layout.fillWidth: true

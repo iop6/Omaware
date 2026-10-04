@@ -306,6 +306,7 @@ ColumnLayout {
                             }
                         }
                         Label {
+                            textFormat: Text.PlainText
                             text: modelData.description || ""
                             color: theme.colors.foreground
                             Layout.fillWidth: true
@@ -331,6 +332,7 @@ ColumnLayout {
                                     font.weight: Font.Bold
                                 }
                                 Label {
+                                    textFormat: Text.PlainText
                                     text: page.problemText(modelData)
                                     color: theme.colors.warning
                                     Layout.fillWidth: true
@@ -353,6 +355,7 @@ ColumnLayout {
                             visible: !!modelData.isolation && modelData.active
                             spacing: 8
                             Label {
+                                textFormat: Text.PlainText
                                 text: modelData.isolation && modelData.isolation.isolated ? "✓ Verified isolated: no path to this computer or the internet" : "✗ Isolation not verified"
                                 color: modelData.isolation && modelData.isolation.isolated ? theme.colors.success : theme.colors.danger
                                 font.weight: Font.DemiBold
@@ -372,12 +375,14 @@ ColumnLayout {
                                     Layout.fillWidth: true
                                     spacing: 8
                                     Label {
+                                        textFormat: Text.PlainText
                                         text: modelData.ok ? "✓" : "✗"
                                         color: modelData.ok ? theme.colors.success : theme.colors.danger
                                         font.weight: Font.Bold
                                         Layout.alignment: Qt.AlignTop
                                     }
                                     Label {
+                                        textFormat: Text.PlainText
                                         text: modelData.label + (modelData.ok ? "" : " — " + modelData.detail)
                                         color: modelData.ok ? theme.colors.foreground : theme.colors.danger
                                         font.pixelSize: Math.round(12 * theme.textScale)
@@ -388,6 +393,7 @@ ColumnLayout {
                             }
                             Label {
                                 visible: !!modelData.isolation
+                                textFormat: Text.PlainText
                                 text: modelData.isolation ? modelData.isolation.note : ""
                                 color: theme.colors.muted
                                 font.pixelSize: Math.round(11 * theme.textScale)
@@ -400,6 +406,7 @@ ColumnLayout {
                             Layout.fillWidth: true
                             spacing: 6
                             Label {
+                                textFormat: Text.PlainText
                                 text: networkCard.vmUsers.length ? "VMs:" : "No VMs connected"
                                 color: theme.colors.muted
                                 font.pixelSize: Math.round(12 * theme.textScale)
@@ -612,12 +619,14 @@ ColumnLayout {
                             height: 22
                         }
                         Label {
+                            textFormat: Text.PlainText
                             text: choice.modelData.title
                             font.weight: Font.DemiBold
                             font.pixelSize: Math.round(14 * theme.textScale)
                             Layout.fillWidth: true
                         }
                         Label {
+                            textFormat: Text.PlainText
                             text: choice.modelData.text
                             color: theme.colors.muted
                             font.pixelSize: Math.round(11 * theme.textScale)
@@ -702,6 +711,7 @@ ColumnLayout {
             }
         }
         Label {
+            textFormat: Text.PlainText
             text: networkEditor.modeIndex === 2 ? "No automatic addresses here: give the VMs fixed ones, or run DHCP in one of them." : ""
             visible: text !== ""
             Layout.fillWidth: true
@@ -749,6 +759,7 @@ ColumnLayout {
         actionText: verb === "authorize" ? "Allow VMs" : verb === "remove" ? "Remove network" : verb === "stop" ? "Stop network" : "Start network"
         actionTone: verb === "remove" ? "danger" : "primary"
         Label {
+            textFormat: Text.PlainText
             text: action.network.title || String(action.network.name || "").replace(/^omaware-/, "")
             font.pixelSize: Math.round((18) * theme.textScale)
             font.weight: Font.DemiBold
@@ -756,6 +767,7 @@ ColumnLayout {
             wrapMode: Text.WordWrap
         }
         Label {
+            textFormat: Text.PlainText
             text: action.verb === "authorize" ? "Your VMs run as your user, so they need permission to join this network. You'll be asked for your password once; only this network is affected." : action.verb === "remove" ? "The network is deleted. Move its VMs to another network first." : action.verb === "stop" ? "VMs can't use this network while it's stopped." : "VMs can use this network once it's running."
             color: theme.colors.muted
             Layout.fillWidth: true

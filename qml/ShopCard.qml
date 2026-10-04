@@ -113,6 +113,7 @@ Rectangle {
             anchors.rightMargin: -6
             anchors.bottom: parent.bottom
             anchors.bottomMargin: -22
+            textFormat: Text.PlainText
             text: card.shop ? card.shop.badge(card.info.name || "") : ""
             color: "#ffffff"
             opacity: .13
@@ -150,6 +151,7 @@ Rectangle {
             Label {
                 id: stateText
                 anchors.centerIn: parent
+                textFormat: Text.PlainText
                 text: stateChip.text
                 color: "#ffffff"
                 font.pixelSize: Math.round(11 * theme.textScale)
@@ -179,6 +181,7 @@ Rectangle {
         }
         Label {
             anchors.centerIn: parent
+            textFormat: Text.PlainText
             text: card.shop ? card.shop.badge(card.info.name || "") : ""
             color: "#ffffff"
             font.weight: Font.Bold
@@ -211,10 +214,12 @@ Rectangle {
                 elide: Text.ElideRight
                 font.pixelSize: Math.round(11 * theme.textScale)
                 color: card.info.error ? theme.colors.danger : card.info.updateAvailable ? theme.colors.warning : card.info.upToDate ? theme.colors.success : theme.colors.muted
+                textFormat: Text.PlainText
                 text: card.info.error ? "Couldn't check" : card.info.status === "unpacking" ? (card.image ? "Download checked, unpacking the VM disk…" : "Download checked, unpacking…") : card.info.status === "starting" ? "Asking " + (card.sourceId === "windows-11" ? "Microsoft" : "the publisher") + " for a download link…" : card.busy ? "Downloading " + (card.info.selectedVersion || "") + "…" : card.website ? (card.info.have ? "In your media: " + card.info.have : "From the publisher's website") : card.info.status === "checking" ? "Checking…" : card.info.upToDate ? "✓ Up to date · " + card.info.version : card.info.updateAvailable ? "Update: " + card.info.version + " (you have " + card.info.have + ")" : card.info.version ? card.info.version + (card.info.size ? " · " + card.shop.size(card.info.size) : "") : card.info.have ? "In your media: " + card.info.have : "Not checked yet"
             }
         }
         Label {
+            textFormat: Text.PlainText
             text: card.info.description || ""
             color: theme.colors.muted
             font.pixelSize: Math.round(12 * theme.textScale)
@@ -259,6 +264,7 @@ Rectangle {
                 indeterminate: card.info.status === "unpacking" || card.info.status === "starting" || !(card.info.total || card.info.size)
             }
             Label {
+                textFormat: Text.PlainText
                 text: card.info.status === "starting" ? "This takes a few seconds." : card.info.status === "unpacking" ? "Almost there." : card.shop ? card.shop.progressText(card.info) : ""
                 color: theme.colors.muted
                 font.pixelSize: Math.round(11 * theme.textScale)
@@ -273,6 +279,7 @@ Rectangle {
             spacing: 6
             Label {
                 readonly property var mine: card.shop ? card.shop.filesOf(card.sourceId) : []
+                textFormat: Text.PlainText
                 text: "Delete " + (mine.length === 1 ? "this file" : mine.length + " files") + " (" + (card.shop ? card.shop.size(card.shop.bytesOf(mine.map(function (f) {
                         return f.name;
                     }))) : "") + ")?"

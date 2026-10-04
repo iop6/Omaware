@@ -139,6 +139,7 @@ FocusScope {
                     }
                 }
                 Label {
+                    textFormat: Text.PlainText
                     text: "sampling every " + page.sampleInterval / 1000 + " s"
                     color: theme.colors.muted
                     font.family: "monospace"
@@ -218,6 +219,7 @@ FocusScope {
                     readonly property real ram: active.reduce(function (a, d) {
                         return a + (d.memoryMiB || 0);
                     }, 0)
+                    textFormat: Text.PlainText
                     text: active.length + " running / " + page.domains.length + " defined  ·  " + threads + " vCPU" + (page.fleet && page.fleet.host.cpus ? " on " + page.fleet.host.cpus + " threads" : "") + "  ·  " + page.mem(ram) + " assigned" + (page.fleet && page.fleet.host.memTotalMiB ? " (" + Math.round(ram / page.fleet.host.memTotalMiB * 100) + "% of host)" : "")
                     color: theme.colors.foreground
                     font.family: "monospace"
@@ -289,6 +291,7 @@ FocusScope {
                                 width: page.ch * modelData.width + (modelData.key === "name" ? page.ch * 2 : 0)
                                 height: parent.height
                                 verticalAlignment: Text.AlignVCenter
+                                textFormat: Text.PlainText
                                 text: modelData.label + (page.sortKey === modelData.key ? (page.descending ? " ▾" : " ▴") : "")
                                 color: page.sortKey === modelData.key ? theme.colors.accent : theme.colors.muted
                                 font.family: "monospace"
@@ -373,6 +376,7 @@ FocusScope {
                                 height: parent.height
                                 spacing: page.ch
                                 Label {
+                                    textFormat: Text.PlainText
                                     text: rowItem.modelData.stateCode === 1 ? "●" : rowItem.modelData.stateCode === 3 ? "‖" : "○"
                                     anchors.verticalCenter: parent.verticalCenter
                                     color: rowItem.modelData.stateCode === 1 ? theme.colors.success : rowItem.modelData.stateCode === 3 ? theme.colors.warning : theme.colors.muted
@@ -422,6 +426,7 @@ FocusScope {
                                 visible: page.showIo
                                 width: page.ch * 14
                                 anchors.verticalCenter: parent.verticalCenter
+                                textFormat: Text.PlainText
                                 text: rowItem.l ? page.rate(rowItem.l.rd) + "/" + page.rate(rowItem.l.wr) : "--"
                                 color: theme.colors.foreground
                                 font.family: "monospace"
@@ -431,6 +436,7 @@ FocusScope {
                                 visible: page.showIo
                                 width: page.ch * 14
                                 anchors.verticalCenter: parent.verticalCenter
+                                textFormat: Text.PlainText
                                 text: rowItem.l ? page.rate(rowItem.l.rx) + "/" + page.rate(rowItem.l.tx) : "--"
                                 color: theme.colors.foreground
                                 font.family: "monospace"
@@ -439,6 +445,7 @@ FocusScope {
                             Label {
                                 width: page.ch * 8
                                 anchors.verticalCenter: parent.verticalCenter
+                                textFormat: Text.PlainText
                                 text: rowItem.l ? page.uptime(rowItem.l.uptime) : "--"
                                 color: theme.colors.muted
                                 font.family: "monospace"

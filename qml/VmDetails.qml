@@ -489,6 +489,7 @@ ColumnLayout {
                         anchors.fill: parent
                         anchors.margins: 10
                         Label {
+                            textFormat: Text.PlainText
                             text: panel.info.pendingConflict ? "Saved settings changed externally" : (panel.info.changes || []).length + " changes saved for the next start"
                             font.weight: Font.DemiBold
                             Layout.fillWidth: true
@@ -615,6 +616,7 @@ ColumnLayout {
                                     }
                                 }
                                 Label {
+                                    textFormat: Text.PlainText
                                     text: "Live · every " + panel.sampleInterval / 1000 + " s · last " + Math.round(panel.sampleCapacity * panel.sampleInterval / 60000) + " min"
                                     color: theme.colors.foreground
                                     font.pixelSize: Math.round(11 * theme.textScale)
@@ -633,6 +635,7 @@ ColumnLayout {
                         }
                         Label {
                             visible: !!panel.info.active
+                            textFormat: Text.PlainText
                             text: "Up " + panel.duration(panel.live.uptimeSeconds)
                             color: theme.colors.muted
                             font.pixelSize: Math.round(12 * theme.textScale)
@@ -757,6 +760,7 @@ ColumnLayout {
                             }
                             Label {
                                 visible: memoryTile.guestReports && panel.live.hostRssMiB !== undefined
+                                textFormat: Text.PlainText
                                 text: "QEMU process holds " + panel.memory(panel.live.hostRssMiB || 0) + " on the host"
                                 color: theme.colors.muted
                                 font.pixelSize: Math.round(11 * theme.textScale)
@@ -792,6 +796,7 @@ ColumnLayout {
                                 }
                             ]
                             Label {
+                                textFormat: Text.PlainText
                                 text: (panel.live.blocks || []).length === 0 ? "No disk counters reported." : "Since start · " + panel.bytes(panel.total(panel.live.blocks, "rd_bytes")) + " read · " + panel.bytes(panel.total(panel.live.blocks, "wr_bytes")) + " written · " + panel.tally(panel.add(panel.total(panel.live.blocks, "rd_reqs"), panel.total(panel.live.blocks, "wr_reqs"))) + " operations"
                                 color: theme.colors.muted
                                 font.pixelSize: Math.round(11 * theme.textScale)
@@ -829,6 +834,7 @@ ColumnLayout {
                                 }
                             ]
                             Label {
+                                textFormat: Text.PlainText
                                 text: (panel.live.nets || []).length === 0 ? "No network counters reported." : "Since start · " + panel.bytes(panel.total(panel.live.nets, "rx_bytes")) + " received · " + panel.bytes(panel.total(panel.live.nets, "tx_bytes")) + " sent · " + panel.tally(panel.add(panel.total(panel.live.nets, "rx_pkts"), panel.total(panel.live.nets, "tx_pkts"))) + " packets"
                                 color: theme.colors.muted
                                 font.pixelSize: Math.round(11 * theme.textScale)
@@ -845,6 +851,7 @@ ColumnLayout {
                                     height: 13
                                 }
                                 Label {
+                                    textFormat: Text.PlainText
                                     text: panel.tally(networkTile.faults) + " errors or dropped packets since start"
                                     color: theme.colors.warning
                                     font.pixelSize: Math.round(11 * theme.textScale)
@@ -880,6 +887,7 @@ ColumnLayout {
                                         Layout.fillWidth: true
                                     }
                                     Label {
+                                        textFormat: Text.PlainText
                                         text: panel.vcpuRows.length ? panel.vcpuRows.length + " online" : ""
                                         color: theme.colors.muted
                                         font.pixelSize: Math.round(11 * theme.textScale)
@@ -1116,11 +1124,13 @@ ColumnLayout {
                                         color: theme.colors.muted
                                     }
                                     Label {
+                                        textFormat: Text.PlainText
                                         text: modelData.device === "cdrom" ? "Optical drive" : "Disk " + modelData.target
                                         font.weight: Font.DemiBold
                                         Layout.fillWidth: true
                                     }
                                     Label {
+                                        textFormat: Text.PlainText
                                         text: modelData.capacityBytes ? Number((modelData.capacityBytes / 1073741824).toFixed(1)) + " GiB" : ""
                                         color: theme.colors.accent
                                     }
@@ -1165,6 +1175,7 @@ ColumnLayout {
                                             Layout.fillWidth: true
                                         }
                                         Label {
+                                            textFormat: Text.PlainText
                                             text: "Read " + panel.rate(diskCard.io ? panel.latest(diskCard.io.rd) : null) + " · Write " + panel.rate(diskCard.io ? panel.latest(diskCard.io.wr) : null)
                                             color: theme.colors.foreground
                                             font.pixelSize: Math.round(11 * theme.textScale)
@@ -1352,6 +1363,7 @@ ColumnLayout {
                                 }
                             }
                             Label {
+                                textFormat: Text.PlainText
                                 text: containmentCard.on ? "This VM can only use switches that pass live isolation checks, with no shared folders, clipboard sharing, USB/PCI passthrough or network-exposed console. OmaWare refuses to start, resume or revert it otherwise." : "For running untrusted software, such as unknown downloads or security testing. Containment limits this VM to verified isolated switches (or no network) and blocks shared folders, clipboard sharing, device passthrough and network-exposed consoles. OmaWare enforces it on every start, resume, revert and clone."
                                 color: theme.colors.muted
                                 font.pixelSize: Math.round(12 * theme.textScale)
@@ -1360,6 +1372,7 @@ ColumnLayout {
                             }
                             Label {
                                 visible: containmentCard.violations.length > 0
+                                textFormat: Text.PlainText
                                 text: containmentCard.on ? "Blocking start:" : "Fix before containing:"
                                 color: theme.colors.danger
                                 font.weight: Font.DemiBold
@@ -1468,6 +1481,7 @@ ColumnLayout {
                         }
                     }
                     Label {
+                        textFormat: Text.PlainText
                         text: panel.info.active ? "Changes apply to the running VM straight away when its OS supports it. You can also connect VMs on the Networks map." : "Changes apply when you start this VM. You can also connect VMs on the Networks map."
                         color: theme.colors.muted
                         font.pixelSize: Math.round((12) * theme.textScale)
@@ -1492,6 +1506,7 @@ ColumnLayout {
                                 wrapMode: Text.WordWrap
                             }
                             Label {
+                                textFormat: Text.PlainText
                                 text: panel.runtimeText()
                                 font.pixelSize: Math.round((11) * theme.textScale)
                                 color: theme.colors.muted
@@ -1532,6 +1547,7 @@ ColumnLayout {
                                         color: theme.colors.accent
                                     }
                                     Label {
+                                        textFormat: Text.PlainText
                                         text: "Adapter " + (index + 1)
                                         font.weight: Font.DemiBold
                                         Layout.fillWidth: true
@@ -1568,6 +1584,7 @@ ColumnLayout {
                                     RowLayout {
                                         Layout.fillWidth: true
                                         Label {
+                                            textFormat: Text.PlainText
                                             text: "Live traffic · " + nicCard.target
                                             color: theme.colors.muted
                                             font.pixelSize: Math.round(11 * theme.textScale)
@@ -1575,6 +1592,7 @@ ColumnLayout {
                                             Layout.fillWidth: true
                                         }
                                         Label {
+                                            textFormat: Text.PlainText
                                             text: "↓ " + panel.rate(nicCard.io ? panel.latest(nicCard.io.rx) : null) + "   ↑ " + panel.rate(nicCard.io ? panel.latest(nicCard.io.tx) : null)
                                             color: theme.colors.foreground
                                             font.pixelSize: Math.round(11 * theme.textScale)
@@ -1604,6 +1622,7 @@ ColumnLayout {
                                     }
                                     Label {
                                         visible: nicCard.counters !== null
+                                        textFormat: Text.PlainText
                                         text: nicCard.counters ? "Since start · " + panel.bytes(nicCard.counters.rx_bytes) + " received · " + panel.bytes(nicCard.counters.tx_bytes) + " sent" : ""
                                         color: theme.colors.muted
                                         font.pixelSize: Math.round(11 * theme.textScale)
@@ -1669,6 +1688,7 @@ ColumnLayout {
                             }
                         }
                         Label {
+                            textFormat: Text.PlainText
                             text: panel.value("addressStatus")
                             color: theme.colors.muted
                             font.pixelSize: Math.round((11) * theme.textScale)
@@ -1685,6 +1705,7 @@ ColumnLayout {
                             }
                         }
                         Label {
+                            textFormat: Text.PlainText
                             text: panel.value("networkStatus")
                             color: theme.colors.muted
                             font.pixelSize: Math.round((11) * theme.textScale)

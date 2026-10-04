@@ -39,6 +39,7 @@ Rectangle {
             }
         }
         Label {
+            textFormat: Text.PlainText
             text: badge.text.toUpperCase()
             color: badge.ink
             font.family: "monospace"

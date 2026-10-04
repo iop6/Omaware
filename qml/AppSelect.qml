@@ -11,6 +11,7 @@ ComboBox {
     hoverEnabled: true
     opacity: enabled ? 1 : 0.45
     contentItem: Label {
+        textFormat: Text.PlainText
         text: control.displayText
         font: control.font
         color: theme.colors.foreground
@@ -41,6 +42,7 @@ ComboBox {
         leftPadding: 12
         rightPadding: 30
         contentItem: Label {
+            textFormat: Text.PlainText
             text: option.text
             font.pixelSize: Math.round((13) * theme.textScale)
             color: theme.colors.foreground

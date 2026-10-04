@@ -362,6 +362,7 @@ EditorDialog {
                 wrapMode: Text.WordWrap
                 font.pixelSize: Math.round(11 * theme.textScale)
                 color: dialog.needsTpm && !dialog.caps.tpm ? theme.colors.warning : theme.colors.muted
+                textFormat: Text.PlainText
                 text: !dialog.caps.tpm ? (dialog.needsTpm ? "Windows 11 needs a TPM, and this computer can't provide one yet: install the swtpm package, then reopen this window." : "Install the swtpm package to give VMs a TPM.") : dialog.needsTpm ? "Windows 11 needs it. Snapshots keep its contents too." : "Optional for this version of Windows."
             }
         }
@@ -395,6 +396,7 @@ EditorDialog {
                     wrapMode: Text.WordWrap
                     color: theme.colors.muted
                     font.pixelSize: Math.round(12 * theme.textScale)
+                    textFormat: Text.PlainText
                     text: !unattended.checked ? "The installer asks its usual questions; answer them on the VM's screen." : dialog.setupKind === "windows" ? "Windows installs by itself, with this account as an administrator (no Microsoft account needed). It takes 20–40 minutes and restarts a few times." + (dialog.mediaInfo.source === "windows-11" ? " Windows 11 Pro is installed without a product key: activate it with your own license." : "") + (dialog.mediaInfo.source === "windows-server" ? " Windows Server's Administrator gets the same password, which must be complex (upper and lower case, digits). Sign in before shutting it down: Windows Server ignores Shut down at its sign-in screen." : "") + " When you first shut it down afterwards, OmaWare takes out the installation media." : "Installs Ubuntu Server with this account as an administrator (sudo), OpenSSH and the QEMU guest agent. About 10 minutes; then OmaWare takes out the installation media and starts the new system."
                 }
                 GridLayout {
@@ -449,6 +451,7 @@ EditorDialog {
             }
         }
         Label {
+            textFormat: Text.PlainText
             text: cpus.text + " processors · " + Number(Number(memory.text) / 1024).toFixed(1) + " GiB memory · " + (sourceMode.currentIndex === 0 ? disk.text + " GiB disk" : "Source disk capacity")
             color: theme.colors.muted
             Layout.fillWidth: true
@@ -507,6 +510,7 @@ EditorDialog {
                 }
             }
             Label {
+                textFormat: Text.PlainText
                 text: "Host: " + (dialog.caps.cpus || "…") + " CPUs · " + (dialog.caps.memoryMiB ? Math.round(dialog.caps.memoryMiB / 1024) + " GiB RAM" : "Reading capacity…")
                 color: theme.colors.muted
                 font.pixelSize: Math.round((11) * theme.textScale)
@@ -526,6 +530,7 @@ EditorDialog {
                 onActivated: dialog.selectedNetwork = dialog.networks[currentIndex].id
             }
             Label {
+                textFormat: Text.PlainText
                 text: (dialog.networks[network.currentIndex] || {}).reason || ""
                 visible: text !== ""
                 color: theme.colors.warning
@@ -629,6 +634,7 @@ EditorDialog {
             }
         }
         Label {
+            textFormat: Text.PlainText
             text: dialog.settingUp ? "The VM starts stopped. Start it and the installer runs by itself." : "The VM starts stopped. Imported disks are copied."
             color: theme.colors.muted
             Layout.fillWidth: true

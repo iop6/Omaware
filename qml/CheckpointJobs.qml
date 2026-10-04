@@ -39,6 +39,7 @@ Drawer {
             }
         }
         Label {
+            textFormat: Text.PlainText
             text: panel.job.phase || "No snapshot operations yet."
             Layout.fillWidth: true
             wrapMode: Text.WordWrap
@@ -57,6 +58,7 @@ Drawer {
                 Layout.fillWidth: true
                 color: theme.colors.muted
                 wrapMode: Text.WordWrap
+                textFormat: Text.PlainText
                 text: panel.job.active ? (panel.job.total > 0 ? Math.min(100, Math.round(100 * panel.job.completed / panel.job.total)) + "% · " : "") + (panel.job.rate > 0 ? (panel.job.rate / 1048576).toFixed(1) + " MiB/s · " : "") + (panel.job.eta > 0 ? "About " + Math.ceil(panel.job.eta) + "s left" : "Estimating time") : panel.job.elapsed !== undefined ? "Elapsed: " + panel.job.elapsed + "s" : ""
             }
             AppButton {
@@ -68,6 +70,7 @@ Drawer {
         }
         Label {
             visible: !!panel.job.active
+            textFormat: Text.PlainText
             text: panel.job.cancellable ? "You can browse the library and inspect VMs while this runs." : panel.job.phase === "Saving VM memory and device state" ? "The guest is paused while memory is saved. Disk copying follows in the background." : "The VM is switching state. This step cannot be cancelled."
             Layout.fillWidth: true
             wrapMode: Text.WordWrap

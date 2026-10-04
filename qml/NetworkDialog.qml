@@ -87,6 +87,7 @@ AppDialog {
             width: parent.width
             spacing: 14
             Label {
+                textFormat: Text.PlainText
                 text: dialog.targetName
                 font.weight: Font.DemiBold
                 color: theme.colors.foreground
@@ -112,6 +113,7 @@ AppDialog {
                     enabled: !dialog.applying
                 }
                 Label {
+                    textFormat: Text.PlainText
                     text: dialog.choice.description || ""
                     color: theme.colors.muted
                     font.pixelSize: Math.round((12) * theme.textScale)
@@ -121,6 +123,7 @@ AppDialog {
                 Label {
                     visible: dialog.contained
                     objectName: "containedNotice"
+                    textFormat: Text.PlainText
                     text: dialog.allowed(dialog.choice) ? "Contained VM · this switch passed live isolation checks." : "Contained VM · only switches that pass live isolation checks can be used. Create an isolated switch in Networks, or remove this adapter."
                     color: dialog.allowed(dialog.choice) ? theme.colors.success : theme.colors.danger
                     font.pixelSize: Math.round((12) * theme.textScale)
@@ -141,6 +144,7 @@ AppDialog {
                     objectName: "adapterAdvanced"
                     title: "Advanced adapter settings"
                     Label {
+                        textFormat: Text.PlainText
                         text: dialog.adapter.mac ? "MAC address  " + dialog.adapter.mac : "A unique MAC address will be assigned automatically."
                         color: theme.colors.muted
                         font.pixelSize: Math.round((12) * theme.textScale)
@@ -149,6 +153,7 @@ AppDialog {
                     }
                     Label {
                         visible: !!dialog.choice.subnet
+                        textFormat: Text.PlainText
                         text: "Host subnet: " + (dialog.choice.subnet || "")
                         color: theme.colors.muted
                         font.pixelSize: Math.round((11) * theme.textScale)
@@ -190,6 +195,7 @@ AppDialog {
                 Layout.topMargin: 4
             }
             Label {
+                textFormat: Text.PlainText
                 text: dialog.running ? "The change is applied to the running VM straight away if its OS supports it (most Linux and Windows guests do). Otherwise it takes effect after a full shutdown and start." : dialog.removing ? "This removes the adapter. Other adapters and disks are kept." : "The VM uses this when it starts."
                 color: theme.colors.muted
                 font.pixelSize: Math.round((12) * theme.textScale)

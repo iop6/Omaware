@@ -80,6 +80,7 @@ Item {
                 color: theme.colors.muted
             }
             Label {
+                textFormat: Text.PlainText
                 text: row.group === "favorites" ? "★ favorites" : row.group === "" ? "unsorted" : row.group
                 color: row.group === "favorites" ? theme.colors.warning : theme.colors.muted
                 font.pixelSize: Math.round(11 * theme.textScale)
@@ -88,6 +89,7 @@ Item {
                 Layout.fillWidth: true
             }
             Label {
+                textFormat: Text.PlainText
                 text: row.shell.groupCount(row.group)
                 color: theme.colors.muted
                 font.pixelSize: Math.round(10 * theme.textScale)
@@ -215,6 +217,7 @@ Item {
                         }
                     }
                     Label {
+                        textFormat: Text.PlainText
                         text: row.vm.stateCode === 1 ? "●" : row.vm.stateCode === 3 ? "‖" : row.vm.stateCode === 6 ? "✕" : "○"
                         color: row.stateInk
                         font.pixelSize: Math.round(11 * theme.textScale)
@@ -231,6 +234,7 @@ Item {
                     }
                     Label {
                         visible: !body.hovered && !menuButton.activeFocus
+                        textFormat: Text.PlainText
                         text: row.running && row.live && row.live.cpu !== null ? Math.round(row.live.cpu) + "%" : row.vm.owned ? row.shell.memoryLabel(row.vm.memoryMiB) : ""
                         color: row.running && row.live && row.live.cpu !== null ? theme.colors.foreground : theme.colors.muted
                         font.pixelSize: Math.round(11 * theme.textScale)
@@ -257,6 +261,7 @@ Item {
                     spacing: 4
                     Label {
                         visible: row.chips.length === 0
+                        textFormat: Text.PlainText
                         text: row.vm.state.toLowerCase()
                         color: theme.colors.muted
                         font.pixelSize: Math.round(10 * theme.textScale)
@@ -267,6 +272,7 @@ Item {
                             id: chip
                             required property var modelData
                             readonly property color ink: modelData.ink
+                            textFormat: Text.PlainText
                             text: modelData.text
                             color: ink
                             font.pixelSize: Math.round(9 * theme.textScale)

@@ -1133,6 +1133,7 @@ ApplicationWindow {
                                 font.letterSpacing: -0.5
                             }
                             Label {
+                                textFormat: Text.PlainText
                                 text: backend.uri
                                 color: theme.colors.muted
                                 font.pixelSize: Math.round((10) * theme.textScale)
@@ -1225,6 +1226,7 @@ ApplicationWindow {
                             Layout.fillWidth: true
                         }
                         Label {
+                            textFormat: Text.PlainText
                             text: backend.domains.length + " VMs"
                             color: theme.colors.muted
                             font.pixelSize: Math.round((11) * theme.textScale)
@@ -1356,6 +1358,7 @@ ApplicationWindow {
                                     font.weight: Font.Bold
                                 }
                                 Label {
+                                    textFormat: Text.PlainText
                                     text: root.pausedOnExit.length + (root.pausedOnExit.length === 1 ? " VM was" : " VMs were") + " paused when OmaWare closed"
                                     color: theme.colors.foreground
                                     font.pixelSize: Math.round(11 * theme.textScale)
@@ -1503,6 +1506,7 @@ ApplicationWindow {
                                 height: 24
                             }
                             Label {
+                                textFormat: Text.PlainText
                                 text: !backend.connected ? "Waiting for connection" : backend.domains.length === 0 ? "Your library starts here" : "No matching VMs"
                                 font.weight: Font.Medium
                                 horizontalAlignment: Text.AlignHCenter
@@ -1510,6 +1514,7 @@ ApplicationWindow {
                                 wrapMode: Text.WordWrap
                             }
                             Label {
+                                textFormat: Text.PlainText
                                 text: !backend.connected ? "Your library will appear here." : backend.domains.length === 0 ? "Create a VM to get started." : "Try another name, tag or filter."
                                 color: theme.colors.muted
                                 font.pixelSize: Math.round((11) * theme.textScale)
@@ -1546,6 +1551,7 @@ ApplicationWindow {
                             anchors.margins: 8
                             spacing: 6
                             Label {
+                                textFormat: Text.PlainText
                                 text: updater.status === "ready" ? "OmaWare " + updater.latest + " is ready" : updater.status === "downloading" ? "Downloading OmaWare " + updater.latest + " · " + Math.round(updater.progress * 100) + "%" : "OmaWare " + updater.latest + " is available"
                                 font.pixelSize: Math.round(11 * theme.textScale)
                                 font.weight: Font.DemiBold
@@ -1601,6 +1607,7 @@ ApplicationWindow {
                             anchors.margins: 8
                             spacing: 5
                             Label {
+                                textFormat: Text.PlainText
                                 text: isoBar.active.length ? "Downloading " + isoBar.active[0].name + (isoBar.active[0].total ? " · " + Math.round(100 * isoBar.active[0].received / isoBar.active[0].total) + "%" : "") + (isoBar.active.length > 1 ? " · +" + (isoBar.active.length - 1) + " more" : "") : ""
                                 font.pixelSize: Math.round(11 * theme.textScale)
                                 elide: Text.ElideRight
@@ -1645,6 +1652,7 @@ ApplicationWindow {
                                 spacing: 6
                                 Label {
                                     objectName: "bulkCount"
+                                    textFormat: Text.PlainText
                                     text: root.marked.length + " selected"
                                     color: theme.colors.foreground
                                     font.weight: Font.DemiBold
@@ -1856,11 +1864,13 @@ ApplicationWindow {
                             Layout.fillWidth: true
                             spacing: 3
                             Label {
+                                textFormat: Text.PlainText
                                 text: backend.connected ? "Local session" : "Disconnected"
                                 font.weight: Font.Medium
                                 font.pixelSize: Math.round((12) * theme.textScale)
                             }
                             Label {
+                                textFormat: Text.PlainText
                                 text: backend.connected ? root.activeCount + " active · " + backend.domains.length + " total" : "Reconnect to load your VMs"
                                 color: theme.colors.muted
                                 font.pixelSize: Math.round((10) * theme.textScale)
@@ -1904,6 +1914,7 @@ ApplicationWindow {
                                 font.pixelSize: Math.round((11) * theme.textScale)
                             }
                             Label {
+                                textFormat: Text.PlainText
                                 text: ":~/vms" + (root.selected ? "/" + root.selected.name : "") + (root.detailsOpen ? (vmDetails.page === 3 ? "/snapshots" : "/details") : "")
                                 color: theme.colors.accent
                                 font.pixelSize: Math.round((11) * theme.textScale)
@@ -1961,6 +1972,7 @@ ApplicationWindow {
                             }
                             Label {
                                 visible: !root.selected || !root.selected.owned || root.selected.diskless
+                                textFormat: Text.PlainText
                                 text: !root.selected ? "Create a VM to get started." : !root.selected.owned ? "Read-only virtual machine" : root.selected.diskless ? "Test virtual machine" : "Managed virtual machine"
                                 color: theme.colors.muted
                                 font.pixelSize: Math.round((12) * theme.textScale)
@@ -2053,6 +2065,7 @@ ApplicationWindow {
                             visible: !backend.connected
                             Layout.fillWidth: true
                             Label {
+                                textFormat: Text.PlainText
                                 text: backend.busy ? "Connecting to your local VM session…" : "The local session is disconnected."
                                 Layout.fillWidth: true
                                 wrapMode: Text.WordWrap
@@ -2234,6 +2247,7 @@ ApplicationWindow {
                                         }
                                     }
                                     Label {
+                                        textFormat: Text.PlainText
                                         text: !backend.connected ? "Let's get connected" : !root.selected ? "A workspace of your own" : !root.selected.owned ? "This VM is read only" : root.stopped ? "Ready when you are" : !root.consoleWanted ? "Console closed" : backend.busy ? "Opening your console…" : "Console unavailable"
                                         font.pixelSize: Math.round((emptyView.height < 240 ? 20 : 23) * theme.textScale)
                                         font.weight: Font.DemiBold
@@ -2242,6 +2256,7 @@ ApplicationWindow {
                                         wrapMode: Text.WordWrap
                                     }
                                     Label {
+                                        textFormat: Text.PlainText
                                         text: !backend.connected ? "Connect to your local session to see your virtual machines." : !root.selected ? "Create a VM from an ISO or an existing disk image. Your virtual machines will appear in the library." : !root.selected.owned ? "Power controls and console input are available for OmaWare-managed VMs." : root.stopped ? "Start this virtual machine to open its display here." : !root.consoleWanted ? (root.paused ? "Your VM is still paused. Reopen its display whenever you need it." : "Your VM is still running. Reopen its display whenever you need it.") : backend.busy ? "Connecting to the virtual machine's display." : display.status
                                         color: theme.colors.muted
                                         font.pixelSize: Math.round((13) * theme.textScale)
@@ -2315,6 +2330,7 @@ ApplicationWindow {
                     }
                     Label {
                         visible: text !== ""
+                        textFormat: Text.PlainText
                         text: root.selected && root.selected.diskless ? "This test VM has no OS. A “no bootable device” message is expected." : ""
                         font.pixelSize: Math.round((11) * theme.textScale)
                         color: theme.colors.muted
@@ -2414,6 +2430,7 @@ ApplicationWindow {
                     Label {
                         id: modeLabel
                         anchors.centerIn: parent
+                        textFormat: Text.PlainText
                         text: root.navigation === "monitor" ? "MONITOR" : root.navigation === "networks" ? "NETWORKS" : root.navigation === "isos" ? "ISO SHOP" : root.consoleFocus ? "CONSOLE" : root.detailsOpen ? "DETAILS" : "NORMAL"
                         color: theme.colors.accentText
                         font.weight: Font.Bold
@@ -2457,6 +2474,7 @@ ApplicationWindow {
                         anchors.verticalCenter: parent.verticalCenter
                     }
                     Label {
+                        textFormat: Text.PlainText
                         text: fleet.host.cpu === null || fleet.host.cpu === undefined ? "--" : ("  " + Math.round(fleet.host.cpu)).slice(-3) + "%"
                         color: theme.colors.foreground
                         font.pixelSize: Math.round((11) * theme.textScale)
@@ -2476,6 +2494,7 @@ ApplicationWindow {
                         anchors.verticalCenter: parent.verticalCenter
                     }
                     Label {
+                        textFormat: Text.PlainText
                         text: fleet.host.memUsedMiB && fleet.host.memTotalMiB ? Math.round(fleet.host.memUsedMiB / fleet.host.memTotalMiB * 100) + "%" : "--"
                         color: theme.colors.foreground
                         font.pixelSize: Math.round((11) * theme.textScale)
@@ -2483,6 +2502,7 @@ ApplicationWindow {
                     }
                 }
                 Label {
+                    textFormat: Text.PlainText
                     text: "vm " + root.activeCount + "/" + backend.domains.length
                     color: theme.colors.muted
                     font.pixelSize: Math.round((11) * theme.textScale)
@@ -2514,6 +2534,7 @@ ApplicationWindow {
                     onClicked: keyMap.open()
                 }
                 Label {
+                    textFormat: Text.PlainText
                     text: root.clock
                     color: theme.colors.accent
                     font.weight: Font.DemiBold
@@ -2797,6 +2818,7 @@ ApplicationWindow {
                 anchors.right: parent.right
                 anchors.rightMargin: consoleToolbar.width + 20
                 anchors.verticalCenter: parent.verticalCenter
+                textFormat: Text.PlainText
                 text: root.selected ? root.vmLabel(root.selected) : "Console"
                 elide: Text.ElideRight
                 font.weight: Font.DemiBold
@@ -2854,6 +2876,7 @@ ApplicationWindow {
                     anchors.right: detachedTools.left
                     anchors.rightMargin: 12
                     anchors.verticalCenter: parent.verticalCenter
+                    textFormat: Text.PlainText
                     text: root.selected ? root.vmLabel(root.selected) : "Console"
                     elide: Text.ElideRight
                     font.weight: Font.DemiBold
@@ -2962,6 +2985,7 @@ ApplicationWindow {
             open();
         }
         Label {
+            textFormat: Text.PlainText
             text: diskDialog.info.name || ""
             font.weight: Font.DemiBold
         }
@@ -2979,12 +3003,14 @@ ApplicationWindow {
             }
         }
         Label {
+            textFormat: Text.PlainText
             text: diskDialog.removing ? (diskDialog.disk.source || "") : "A new qcow2 disk with a virtio controller will be created in OmaWare's VM storage directory."
             color: theme.colors.muted
             Layout.fillWidth: true
             wrapMode: Text.WrapAnywhere
         }
         Label {
+            textFormat: Text.PlainText
             text: diskDialog.removing ? "The disk file is kept. A running VM retains its current attachment until a full shutdown and start." : "The guest needs a virtio storage driver. Format and mount the new disk inside the guest after starting it."
             color: theme.colors.muted
             Layout.fillWidth: true

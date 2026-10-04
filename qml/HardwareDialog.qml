@@ -233,6 +233,7 @@ EditorDialog {
         }
     }
     Label {
+        textFormat: Text.PlainText
         text: dialog.info.active ? "The running VM keeps its current hardware. Changes apply after a full shutdown and start and can be reviewed or discarded from Pending changes." : "These settings will be used at the VM's next start."
         color: theme.colors.muted
         Layout.fillWidth: true

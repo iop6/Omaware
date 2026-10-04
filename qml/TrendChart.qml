@@ -142,6 +142,7 @@ Item {
         visible: chart.showScale && chart.count > 0
         anchors.right: parent.right
         y: 0
+        textFormat: Text.PlainText
         text: chart.format(chart.upper)
         color: theme.colors.muted
         opacity: .8
@@ -211,6 +212,7 @@ Item {
             y: 5
             spacing: 2
             Label {
+                textFormat: Text.PlainText
                 text: chart.ago(chart.hoverIndex)
                 color: theme.colors.muted
                 font.pixelSize: Math.round(10 * theme.textScale)
@@ -229,6 +231,7 @@ Item {
                     }
                     Label {
                         readonly property var v: (modelData.values || [])[chart.hoverIndex]
+                        textFormat: Text.PlainText
                         text: modelData.label + "  " + (v === null || v === undefined ? "No sample" : chart.format(v))
                         color: theme.colors.foreground
                         font.pixelSize: Math.round(11 * theme.textScale)

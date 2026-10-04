@@ -38,6 +38,7 @@ AppDialog {
         }
         Label {
             visible: backend.activityWarning !== ""
+            textFormat: Text.PlainText
             text: backend.activityWarning
             color: theme.colors.warning
             Layout.fillWidth: true
@@ -45,6 +46,7 @@ AppDialog {
         }
         Label {
             visible: activityList.count === 0
+            textFormat: Text.PlainText
             text: activityFilter.currentIndex === 1 ? "No failures in the saved history." : "No activity yet. Recent operations will appear here."
             color: theme.colors.muted
             Layout.fillWidth: true
@@ -85,6 +87,7 @@ AppDialog {
                             height: 16
                         }
                         Label {
+                            textFormat: Text.PlainText
                             text: (activityEntry.modelData.ok ? "Completed" : "Needs attention") + " · " + Qt.formatDateTime(new Date(activityEntry.modelData.time), "MMM d, yyyy · HH:mm:ss")
                             color: theme.colors.muted
                             Layout.fillWidth: true
@@ -112,6 +115,7 @@ AppDialog {
                             wrapMode: Text.Wrap
                         }
                         AppTextArea {
+                            textFormat: Text.PlainText
                             text: activityEntry.modelData.message
                             readOnly: true
                             Layout.fillWidth: true

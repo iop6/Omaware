@@ -113,6 +113,7 @@ AppDialog {
             Layout.rightMargin: 24
             color: theme.colors.muted
             wrapMode: Text.WordWrap
+            textFormat: Text.PlainText
             text: (dialog.checkpointJob.phase || "Preparing checkpoint") + (dialog.checkpointJob.total > 0 ? " · " + Math.round(100 * (dialog.checkpointJob.completed || 0) / dialog.checkpointJob.total) + "%" : "")
         }
         RowLayout {

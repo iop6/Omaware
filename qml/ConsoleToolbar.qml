@@ -240,6 +240,7 @@ Item {
                 }
                 Label {
                     objectName: "clipboardStatus"
+                    textFormat: Text.PlainText
                     text: toolbar.clipboardStatus
                     color: theme.colors.muted
                     font.pixelSize: Math.round(11 * theme.textScale)
@@ -309,6 +310,7 @@ Item {
         contentItem: ColumnLayout {
             spacing: 14
             Label {
+                textFormat: Text.PlainText
                 text: toolbar.guestDisplay.status
                 Layout.fillWidth: true
                 wrapMode: Text.WordWrap

@@ -29,6 +29,7 @@ Rectangle {
             anchors.verticalCenter: parent.verticalCenter
         }
         Label {
+            textFormat: Text.PlainText
             text: chip.text
             color: chip.ink
             font.pixelSize: Math.round(11 * theme.textScale)

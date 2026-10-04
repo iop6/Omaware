@@ -70,6 +70,7 @@ AppDialog {
         }
         Label {
             visible: palette.matches.length === 0
+            textFormat: Text.PlainText
             text: "command not found: " + query.text.trim()
             color: theme.colors.muted
             Layout.fillWidth: true
@@ -111,6 +112,7 @@ AppDialog {
                 contentItem: RowLayout {
                     spacing: 12
                     Label {
+                        textFormat: Text.PlainText
                         text: commandItem.highlighted ? "▸" : " "
                         color: theme.colors.accent
                         font.family: "monospace"
@@ -126,6 +128,7 @@ AppDialog {
                         Layout.fillWidth: true
                         spacing: 3
                         Label {
+                            textFormat: Text.PlainText
                             text: commandItem.modelData.title
                             color: commandItem.enabled ? theme.colors.foreground : theme.colors.muted
                             font.weight: Font.DemiBold
@@ -134,6 +137,7 @@ AppDialog {
                         }
                         Label {
                             visible: text !== ""
+                            textFormat: Text.PlainText
                             text: commandItem.modelData.detail || ""
                             color: theme.colors.muted
                             font.pixelSize: Math.round((11) * theme.textScale)
@@ -143,6 +147,7 @@ AppDialog {
                     }
                     Label {
                         visible: !!commandItem.modelData.shortcut
+                        textFormat: Text.PlainText
                         text: commandItem.modelData.shortcut || ""
                         color: theme.colors.muted
                         font.family: "monospace"

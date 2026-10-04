@@ -81,6 +81,7 @@ Popup {
             Label {
                 objectName: "themeStatus"
                 visible: theme.mode === "omarchy" && !theme.status.startsWith("Following")
+                textFormat: Text.PlainText
                 text: theme.status
                 color: theme.colors.warning
                 Layout.fillWidth: true
@@ -124,6 +125,7 @@ Popup {
                     wrapMode: Text.WordWrap
                     font.pixelSize: Math.round(11 * theme.textScale)
                     color: updater.status === "error" ? theme.colors.danger : updater.status === "available" || updater.status === "ready" ? theme.colors.warning : theme.colors.muted
+                    textFormat: Text.PlainText
                     text: updater.development ? "This is a development build; it doesn't update itself." : updater.status === "checking" ? "Checking for updates…" : updater.status === "upToDate" ? "✓ You have the latest version (" + updater.current + ")." : updater.status === "available" ? "OmaWare " + updater.latest + " is available." + (updater.canInstall ? "" : " Download it from the releases page.") : updater.status === "downloading" ? "Downloading OmaWare " + updater.latest + "… " + Math.round(updater.progress * 100) + "%" : updater.status === "ready" ? "OmaWare " + updater.latest + " is downloaded and ready to install." : updater.status === "error" ? updater.error : "You have OmaWare " + updater.current + "."
                 }
                 Flow {
@@ -217,6 +219,7 @@ Popup {
                 }
                 Label {
                     visible: agent.error !== ""
+                    textFormat: Text.PlainText
                     text: agent.error
                     color: theme.colors.danger
                     Layout.fillWidth: true
@@ -234,6 +237,7 @@ Popup {
             }
             Label {
                 objectName: "appVersion"
+                textFormat: Text.PlainText
                 text: "OmaWare" + (Qt.application.version ? " " + Qt.application.version : "")
                 color: theme.colors.muted
                 Layout.fillWidth: true

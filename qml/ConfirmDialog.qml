@@ -48,6 +48,7 @@ AppDialog {
             Layout.fillWidth: true
         }
         Label {
+            textFormat: Text.PlainText
             text: confirmDialog.removing ? "This removes the VM definition from your library. Its disks are kept on your computer." : confirmDialog.bulkTargets.length > 1 ? "Power will be cut immediately on " + confirmDialog.bulkTargets.length + " VMs. Any unsaved work inside them will be lost." : "Power will be cut immediately. Any unsaved work inside this VM will be lost."
             color: theme.colors.muted
             wrapMode: Text.WordWrap

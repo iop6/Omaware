@@ -29,6 +29,7 @@ AppDialog {
                     anchors.right: parent.right
                     spacing: 18
                     Label {
+                        textFormat: Text.PlainText
                         text: modelData[0]
                         color: theme.colors.accent
                         font.weight: Font.DemiBold
@@ -44,6 +45,7 @@ AppDialog {
                         }
                     }
                     Label {
+                        textFormat: Text.PlainText
                         text: modelData[1]
                         color: theme.colors.foreground
                         Layout.fillWidth: true
