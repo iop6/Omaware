@@ -1,6 +1,6 @@
 # Changelog
 
-## 1.9.0 (unreleased)
+## 1.9.0 (2026-10-04)
 
 - The ISO Shop is now the **OS Shop**, with a new look: a spotlight for updates and favourites, a shelf per category, cards in each system's colors that show how the download is checked, a details panel, a downloads tray, and a storage bar over **Your media**. Press `/` to search.
 - New in the shop: Parrot Security, Security Onion, CAINE, Tsurugi Linux, a ready-made **Kali Linux VM** (downloaded, checked and unpacked into `appliances/`, then **Import VM**), and Windows 11 Enterprise and Windows Server 2025 evaluation copies.

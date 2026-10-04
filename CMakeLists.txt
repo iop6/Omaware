@@ -2,7 +2,7 @@ cmake_minimum_required(VERSION 3.22)
 # The one place the version is set; see CHANGELOG.md and "Versions" in README.md.
 project(OmaWare VERSION 1.9.0 LANGUAGES C CXX)
 # Development builds end in "-dev"; set this to "" for a release.
-set(OMAWARE_VERSION_SUFFIX "-dev")
+set(OMAWARE_VERSION_SUFFIX "")
 include(GNUInstallDirs)
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
