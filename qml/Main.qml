@@ -274,7 +274,7 @@ ApplicationWindow {
             {key: "log", title: "Toggle log drawer", detail: "Tail of every operation, with grep", icon: "history", keywords: "tail events console", shortcut: "Ctrl+`"},
             {key: "keys", title: "Keyboard map", detail: "Every shortcut in one place", icon: "keyboard", keywords: "help shortcuts cheatsheet", shortcut: "?"},
             {key: "updates", title: "Check for OmaWare updates", detail: "You have " + (Qt.application.version || "this version"), icon: "refresh", keywords: "update upgrade new version release"},
-            {key: "isos", title: "Open the ISO Shop", detail: "Download or update Ubuntu, Fedora, Debian, Mint, Arch and more", icon: "store", shortcut: "Ctrl+4", keywords: "download iso image installer ubuntu fedora debian windows update"},
+            {key: "isos", title: "Open the OS Shop", detail: "Download or update Ubuntu, Fedora, Debian, Kali, Windows and more", icon: "store", shortcut: "Ctrl+4", keywords: "download iso os shop image installer ova appliance ubuntu fedora debian kali windows update"},
             {key: "testvm", title: "Create diskless test VM", detail: "Firmware-only fixture", icon: "plus", enabled: backend.connected && !backend.busy, keywords: "fixture sandbox"},
             {key: "networks", title: "Open Networks", detail: "Connections and virtual switches", icon: "network", shortcut: "Ctrl+3"},
             {key: "activity", title: "Show activity history", detail: "Recent operations, including previous sessions", icon: "history"},
@@ -596,7 +596,7 @@ ApplicationWindow {
                         AppButton { text: root.sidebarRail ? "" : "Virtual machines"; iconName: "monitor"; leading: !root.sidebarRail; tone: "quiet"; checked: root.navigation === "library"; Layout.fillWidth: true; hint: "Virtual machines · Ctrl+1"; onClicked: root.navigation = "library" }
                         AppButton { objectName: "monitorNav"; text: root.sidebarRail ? "" : "Monitor"; iconName: "cpu"; leading: !root.sidebarRail; tone: "quiet"; checked: root.navigation === "monitor"; Layout.fillWidth: true; hint: "Live view of every VM · Ctrl+2"; onClicked: root.navigation = "monitor" }
                         AppButton { objectName: "networksNav"; text: root.sidebarRail ? "" : "Networks"; iconName: "network"; leading: !root.sidebarRail; tone: "quiet"; checked: root.navigation === "networks"; Layout.fillWidth: true; hint: "Networks · Ctrl+3"; onClicked: root.navigation = "networks" }
-                        AppButton { objectName: "isoShopNav"; text: root.sidebarRail ? "" : "ISO Shop"; iconName: "store"; leading: !root.sidebarRail; tone: "quiet"; checked: root.navigation === "isos"; Layout.fillWidth: true; hint: "Download installation ISOs · Ctrl+4"; onClicked: root.openShop() }
+                        AppButton { objectName: "isoShopNav"; text: root.sidebarRail ? "" : "OS Shop"; iconName: "store"; leading: !root.sidebarRail; tone: "quiet"; checked: root.navigation === "isos"; Layout.fillWidth: true; hint: "Download operating systems · Ctrl+4"; onClicked: root.openShop() }
                     }
                     Rectangle { Layout.fillWidth: true; height: 1; color: theme.colors.line }
                     RowLayout {
@@ -758,7 +758,7 @@ ApplicationWindow {
                             }
                         }
                     }
-                    // ISO downloads keep running in the background; show progress here too.
+                    // Shop downloads keep running in the background; show progress here too.
                     Rectangle {
                         id: isoBar
                         objectName: "isoDownloadBar"
@@ -769,7 +769,7 @@ ApplicationWindow {
                         ColumnLayout {
                             id: isoBarColumn; anchors.left: parent.left; anchors.right: parent.right; anchors.top: parent.top; anchors.margins: 8; spacing: 5
                             Label {
-                                text: isoBar.active.length ? "Downloading " + isoBar.active[0].name + (isoBar.active[0].total ? " · " + Math.round(100 * isoBar.active[0].received / isoBar.active[0].total) + "%" : "") : ""
+                                text: isoBar.active.length ? "Downloading " + isoBar.active[0].name + (isoBar.active[0].total ? " · " + Math.round(100 * isoBar.active[0].received / isoBar.active[0].total) + "%" : "") + (isoBar.active.length > 1 ? " · +" + (isoBar.active.length - 1) + " more" : "") : ""
                                 font.pixelSize: Math.round(11 * theme.textScale); elide: Text.ElideRight; Layout.fillWidth: true
                             }
                             AppProgressBar { Layout.fillWidth: true; from: 0; to: isoBar.active.length ? Math.max(1, isoBar.active[0].total || 1) : 1; value: isoBar.active.length ? isoBar.active[0].received || 0 : 0; indeterminate: !isoBar.active.length || !isoBar.active[0].total }
@@ -813,7 +813,7 @@ ApplicationWindow {
                         AppButton { objectName: "createVm"; text: root.sidebarRail ? "" : "Create VM"; iconName: "plus"; tone: "primary"; Layout.fillWidth: true; hint: root.sidebarRail ? "Create VM" : ""; enabled: backend.connected && !backend.busy; onClicked: createDialog.begin() }
                         AppButton { id: creationTools; visible: !root.sidebarRail; iconName: "chevron"; hint: "More creation options"; enabled: backend.connected && !backend.busy; onClicked: creationMenu.openBelow(creationTools)
                             AppMenu { id: creationMenu
-                                Action { text: "Open the ISO Shop"; onTriggered: root.openShop() }
+                                Action { text: "Open the OS Shop"; onTriggered: root.openShop() }
                                 Action { text: "Create diskless test VM"; onTriggered: backend.createTest() }
                             }
                         }
@@ -1194,7 +1194,14 @@ ApplicationWindow {
     NetworkDialog { id: networkDialog }
     IsoLibrary {
         id: isoLibrary; objectName: "isoLibrary"
-        Component.onCompleted: { const language = String(preferences.get("isoLanguage:windows-11", "")); if (language) setLanguage("windows-11", language) }
+        // The language and version last picked on each card.
+        Component.onCompleted: {
+            for (const id of sourceIds) {
+                const language = String(preferences.get("isoLanguage:" + id, "")); if (language) setLanguage(id, language)
+                const version = String(preferences.get("isoVersion:" + id, "")); if (version) setVersion(id, version)
+            }
+        }
+        onVersionChosen: function(id, version) { preferences.set("isoVersion:" + id, version) }
     }
     Updater { id: updater; objectName: "updater" }
     // Updating restarts OmaWare: running VMs are paused first (see applyUpdate), and the new copy reopens on the same page.
@@ -1257,7 +1264,7 @@ ApplicationWindow {
     Connections {
         target: isoLibrary
         function onFinished(id, ok, message) { if (!ok) root.operationError = message }
-        // Dropped ISOs: one goes straight into Create VM (unless you're looking at your ISOs); several are listed.
+        // Dropped media: one goes straight into Create VM (unless you're looking at your media); several are listed.
         function onImported(paths, ok, message) {
             isoDropZone.show(message, !ok)
             if (!ok || paths.length === 0) return
@@ -1286,16 +1293,22 @@ ApplicationWindow {
         subtitle: "Asked by an AI agent"
         headerIcon: "info"
         closePolicy: Popup.CloseOnEscape
-        onQuestionChanged: if (question.id) open(); else close()
+        onQuestionChanged: { grantBox.checked = false; if (question.id) open(); else close() }
         onRejected: if (question.id) agent.answer(question.id, false)
         contentItem: ColumnLayout {
             spacing: 14
             Label { Layout.fillWidth: true; wrapMode: Text.WordWrap; textFormat: Text.PlainText; text: agentQuestion.question.text || "" }
+            // Offered only for low-risk kinds of change; off unless ticked for this question.
+            AppCheckBox {
+                id: grantBox; objectName: "agentQuestionGrant"
+                visible: !!agentQuestion.question.grant; Layout.fillWidth: true
+                text: agentQuestion.question.grantLabel || ""
+            }
             RowLayout {
                 spacing: 8
                 Item { Layout.fillWidth: true }
                 AppButton { objectName: "agentQuestionNo"; text: "No"; onClicked: agent.answer(agentQuestion.question.id, false) }
-                AppButton { objectName: "agentQuestionYes"; text: agentQuestion.question.action || "Yes"; tone: "danger"; onClicked: agent.answer(agentQuestion.question.id, true) }
+                AppButton { objectName: "agentQuestionYes"; text: agentQuestion.question.action || "Yes"; tone: "danger"; onClicked: agent.answer(agentQuestion.question.id, true, grantBox.visible && grantBox.checked) }
             }
         }
     }
@@ -1475,7 +1488,7 @@ ApplicationWindow {
             Repeater {
                 model: [
                     [": · Ctrl+Shift+P", "Command prompt"], ["?  · F1", "This keyboard map"], ["Ctrl+K · Ctrl+F", "Search machines"],
-                    ["Ctrl+1 / 2 / 3 / 4", "Machines · Monitor · Networks · ISO Shop"], ["Ctrl+`", "Toggle the log drawer"],
+                    ["Ctrl+1 / 2 / 3 / 4", "Machines · Monitor · Networks · OS Shop"], ["Ctrl+`", "Toggle the log drawer"],
                     ["j / k  ·  ↑ / ↓", "Move through machines (list focused)"], ["Enter", "Open the console"], ["d", "Details for the selected machine"],
                     ["s", "Snapshots for the selected machine"], ["Menu · Shift+F10", "VM actions (also right-click a VM)"], ["f  ·  F2  ·  Delete", "Favorite · rename · remove a stopped VM"],
                     ["Ctrl+click · Shift+click", "Select several machines to turn on, pause or shut down together"], ["Ctrl+A  ·  Esc", "Select every listed machine · clear the selection"],

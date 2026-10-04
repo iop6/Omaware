@@ -25,7 +25,8 @@
 | `src/workspace.*` | Per-user settings (`preferences` in QML). |
 | `src/diagnostics.*` | Activity history and friendlier explanations of libvirt errors. |
 | `src/paths.*` | Where VMs and ISOs live (`~/.local/share/omaware/{vms,isos}`), with fallback to folders from earlier versions. |
-| `src/isolibrary.*` | The ISO library behind the ISO Shop (`qml/IsoShopPage.qml`): each source's lookup of the publisher's latest release, verified downloads and unpacking (`IsoLibrary` in QML). |
+| `src/unattended.*` | "Set it up for me": which ISOs can install without questions, and their answers (Windows `autounattend.xml`, Ubuntu autoinstall on `cidata`). `VmWorker::start` boots Ubuntu's installer kernel with `autoinstall` the first time; `VmWorker::finishSetup` removes the answers and media once the guest powers off. |
+| `src/isolibrary.*` | The media library behind the OS Shop (`qml/IsoShopPage.qml` with `ShopCard`, `ShopDetails` and `ShopChip`): each source's lookup of the publisher's releases (newest first, a few earlier versions), checked downloads (SHA-256, SHA-512, MD5, or none for sources marked unverified), unpacking (`.bz2` ISOs, `.7z` VM images into `appliances/`) and kept files (`IsoLibrary` in QML). Agents reach it through `get_media` (`src/agentmanagement.cpp`). |
 | `src/instance.*` | Keeps OmaWare to one running copy per user. |
 | `src/updater.*` | Built-in updates from GitHub Releases (`Updater` in QML): checks, verified download, in-place swap and restart. |
 | `src/agentbridge.*` | AI agent access (`agent` in QML): the local socket `omaware mcp` talks to, the tools, the user's approvals, and building and deleting labs. |

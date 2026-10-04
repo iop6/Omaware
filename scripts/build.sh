@@ -114,7 +114,8 @@ if [[ $install_app == 1 ]]; then
     cmake --install "$build_dir/app"
     printf '\nInstalled %s/bin/omaware and its desktop entry.\n' "$prefix"
     printf 'Optional, for bridged/isolated switches (runs as root via pkexec, so it must be root-owned):\n'
-    printf '  sudo cmake --install %s --component helper\n' "$build_dir/app"
+    printf '  sudo install -D -o root -g root -m 0755 %q /usr/local/libexec/omaware/authorize-bridge\n' "$project_dir/scripts/authorize-bridge.py"
+    printf 'or, with cmake:\n  sudo cmake --install %q --component helper\n' "$build_dir/app"
     groups | grep -qw libvirt || printf 'Note: add yourself to the "libvirt" and "kvm" groups for host networks and KVM.\n'
 else
     printf '\nBuilt %s/app/omaware. Install with: %s --install\n' "$build_dir" "$0"

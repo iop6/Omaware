@@ -76,6 +76,10 @@ Canvas {
         case "router": box(3, 12, 18, 8); line([8, 12, 6, 5]); line([16, 12, 18, 5]); for (let x of [7, 10, 13]) circle(x, 16, .5); line([16, 16, 18, 16]); break
         case "switch": box(2, 7, 20, 10); for (let x of [6, 10, 14, 18]) box(x - 1.2, 11, 2.4, 2.4); break
         case "plug": box(7, 9, 10, 7); line([10, 9, 10, 4]); line([14, 9, 14, 4]); line([12, 16, 12, 21]); break
+        // A pushpin: kept, not offered for deletion.
+        case "pin": line([9, 3, 15, 3]); line([10, 3, 10, 10, 7, 14, 17, 14, 14, 10, 14, 3]); line([12, 14, 12, 21]); break
+        case "star": line([12, 3, 14.6, 8.8, 21, 9.5, 16.2, 13.8, 17.6, 20.2, 12, 17, 6.4, 20.2, 7.8, 13.8, 3, 9.5, 9.4, 8.8, 12, 3]); break
+        case "warning": line([12, 3, 22, 20, 2, 20, 12, 3]); line([12, 9, 12, 14]); circle(12, 17, .5); break
         case "unplug": box(7, 9, 10, 7); line([10, 9, 10, 4]); line([14, 9, 14, 4]); line([12, 16, 12, 21]); line([3, 21, 21, 3]); break
         default: box(3, 4, 18, 13); line([12, 17, 12, 21]); line([8, 21, 16, 21])
         }

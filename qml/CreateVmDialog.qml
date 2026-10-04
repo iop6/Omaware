@@ -53,17 +53,23 @@ EditorDialog {
     // Windows: a TPM, which Windows 11 requires.
     readonly property bool windowsPreset: selectedPreset.indexOf("win") === 0
     readonly property bool needsTpm: selectedPreset === "win11"
+    // "Set it up for me": the chosen ISO's installer can run without questions ("windows" or "subiquity").
+    readonly property var mediaInfo: isoLibrary && sourceMode.currentIndex === 0 && source.text !== "" ? isoLibrary.identify(source.text.split("/").pop()) : ({})
+    readonly property string setupKind: mediaInfo.setup || ""
+    readonly property bool settingUp: setupKind !== "" && unattended.checked
+    readonly property bool setupValid: !settingUp || (/^[a-z_][a-z0-9_-]{0,31}$/.test(setupUser.text) && setupPassword.text.length > 0)
     onPresetsChanged: Qt.callLater(function() { preset.currentIndex = Math.max(0, dialog.presets.findIndex(function(p) { return p.id === dialog.selectedPreset })) })
     onNetworksChanged: Qt.callLater(function() { network.currentIndex = Math.max(0, dialog.networks.findIndex(function(n) { return n.id === dialog.selectedNetwork })) })
     heading: reviewing ? "Review your new VM" : "Create a virtual machine"
     headerIcon: "plus"
     subtitle: reviewing ? "Check the settings, then create" : "Choose your system. Fine-tune whenever you need."
     actionText: reviewing ? "Create VM" : "Review configuration"
-    ready: name.text.trim() !== "" && source.text !== "" && !!caps.virtInstall
+    ready: name.text.trim() !== "" && source.text !== "" && !!caps.virtInstall && setupValid
     function scanLibrary() { if (isoFolder) scanning = backend.request("media.list", {folder: isoFolder}) }
     function setIsoFolder(folder) { isoFolder = folder; workspace.set("isoFolder", folder); scanLibrary() }
     function begin() {
         createAdvanced.expanded = false; createPaths.expanded = false; reviewing = false; failure = ""; extraPresets = []; pendingPresetPath = ""; name.text = ""
+        unattended.checked = true; setupPassword.text = ""; showPassword.checked = false
         // ISOs live in OmaWare's own folder unless you chose another one.
         isoFolder = String(workspace.get("isoFolder", "")) || (isoLibrary ? isoLibrary.folder : ""); backend.request("capabilities", {}); scanLibrary(); open()
     }
@@ -95,10 +101,12 @@ EditorDialog {
     Connections { target: backend; function onCommandFinished(op, ok, result) { if (op === "media.list") dialog.scanning = false } }
     onSubmitted: {
         if (!reviewing) { reviewing = true; return }
-        execute("vm.create", {name: name.text, sourceMode: sourceMode.currentIndex === 0 ? "iso" : "disk", source: source.text,
+        let input = {name: name.text, sourceMode: sourceMode.currentIndex === 0 ? "iso" : "disk", source: source.text,
             preset: (presets[preset.currentIndex] || {}).id || "generic", cpus: Number(cpus.text), memoryMiB: Number(memory.text), diskGiB: Number(disk.text),
             location: location.text || caps.storage, firmware: firmware.currentIndex === 0 ? "bios" : "uefi", networkId: networks[network.currentIndex].id,
-            tpm: windowsPreset && tpm.checked && !!caps.tpm})
+            tpm: windowsPreset && tpm.checked && !!caps.tpm}
+        if (settingUp) input.unattended = {user: setupUser.text, password: setupPassword.text}
+        execute("vm.create", input)
     }
     ColumnLayout {
         visible: !dialog.reviewing; Layout.fillWidth: true; spacing: 10
@@ -115,16 +123,16 @@ EditorDialog {
                 displayText: currentIndex >= 0 ? currentText : dialog.scanning ? "Reading ISO library…" : dialog.images.length ? "Choose an ISO" : "No ISOs yet"
                 enabled: dialog.images.length > 0 && !dialog.scanning
                 onActivated: dialog.chooseMedia(currentIndex)
-                // Shows the chosen file whichever way it was chosen (list, Browse, ISO Shop or a drop).
+                // Shows the chosen file whichever way it was chosen (list, Browse, OS Shop or a drop).
                 function sync() { let at = -1; for (let i = 0; i < dialog.images.length; ++i) if (dialog.images[i].path === source.text) at = i; currentIndex = at }
                 Connections { target: source; function onTextChanged() { mediaPicker.sync() } }
                 Connections { target: dialog; function onImagesChanged() { mediaPicker.sync() } }
             }
             AppButton { objectName: "chooseIsoFolder"; iconName: "folder"; hint: dialog.isoFolder ? "Change ISO folder: " + dialog.isoFolder : "Choose ISO folder"; onClicked: libraryPicker.open() }
             AppButton { visible: dialog.isoFolder !== ""; iconName: "refresh"; hint: "Refresh ISO library"; enabled: !dialog.scanning; onClicked: dialog.scanLibrary() }
-            AppButton { objectName: "getIsos"; text: "ISO Shop"; iconName: "store"; hint: "Download the latest Ubuntu, Fedora, Debian, Mint and more"; onClicked: dialog.getIsos() }
+            AppButton { objectName: "getIsos"; text: "OS Shop"; iconName: "store"; hint: "Download Ubuntu, Fedora, Debian, Kali, Windows and more"; onClicked: dialog.getIsos() }
         }
-        Label { textFormat: Text.PlainText; visible: sourceMode.currentIndex === 0 && dialog.isoFolder !== "" && !dialog.scanning && (dialog.images.length === 0 || !!dialog.library.error || !!dialog.library.notice); text: dialog.library.error || dialog.library.notice || "No ISOs yet. Get one from the ISO Shop, or browse to a file."; color: dialog.library.error ? theme.colors.warning : theme.colors.muted; Layout.fillWidth: true; wrapMode: Text.WordWrap; font.pixelSize: Math.round((12) * theme.textScale)}
+        Label { textFormat: Text.PlainText; visible: sourceMode.currentIndex === 0 && dialog.isoFolder !== "" && !dialog.scanning && (dialog.images.length === 0 || !!dialog.library.error || !!dialog.library.notice); text: dialog.library.error || dialog.library.notice || "No ISOs yet. Get one from the OS Shop, or browse to a file."; color: dialog.library.error ? theme.colors.warning : theme.colors.muted; Layout.fillWidth: true; wrapMode: Text.WordWrap; font.pixelSize: Math.round((12) * theme.textScale)}
         AppField { id: source; objectName: "newVmSource"; Accessible.name: sourceMode.currentIndex === 0 ? "ISO path" : "Disk image path"; placeholderText: sourceMode.currentIndex === 0 ? "Choose an ISO above, or paste its path" : "Choose an OVA, raw or qcow2 image, or paste its path"; Layout.fillWidth: true }
         Label { text: "Operating system" }
         AppSelect { id: preset; objectName: "newVmPreset"; Accessible.name: "Operating system"; Layout.fillWidth: true; model: dialog.presets; textRole: "label"; onActivated: dialog.applyPreset() }
@@ -139,6 +147,45 @@ EditorDialog {
                 color: dialog.needsTpm && !dialog.caps.tpm ? theme.colors.warning : theme.colors.muted
                 text: !dialog.caps.tpm ? (dialog.needsTpm ? "Windows 11 needs a TPM, and this computer can't provide one yet: install the swtpm package, then reopen this window." : "Install the swtpm package to give VMs a TPM.")
                     : dialog.needsTpm ? "Windows 11 needs it. Snapshots keep its contents too." : "Optional for this version of Windows."
+            }
+        }
+        // Set it up for me.
+        Rectangle {
+            objectName: "setupOptions"
+            visible: dialog.setupKind !== ""
+            Layout.fillWidth: true; implicitHeight: setupColumn.implicitHeight + 24; radius: 10
+            color: Qt.rgba(theme.colors.accent.r, theme.colors.accent.g, theme.colors.accent.b, .07); border.color: Qt.rgba(theme.colors.accent.r, theme.colors.accent.g, theme.colors.accent.b, .35)
+            ColumnLayout {
+                id: setupColumn
+                anchors.left: parent.left; anchors.right: parent.right; anchors.top: parent.top; anchors.margins: 12
+                spacing: 8
+                AppCheckBox { id: unattended; objectName: "newVmUnattended"; text: "Set it up for me"; checked: true; font.weight: Font.DemiBold; Layout.fillWidth: true }
+                Label {
+                    objectName: "setupNote"
+                    Layout.fillWidth: true; wrapMode: Text.WordWrap; color: theme.colors.muted; font.pixelSize: Math.round(12 * theme.textScale)
+                    text: !unattended.checked ? "The installer asks its usual questions; answer them on the VM's screen."
+                        : dialog.setupKind === "windows" ? "Windows installs by itself, with this account as an administrator (no Microsoft account needed). It takes 20–40 minutes and restarts a few times."
+                            + (dialog.mediaInfo.source === "windows-11" ? " Windows 11 Pro is installed without a product key: activate it with your own license." : "")
+                            + (dialog.mediaInfo.source === "windows-server" ? " Windows Server's Administrator gets the same password, which must be complex (upper and lower case, digits). Sign in before shutting it down: Windows Server ignores Shut down at its sign-in screen." : "")
+                            + " When you first shut it down afterwards, OmaWare takes out the installation media."
+                        : "Installs Ubuntu Server with this account as an administrator (sudo), OpenSSH and the QEMU guest agent. About 10 minutes; then OmaWare takes out the installation media and starts the new system."
+                }
+                GridLayout {
+                    visible: unattended.checked
+                    columns: 2; columnSpacing: 12; rowSpacing: 6; Layout.fillWidth: true
+                    Label { text: "User name" }
+                    AppField {
+                        id: setupUser; objectName: "newVmSetupUser"; Accessible.name: "User name for the new system"; placeholderText: "e.g. alex"; Layout.fillWidth: true
+                        validator: RegularExpressionValidator { regularExpression: /[a-z_][a-z0-9_-]{0,31}/ }
+                    }
+                    Label { text: "Password" }
+                    RowLayout {
+                        Layout.fillWidth: true; spacing: 6
+                        AppField { id: setupPassword; objectName: "newVmSetupPassword"; Accessible.name: "Password for the new system"; echoMode: showPassword.checked ? TextInput.Normal : TextInput.Password; maximumLength: 127; Layout.fillWidth: true }
+                        AppButton { id: showPassword; checkable: true; text: checked ? "Hide" : "Show"; tone: "quiet" }
+                    }
+                }
+                Label { visible: unattended.checked; text: "The password goes into the answers for the installer, kept in the VM's private folder until setup is done. OmaWare doesn't save it anywhere else."; color: theme.colors.muted; font.pixelSize: Math.round(11 * theme.textScale); Layout.fillWidth: true; wrapMode: Text.WordWrap }
             }
         }
         Label { text: cpus.text + " processors · " + Number(Number(memory.text) / 1024).toFixed(1) + " GiB memory · " + (sourceMode.currentIndex === 0 ? disk.text + " GiB disk" : "Source disk capacity"); color: theme.colors.muted; Layout.fillWidth: true; wrapMode: Text.WordWrap; font.pixelSize: Math.round((12) * theme.textScale)}
@@ -173,11 +220,12 @@ EditorDialog {
         DetailRow { label: "Firmware"; value: firmware.currentText + (dialog.windowsPreset && firmware.currentIndex === 1 ? " · Secure Boot" : ""); Layout.fillWidth: true }
         DetailRow { visible: dialog.windowsPreset; label: "Windows extras"; value: tpm.checked && dialog.caps.tpm ? "TPM 2.0" : "No TPM"; Layout.fillWidth: true }
         DetailRow { label: "Network"; value: network.currentText; Layout.fillWidth: true }
+        DetailRow { objectName: "reviewSetup"; visible: dialog.setupKind !== ""; label: "Setup"; value: dialog.settingUp ? "Unattended, as " + setupUser.text : "You answer the installer's questions"; Layout.fillWidth: true }
         AppDisclosure { id: createPaths; objectName: "createPaths"; title: "File locations"
             DetailRow { label: "Source"; value: source.text; Layout.fillWidth: true }
             DetailRow { label: "Destination"; value: location.text || dialog.caps.storage || ""; Layout.fillWidth: true }
         }
-        Label { text: "The VM starts stopped. Imported disks are copied."; color: theme.colors.muted; Layout.fillWidth: true; wrapMode: Text.WordWrap }
+        Label { text: dialog.settingUp ? "The VM starts stopped. Start it and the installer runs by itself." : "The VM starts stopped. Imported disks are copied."; color: theme.colors.muted; Layout.fillWidth: true; wrapMode: Text.WordWrap }
         AppButton { objectName: "backToSetup"; text: "Back to settings"; onClicked: dialog.reviewing = false }
     }
     Label { visible: dialog.caps.virtInstall === false; text: "Creation needs virt-install and libosinfo on this host. Install these dependencies, then reopen the wizard."; color: theme.colors.warning; Layout.fillWidth: true; wrapMode: Text.WordWrap }

@@ -368,8 +368,8 @@ private slots:
         QTRY_VERIFY(help->property("visible").toBool());
         QVERIFY(QMetaObject::invokeMethod(help, "follow", Q_ARG(QVariant, "#limits")));          // same guide
         QCOMPARE(help->property("current").toString(), QString("networks/limits"));
-        QVERIFY(QMetaObject::invokeMethod(help, "follow", Q_ARG(QVariant, "USER-GUIDE.md#the-iso-shop")));
-        QCOMPARE(help->property("current").toString(), QString("the-iso-shop"));
+        QVERIFY(QMetaObject::invokeMethod(help, "follow", Q_ARG(QVariant, "USER-GUIDE.md#the-os-shop")));
+        QCOMPARE(help->property("current").toString(), QString("the-os-shop"));
         help->setProperty("query", "bridge permission");
         const int matches = help->property("shown").value<QJSValue>().property("length").toInt();
         QVERIFY(matches > 0 && matches < topics.property("length").toInt());

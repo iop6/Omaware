@@ -1,12 +1,15 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "agenttransfer.h"
 #include "agentprovision.h"
+#include "agentbridge.h"
 #include "backend.h"
+#include "bridgehelper.h"
 #include "mcpserver.h"
 #include "paths.h"
 #include <QtTest>
 #include <QTemporaryDir>
 #include <QProcess>
+#include <QRegularExpression>
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <unistd.h>
@@ -82,13 +85,19 @@ private slots:
         QString error;
         const QVariantMap vm{{"request_id","10000000-0000-4000-8000-000000000001"},{"name","remnux"},{"media_kind","disk"},{"media","remnux.qcow2"}};
         QVERIFY(Mcp::validateManagementArguments("create_vm",vm,error));
-        for (const auto &change : QVariantList{QVariantMap{{"cpus","2"}},QVariantMap{{"cpus",0}},QVariantMap{{"cpus",257}},QVariantMap{{"cpus",true}},QVariantMap{{"memory_mib",255}},QVariantMap{{"dry_run","false"}},QVariantMap{{"source","/etc/passwd"}},QVariantMap{{"location","/tmp"}},QVariantMap{{"start",true}},QVariantMap{{"media","../remnux.qcow2"}},QVariantMap{{"media","id_rsa"}},QVariantMap{{"media_kind","cloud"}},QVariantMap{{"disk_gib",32}},QVariantMap{{"networks",QVariantList{"user"}}},QVariantMap{{"networks",QVariantList{1}}},QVariantMap{{"preset","--connect"}}}) {
+        for (const auto &change : QVariantList{QVariantMap{{"cpus","2"}},QVariantMap{{"cpus",0}},QVariantMap{{"cpus",257}},QVariantMap{{"cpus",true}},QVariantMap{{"memory_mib",255}},QVariantMap{{"dry_run","false"}},QVariantMap{{"source","/etc/passwd"}},QVariantMap{{"location","/tmp"}},QVariantMap{{"start",true}},QVariantMap{{"media","../remnux.qcow2"}},QVariantMap{{"media","id_rsa"}},QVariantMap{{"media_kind","cloud"}},QVariantMap{{"disk_gib",32}},QVariantMap{{"networks",QVariantList{"User"}}},QVariantMap{{"networks",QVariantList{"user","user"}}},QVariantMap{{"networks",QVariantList{"default"}}},QVariantMap{{"networks",QVariantList{1}}},QVariantMap{{"preset","--connect"}}}) {
             auto args = vm; const auto map = change.toMap(); for (auto it=map.begin();it!=map.end();++it) args[it.key()] = it.value();
             QVERIFY2(!Mcp::validateManagementArguments("create_vm",args,error),qPrintable(QString::fromUtf8(QJsonDocument::fromVariant(args).toJson())));
         }
+        // "user" (the VM's private internet connection) may be one of the ordered adapters.
+        for (const auto &nets : {QVariantList{"user"}, QVariantList{"user","20000000-0000-4000-8000-000000000001"}, QVariantList{"20000000-0000-4000-8000-000000000001","user"}}) {
+            auto args = vm; args["networks"] = nets; QVERIFY2(Mcp::validateManagementArguments("create_vm",args,error),qPrintable(error));
+        }
         const QVariantMap net{{"request_id",vm["request_id"]},{"name","lab-lan"},{"mode","isolated"}};
         QVERIFY(AgentProvision::validate("create_network",net,error));
-        auto args=net; args["dhcp"]=false; QVERIFY(!AgentProvision::validate("create_network",args,error));
+        auto args=net; args["autostart"]=false; QVERIFY(AgentProvision::validate("create_network",args,error));
+        args["autostart"]="yes"; QVERIFY(!AgentProvision::validate("create_network",args,error));
+        args=net; args["dhcp"]=false; QVERIFY(!AgentProvision::validate("create_network",args,error));
         args=net; args["mode"]="nat"; QVERIFY(!AgentProvision::validate("create_network",args,error));
         args["subnet"]="192.168.90.0/24"; QVERIFY(AgentProvision::validate("create_network",args,error));
         args["dhcp"]=true; QVERIFY(!AgentProvision::validate("create_network",args,error));
@@ -130,6 +139,26 @@ private slots:
         QCOMPARE(input["sourceMode"].toString(),QString("disk")); QCOMPARE(input["networkId"].toString(),QString("none"));
         QCOMPARE(input["networks"].toList().size(),1);
         QVERIFY(!input.contains("location")); QVERIFY(!input.contains("start"));
+        {
+            // Adapters keep the caller's order (the guest's first NIC is the first entry), with "user" as
+            // the private internet connection; every adapter gets its own MAC.
+            auto ordered=args; ordered["networks"]=QVariantList{"user",netId};
+            QVariantMap in; QVERIFY2(AgentProvision::prepare("create_vm",ordered,{n},in,error),qPrintable(error));
+            const auto adapters=in["networks"].toList(); QCOMPARE(adapters.size(),2);
+            QCOMPARE(adapters[0].toMap()["id"].toString(),QString("user"));
+            QCOMPARE(adapters[1].toMap()["id"].toString(),QString("bridge:oma12345678"));
+            QVERIFY(adapters[0].toMap()["mac"] != adapters[1].toMap()["mac"]);
+            QCOMPARE(in["networkRevisions"].toList().size(),1);
+            ordered["networks"]=QVariantList{netId,"user"};
+            QVERIFY(AgentProvision::prepare("create_vm",ordered,{n},in,error));
+            QCOMPARE(in["networks"].toList()[0].toMap()["id"].toString(),QString("bridge:oma12345678"));
+            QCOMPARE(in["networks"].toList()[1].toMap()["id"].toString(),QString("user"));
+            in["agentRequest"]=true; in["provisionEpoch"]=qulonglong(1);
+            QVERIFY2(AgentProvision::verifyEnvelope("vm.create",in,{n},error),qPrintable(error));
+            // Containment of ownership still applies to the other entries.
+            auto unowned=n; unowned["managed"]=false;
+            QVERIFY(!AgentProvision::prepare("create_vm",ordered,{unowned},in,error));
+        }
         input["agentRequest"]=true; input["provisionEpoch"]=qulonglong(1);
         QVERIFY(AgentProvision::verifyEnvelope("vm.create",input,{n},error));
         auto tampered=input; tampered["source"]="/etc/passwd"; QVERIFY(!AgentProvision::verifyEnvelope("vm.create",tampered,{n},error));
@@ -151,7 +180,7 @@ private slots:
         QVERIFY(!QFileInfo(dir.filePath("system.qcow2")).exists());
         QVariantMap netArgs{{"request_id",args["request_id"]},{"name","lan"},{"mode","isolated"}};
         QVERIFY(AgentProvision::prepare("create_network",netArgs,{},input,error));
-        QCOMPARE(input["autostart"].toBool(),false); QCOMPARE(input["authorize"].toBool(),false);
+        QCOMPARE(input["autostart"].toBool(),true); QCOMPARE(input["authorize"].toBool(),false);
         input["agentRequest"]=true; input["provisionEpoch"]=qulonglong(1); QVERIFY(AgentProvision::verifyEnvelope("networks.save",input,{},error));
         QVERIFY(!AgentProvision::verifyEnvelope("networks.save",input,{n},error)); // duplicate name, including non-owned networks
         QVariantMap auth{{"request_id",args["request_id"]},{"network",netId},{"revision",n["revision"]}};
@@ -227,6 +256,126 @@ private slots:
         request["params"]=QJsonObject{{"name","provision_status"},{"arguments",QJsonObject{{"request_id","10000000-0000-4000-8000-000000000001"}}}};
         response=Mcp::respond(QJsonDocument(request).toJson(),[&](const QString &tool,const QVariantMap &args) { called=tool=="provision_status" && args.contains("request_id"); return QVariantMap{{"ok",true},{"result",QVariantMap{{"state","awaiting_approval"}}}}; });
         QVERIFY(called); QCOMPARE(QJsonDocument::fromJson(response).object()["result"].toObject()["structuredContent"].toObject()["state"].toString(),QString("awaiting_approval"));
+    }
+    void bridgeHelperReasons() {
+        // pkexec's own exit codes.
+        QCOMPARE(BridgeHelper::classify(126,""),QString("authorization_cancelled"));
+        QCOMPARE(BridgeHelper::classify(127,"Error executing command as another user: Not authorized"),QString("authorization_denied"));
+        QCOMPARE(BridgeHelper::classify(127,"Error executing command as another user: No authentication agent found."),QString("authorization_unavailable"));
+        // The helper's exit codes, and the messages of helpers from before they had codes.
+        QCOMPARE(BridgeHelper::classify(3,""),QString("network_not_owned"));
+        QCOMPARE(BridgeHelper::classify(4,""),QString("bridge_inactive"));
+        QCOMPARE(BridgeHelper::classify(5,""),QString("deny_rule"));
+        QCOMPARE(BridgeHelper::classify(6,""),QString("bridge_policy_unsafe"));
+        QCOMPARE(BridgeHelper::classify(7,""),QString("qemu_bridge_helper_missing"));
+        QCOMPARE(BridgeHelper::classify(1,"An existing deny rule blocks this bridge. Ask the host administrator to review its policy."),QString("deny_rule"));
+        QCOMPARE(BridgeHelper::classify(1,"The managed bridge is not active. Start the network first."),QString("bridge_inactive"));
+        QCOMPARE(BridgeHelper::classify(1,"The selected network is not managed by OmaWare."),QString("network_not_owned"));
+        QCOMPARE(BridgeHelper::classify(1,"Traceback (most recent call last): ..."),QString("helper_failed"));
+        // The script's exit codes are the ones classify() knows.
+        QFile script(QStringLiteral(QT_TESTCASE_SOURCEDIR)+"/scripts/authorize-bridge.py"); QVERIFY(script.open(QIODevice::ReadOnly));
+        QVERIFY(script.readAll().contains("NOT_OWNED, INACTIVE, DENIED, UNSAFE_POLICY, NO_BRIDGE_HELPER = 3, 4, 5, 6, 7"));
+        // Agent messages never contain helper output, and no path but the helper's documented location.
+        for (const auto &code : {"helper_missing","helper_untrusted","authorization_unavailable","authorization_cancelled","authorization_denied","authorization_timeout","deny_rule","bridge_inactive","network_not_owned","bridge_policy_unsafe","qemu_bridge_helper_missing","helper_failed","something_new"}) {
+            auto text=BridgeHelper::agentMessage(code); QVERIFY(!text.isEmpty());
+            text.remove(BridgeHelper::destination());
+            QVERIFY2(!QRegularExpression("(/[A-Za-z0-9_.-]+){2,}").match(text).hasMatch(),qPrintable(text));
+        }
+        // Only a root-owned file in root-owned, unshared folders is trusted.
+        QTemporaryDir dir; QVERIFY(dir.isValid());
+        QCOMPARE(BridgeHelper::check(dir.filePath("missing")),QString("helper_missing"));
+        QFile mine(dir.filePath("authorize-bridge")); QVERIFY(mine.open(QIODevice::WriteOnly)); mine.write("#!/bin/sh\n"); mine.close();
+        QVERIFY(mine.setPermissions(QFile::ReadOwner|QFile::WriteOwner|QFile::ExeOwner));
+        QCOMPARE(BridgeHelper::check(mine.fileName()),QString("helper_untrusted"));
+        QVERIFY(QFile::link(mine.fileName(),dir.filePath("link")));
+        QCOMPARE(BridgeHelper::check(dir.filePath("link")),QString("helper_untrusted"));
+        if (QFileInfo("/usr/bin/env").isFile() && !QFileInfo("/usr/bin/env").isSymLink() && QFileInfo("/usr/bin/env").ownerId()==0)
+            QCOMPARE(BridgeHelper::check("/usr/bin/env"),QString());
+        // The install commands use the real script path, quoted for the shell.
+        const auto commands=BridgeHelper::installCommands("/opt/My Apps/omaware/authorize-bridge","/home/me/build dir");
+        QCOMPARE(commands.size(),2);
+        QCOMPARE(commands[0],"sudo install -D -o root -g root -m 0755 '/opt/My Apps/omaware/authorize-bridge' "+BridgeHelper::destination());
+        QCOMPARE(commands[1],QString("sudo cmake --install '/home/me/build dir' --component helper"));
+        QVERIFY(BridgeHelper::installCommands("",{}).first().startsWith("sudo install -D -o root -g root -m 0755 "));
+        // The build folder has the copy the command points to.
+        QVERIFY(QFileInfo(QCoreApplication::applicationDirPath()+"/authorize-bridge").isExecutable());
+    }
+    void provisioningFailureReasons() {
+        // provision_status passes the stable code and short reason through to MCP clients.
+        auto request=QJsonObject{{"id",1},{"method","tools/call"},{"params",QJsonObject{{"name","provision_status"},{"arguments",QJsonObject{{"request_id","10000000-0000-4000-8000-000000000001"}}}}}};
+        const QVariantMap state{{"state","failed"},{"tool","authorize_network"},{"message",BridgeHelper::agentMessage("helper_missing")},{"result",QVariantMap{{"code","helper_missing"},{"reason",BridgeHelper::agentMessage("helper_missing")}}}};
+        auto response=Mcp::respond(QJsonDocument(request).toJson(),[&](const QString &,const QVariantMap &) { return QVariantMap{{"ok",true},{"result",state}}; });
+        const auto structured=QJsonDocument::fromJson(response).object()["result"].toObject()["structuredContent"].toObject();
+        QCOMPARE(structured["state"].toString(),QString("failed"));
+        QCOMPARE(structured["result"].toObject()["code"].toString(),QString("helper_missing"));
+        QVERIFY(structured["result"].toObject()["reason"].toString().contains(BridgeHelper::destination()));
+    }
+    void provisioningPublicResult() {
+        // A worker failure with the helper's own output: agents get the code and fixed reason only.
+        const QVariantMap worker{{"message","pkexec: Error executing command as another user: Not authorized\n/usr/local/libexec/omaware/authorize-bridge"},{"code","authorization_denied"},{"reason",BridgeHelper::agentMessage("authorization_denied")},{"requestTag","x"},{"xml","<network/>"}};
+        auto shown=AgentProvision::publicResult(false,worker);
+        QCOMPARE(shown["result"].toMap(),QVariantMap({{"code","authorization_denied"},{"reason",BridgeHelper::agentMessage("authorization_denied")}}));
+        QVERIFY(shown["message"].toString().startsWith(BridgeHelper::agentMessage("authorization_denied")));
+        QVERIFY(!QJsonDocument::fromVariant(shown).toJson().contains("pkexec")); QVERIFY(!QJsonDocument::fromVariant(shown).toJson().contains("<network"));
+        // Other failures keep a generic message and code; successes keep only public fields.
+        shown=AgentProvision::publicResult(false,{{"message","virt-install: /home/user/secret path"}});
+        QCOMPARE(shown["result"].toMap()["code"].toString(),QString("operation_failed")); QVERIFY(!shown["message"].toString().contains("/home"));
+        shown=AgentProvision::publicResult(true,{{"uuid","u"},{"revision","r"},{"storage","/home/user/vms/x"},{"message","done"}});
+        QCOMPARE(shown["result"].toMap(),QVariantMap({{"uuid","u"},{"revision","r"}}));
+    }
+    void managementSchemas() {
+        QString error;
+        // manage_network needs an owned network, an action and the revision the agent saw.
+        QVERIFY(Mcp::validateManagementArguments("manage_network",{{"network","lan"},{"action","set_autostart"},{"revision",QString(64,'a')},{"autostart",true}},error));
+        QVERIFY(!Mcp::validateManagementArguments("manage_network",{{"network","lan"},{"action","set_autostart"},{"autostart",true}},error));
+        QVERIFY(!Mcp::validateManagementArguments("manage_network",{{"network","lan"},{"action","rename"},{"revision","r"}},error));
+        QVERIFY(!Mcp::validateManagementArguments("manage_network",{{"network","lan"},{"action","edit"},{"revision","r"},{"bridge","virbr0"}},error));
+        QVERIFY(!Mcp::validateManagementArguments("manage_network",{{"network","lan"},{"action","edit"},{"revision","r"},{"mode","bridged"}},error));
+        // Adapter changes can ask for a restart when they can't apply live.
+        QVERIFY(Mcp::validateManagementArguments("manage_network_adapter",{{"vm","fw"},{"action","update"},{"mac","52:54:00:00:00:01"},{"apply","restart_if_needed"},{"restart_timeout_seconds",60}},error));
+        QVERIFY(!Mcp::validateManagementArguments("manage_network_adapter",{{"vm","fw"},{"action","update"},{"apply","force"}},error));
+        QVERIFY(!Mcp::validateManagementArguments("manage_network_adapter",{{"vm","fw"},{"action","update"},{"restart_timeout_seconds",1.5}},error));
+        // The tool descriptions agents read say what changed.
+        QString runCommand;
+        for (const auto &t : Mcp::tools()) if (t.toMap()["name"]=="run_command") runCommand=t.toMap()["description"].toString();
+        QVERIFY(runCommand.contains("isolated networks too")); QVERIFY(!runCommand.contains("Not for VMs only on isolated networks"));
+    }
+    void sessionGrantScope() {
+        // Only owned isolated or host-only bridges, or removals; never the internet, a local network or a VM-private connection.
+        const QVariantMap isolated{{"id","bridge:oma1"},{"kind","bridge"},{"managed",true},{"category","Isolated"}};
+        auto hostonly=isolated; hostonly["category"]="Host-only";
+        auto nat=isolated; nat["category"]="Shared NAT";
+        auto unmanaged=isolated; unmanaged["managed"]=false;
+        const QVariantMap user{{"id","user"},{"kind","user"},{"category","NAT"}};
+        QCOMPARE(AgentGrants::forAdapterChange("add",isolated),QString(AgentGrants::privateAdapters));
+        QCOMPARE(AgentGrants::forAdapterChange("update",hostonly),QString(AgentGrants::privateAdapters));
+        QCOMPARE(AgentGrants::forAdapterChange("remove",{}),QString(AgentGrants::privateAdapters));
+        for (const auto &target : {nat,unmanaged,user}) { QVERIFY(AgentGrants::forAdapterChange("add",target).isEmpty()); QVERIFY(AgentGrants::forAdapterChange("update",target).isEmpty()); }
+        QVERIFY(AgentGrants::forAdapterChange("list",isolated).isEmpty());
+        QVERIFY(AgentGrants::label(AgentGrants::privateAdapters).contains("isolated"));
+        QCOMPARE(AgentGrants::lifetimeMs,8LL*3600*1000);
+        // The serial console and serial logins are agent tools with checked arguments.
+        QString error;
+        QVERIFY(Mcp::validateManagementArguments("serial_console",{{"vm","fw"},{"send","8\n"},{"wait_for","Enter an option"},{"timeout_seconds",20}},error));
+        QVERIFY(!Mcp::validateManagementArguments("serial_console",{{"vm","fw"},{"send",8}},error));
+        QVERIFY(!Mcp::validateManagementArguments("serial_console",{{"vm","fw"},{"device","/dev/ttyS1"}},error));
+        bool listed=false; for (const auto &t : Mcp::tools()) if (t.toMap()["name"]=="type_login") listed=t.toMap()["inputSchema"].toMap()["properties"].toMap().contains("via");
+        QVERIFY(listed);
+    }
+    void diagnosisHints() {
+        auto codes=[](const QVariantList &hints) { QStringList out; for (const auto &h : hints) out << h.toMap()["code"].toString(); return out; };
+        const QVariantMap running{{"active",true},{"agentConfigured",true},{"agentConnected",false},{"changes",QVariantList{}}};
+        const QVariantMap noAddress{{"agent",false},{"interfaces",QVariantList{QVariantMap{{"mac","52:54:00:00:00:01"},{"linkUp",true},{"ips",QVariantList{}}}}}};
+        QCOMPARE(codes(AgentDiagnosis::hints(running,noAddress)),QStringList({"guest_agent_not_running","no_ipv4_seen"}));
+        auto agent=running; agent["agentConnected"]=true; auto reported=noAddress; reported["agent"]=true;
+        const auto hints=AgentDiagnosis::hints(agent,reported);
+        QCOMPARE(codes(hints),QStringList({"guest_has_no_ipv4"})); QVERIFY(hints[0].toMap()["hint"].toString().contains("ens33"));
+        auto addressed=reported; addressed["interfaces"]=QVariantList{QVariantMap{{"mac","52:54:00:00:00:01"},{"linkUp",true},{"ips",QVariantList{"172.30.1.10"}}}};
+        QVERIFY(AgentDiagnosis::hints(agent,addressed).isEmpty());
+        auto pending=agent; pending["changes"]=QVariantList{QVariantMap{{"key","network"}}};
+        QCOMPARE(codes(AgentDiagnosis::hints(pending,addressed)),QStringList({"restart_needed"}));
+        auto stopped=running; stopped["active"]=false; QVERIFY(AgentDiagnosis::hints(stopped,noAddress).isEmpty());
+        auto noChannel=running; noChannel["agentConfigured"]=false; QCOMPARE(codes(AgentDiagnosis::hints(noChannel,{})),QStringList({"no_guest_agent_channel"}));
     }
     void protocol() {
         QStringList names;

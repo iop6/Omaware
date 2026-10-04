@@ -67,6 +67,13 @@ private:
     QString error(const QString &context);
     bool owned(virDomainPtr domain);
     QString power(virDomainPtr domain, const QString &operation);
+    // Starts a VM. One being set up unattended (see unattended.h) first boots its installer: Ubuntu's
+    // kernel directly with "autoinstall", Windows on UEFI with a few key presses for "Press any key".
+    int start(virDomainPtr domain);
+    // After an unattended installer powers its VM off: removes the answers and the installation media,
+    // and starts a Linux VM again into its new system.
+    void finishSetup(const QString &uuid, int detail);
+    void pressKeys(const QString &uuid, int times);
     bool changeNetwork(const QString &uuid, const QString &mac, const QString &networkId, const QString &model,
         bool linkUp, bool remove, const QString &revision, QString &message);
     bool detachLive(virDomainPtr domain, const QString &device, const QString &mac, QString &why);

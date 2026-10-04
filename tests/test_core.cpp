@@ -16,10 +16,13 @@
 #include "updater.h"
 #include "guestinput.h"
 #include "cloudseed.h"
+#include "unattended.h"
 #include "cloudimages.h"
 #include "labplan.h"
 #include "logins.h"
 #include "mcpserver.h"
+#include <archive.h>
+#include <archive_entry.h>
 #include <crypt.h>
 #include <memory>
 #include <QDomDocument>
@@ -135,7 +138,7 @@ private slots:
         const QByteArray sums = QByteArray(64, 'a') + " *ubuntu-24.04.2-desktop-amd64.iso\n" + QByteArray(64, 'b') + " *ubuntu-24.04.10-desktop-amd64.iso\n"
             + QByteArray(64, 'c') + " *ubuntu-24.04.10-live-server-amd64.iso\n";
         auto desktop = IsoLibrary::fromChecksums(sums, "^ubuntu-([0-9][0-9.]*)-desktop-amd64\\.iso$", "https://releases.ubuntu.com/noble/");
-        QCOMPARE(desktop.version, QString("24.04.10")); QCOMPARE(desktop.sha256, QString(64, 'b'));
+        QCOMPARE(desktop.version, QString("24.04.10")); QCOMPARE(desktop.checksum, QString(64, 'b')); QCOMPARE(desktop.algorithm, QString("sha256"));
         QCOMPARE(desktop.url, QString("https://releases.ubuntu.com/noble/ubuntu-24.04.10-desktop-amd64.iso"));
         // Fedora: the highest stable Workstation x86_64 ISO; betas and other variants are ignored.
         auto entry = [](QString version, QString arch, QString link, char hash, QString size) {
@@ -145,19 +148,45 @@ private slots:
             entry("43 Beta", "x86_64", "https://x/beta.iso", 'e', "1"), entry("43", "aarch64", "https://x/arm.iso", 'f', "1")}).toJson();
         auto f = IsoLibrary::fedora(fedora, "Workstation");
         QCOMPARE(f.version, QString("42")); QCOMPARE(f.file, QString("Fedora-Workstation-Live-42-1.1.x86_64.iso")); QCOMPARE(f.size, qint64(2400000000));
+        const auto two = QJsonDocument(QJsonArray{entry("41", "x86_64", "https://x/Fedora-Workstation-Live-41-1.4.x86_64.iso", 'a', "1"), entry("42", "x86_64", "https://x/Fedora-Workstation-Live-42-1.1.x86_64.iso", 'd', "1")}).toJson();
+        QCOMPARE(IsoLibrary::fedoraReleases(two, "Workstation").size(), 2); QCOMPARE(IsoLibrary::fedoraReleases(two, "Workstation").first().version, QString("42"));
         QVERIFY(IsoLibrary::newer("24.04.10", "24.04.9")); QVERIFY(!IsoLibrary::newer("24.04", "24.04.0"));
         // BSD-style checksum lists (Rocky, AlmaLinux, FreeBSD, OPNsense).
         const QByteArray bsd = "# Rocky-10.2-x86_64-boot.iso: 1049538560 bytes\nSHA256 (Rocky-10.2-x86_64-boot.iso) = " + QByteArray(64, 'a') + "\nSHA256 (Rocky-10.2-x86_64-dvd1.iso) = " + QByteArray(64, 'b') + "\n";
         auto rocky = IsoLibrary::fromChecksums(bsd, "^Rocky-([0-9][0-9.]*)-x86_64-boot\\.iso$", "https://download.rockylinux.org/pub/rocky/10/isos/x86_64/");
-        QCOMPARE(rocky.version, QString("10.2")); QCOMPARE(rocky.sha256, QString(64, 'a'));
+        QCOMPARE(rocky.version, QString("10.2")); QCOMPARE(rocky.checksum, QString(64, 'a'));
         // Directory listings: the newest numeric folder, not the last one alphabetically.
         const QByteArray listing = R"(<a href="9.8/">9.8/</a> <a href="10.2/">10.2/</a> <a href="10.10/">10.10/</a> <a href="Readme/">x</a> <a href="?C=N;O=D">)";
         QCOMPARE(IsoLibrary::newestFolder(listing), QString("10.10"));
         QCOMPARE(IsoLibrary::newestFolder("<a href=\"26.1.6/\"> <a href=\"26.7/\">", "^[0-9]+\\.[0-9]+$"), QString("26.7"));
+        // Earlier versions: the newest few, or the newest of each major version (Rocky keeps "9" beside "9.6").
+        QCOMPARE(IsoLibrary::newestFolders(listing, "^[0-9]+(\\.[0-9]+)*$", 2), QStringList({"10.10", "10.2"}));
+        QCOMPARE(IsoLibrary::newestFolders(R"(<a href="8/"> <a href="8.10/"> <a href="9.6/"> <a href="9/"> <a href="10.1/"> <a href="10/">)", "^[0-9]+(\\.[0-9]+)*$", 3, true).size(), 3);
+        QCOMPARE(IsoLibrary::ubuntuLtsCodenames(meta), QStringList({"noble", "jammy"}));
+        // MD5-only lists (Parrot) and SHA-512 ones (Tsurugi, clearsigned); the strongest hash of a file wins.
+        const QByteArray parrot = "Parrot OS 7.4\n\n\nmd5\n" + QByteArray(32, 'a') + "  Parrot-security-7.4_amd64.iso\n" + QByteArray(32, 'b') + "  Parrot-home-7.4_amd64.iso\n";
+        auto p = IsoLibrary::fromChecksums(parrot, "^Parrot-security-([0-9][0-9.]*)_amd64\\.iso$", "https://deb.parrot.sh/parrot/iso/7.4/");
+        QCOMPARE(p.algorithm, QString("md5")); QCOMPARE(p.checksum, QString(32, 'a')); QCOMPARE(p.version, QString("7.4"));
+        const QByteArray signedList = "-----BEGIN PGP SIGNED MESSAGE-----\nHash: SHA512\n\n" + QByteArray(128, 'c') + "  tsurugi_linux_26.03.iso\n" + QByteArray(32, 'd') + "  tsurugi_linux_26.03.iso\n-----BEGIN PGP SIGNATURE-----\n";
+        auto t = IsoLibrary::fromChecksums(signedList, "^tsurugi_linux_([0-9][0-9.]*)\\.iso$", "https://mirror/");
+        QCOMPARE(t.algorithm, QString("sha512")); QCOMPARE(t.checksum, QString(128, 'c'));
+        QVERIFY(IsoLibrary::fromChecksums(QByteArray(40, 'e') + "  tsurugi_linux_26.03.iso\n", "^tsurugi_linux_([0-9][0-9.]*)\\.iso$", "x").file.isEmpty());
+        // Security Onion's download page.
+        const QByteArray onion = "### 3.3.0-20260911 ISO image released\n\n3.3.0-20260911 ISO image:  \nhttps://download.securityonion.net/file/securityonion/securityonion-3.3.0-20260911.iso\n \nMD5: 12B1  \nSHA256: " + QByteArray(64, 'A') + "  \n";
+        const auto so = IsoLibrary::securityOnion(onion);
+        QCOMPARE(so.version, QString("3.3.0-20260911")); QCOMPARE(so.checksum, QString(64, 'a')); QCOMPARE(so.file, QString("securityonion-3.3.0-20260911.iso"));
+        // Microsoft Evaluation Center: one link per language for the product's ISO (not LTSC, not VHD).
+        const QByteArray eval = "<a class=\"cta\" aria-label=\"64-bit edition: Download Windows 11 Enterprise ISO 64-bit (en-US)\" href=\"https://go.microsoft.com/fwlink/?LinkId=1&amp;clcid=0x409\">\n"
+            "<a aria-label=\"Download Windows 11 Enterprise ISO LTSC 64-bit (en-US)\" href=\"https://go.microsoft.com/fwlink/?linkid=2&clcid=0x409\">\n"
+            "<a aria-label=\"64-bit edition: Download Windows 11 Enterprise ISO 64-bit (de-DE)\" href=\"https://go.microsoft.com/fwlink/?LinkId=3&clcid=0x409\">\n"
+            "<a aria-label=\"Download Windows 11 Enterprise VHD 64-bit (fr-FR)\" href=\"https://go.microsoft.com/fwlink/?LinkId=4\">\n"
+            "<a aria-label=\"Download Windows 11 Enterprise ISO 64-bit (it-IT)\" href=\"https://evil.example/fwlink/?LinkId=5\">\n";
+        const auto links = IsoLibrary::evaluationLinks(eval, "Windows 11 Enterprise");
+        QCOMPARE(links.keys(), QStringList({"de-DE", "en-US"})); QCOMPARE(links["en-US"].toString(), QString("https://go.microsoft.com/fwlink/?LinkId=1&clcid=0x409"));
         // Alpine's machine-readable release list.
         const QByteArray yaml = "---\n-\n  title: \"Virtual\"\n  flavor: alpine-virt\n  version: 3.24.2\n  iso: alpine-virt-3.24.2-x86_64.iso\n  sha256: " + QByteArray(64, 'c') + "\n  size: 72351744\n-\n  flavor: alpine-standard\n  iso: alpine-standard-3.24.2-x86_64.iso\n  sha256: " + QByteArray(64, 'd') + "\n";
         auto a = IsoLibrary::alpine(yaml, "alpine-virt", "https://dl-cdn.alpinelinux.org/alpine/latest-stable/releases/x86_64/");
-        QCOMPARE(a.version, QString("3.24.2")); QCOMPARE(a.sha256, QString(64, 'c')); QCOMPARE(a.size, qint64(72351744));
+        QCOMPARE(a.version, QString("3.24.2")); QCOMPARE(a.checksum, QString(64, 'c')); QCOMPARE(a.size, qint64(72351744));
         // Downloaded files are recognized and mapped to the closest OS preset.
         IsoLibrary library;
         QCOMPARE(library.identify("ubuntu-26.04.1-desktop-amd64.iso")["preset"].toString(), QString("ubuntu26.04"));
@@ -272,12 +301,12 @@ private slots:
         auto result = imported.takeFirst();
         QVERIFY(result[1].toBool());
         QCOMPARE(result[0].toStringList(), QStringList({dir.filePath("isos/ubuntu-24.04.3-desktop-amd64.iso"), dir.filePath("isos/Other.ISO")}));
-        QVERIFY(result[2].toString().contains("Added 2 ISOs.")); QVERIFY(result[2].toString().contains("notes.txt was skipped"));
+        QVERIFY(result[2].toString().contains("Added 2 files.")); QVERIFY(result[2].toString().contains("notes.txt was skipped"));
         QVERIFY(QFile::exists(ubuntu)); QCOMPARE(library.files().size(), 2); QVERIFY(!library.importing());
         // Adding the same file again doesn't make a second copy; a different file with the same name gets a new name.
         QVERIFY(library.importFiles({ubuntu}));
         QTRY_COMPARE(imported.size(), 1); result = imported.takeFirst();
-        QVERIFY(result[1].toBool()); QVERIFY(result[2].toString().contains("already in your ISOs")); QCOMPARE(library.files().size(), 2);
+        QVERIFY(result[1].toBool()); QVERIFY(result[2].toString().contains("already in your media")); QCOMPARE(library.files().size(), 2);
         QDir().mkpath(dir.filePath("second"));
         { QFile f(dir.filePath("second/Other.ISO")); QVERIFY(f.open(QIODevice::WriteOnly)); f.write(QByteArray(3000, 'x')); }
         QVERIFY(library.importFiles({dir.filePath("second/Other.ISO")}));
@@ -286,7 +315,7 @@ private slots:
         // Nothing usable: refused with a message.
         QVERIFY(!library.importFiles({text}));
         QTRY_COMPARE(imported.size(), 1); result = imported.takeFirst();
-        QVERIFY(!result[1].toBool()); QVERIFY(result[2].toString().contains("Only .iso files"));
+        QVERIFY(!result[1].toBool()); QVERIFY(result[2].toString().contains("Only ISO, OVA and QCOW2 files"));
         // Another disk (tmpfs) can't be linked, so the file is copied in the background.
         QTemporaryDir shm("/dev/shm/omaware-test-XXXXXX");
         struct stat a {}, b {};
@@ -379,6 +408,130 @@ private slots:
         QFile unpacked(dir.filePath("isos/OPNsense-26.7-dvd-amd64.iso")); QVERIFY(unpacked.open(QIODevice::ReadOnly)); QCOMPARE(unpacked.readAll(), body);
         QVERIFY(!QFile::exists(dir.filePath("isos/OPNsense-26.7-dvd-amd64.iso.bz2")));
         QCOMPARE(library.files().first().toMap()["source"].toString(), QString("opnsense"));
+        QCOMPARE(library.files().first().toMap()["check"].toString(), QString("sha256"));
+    }
+    void unattendedAnswers() {
+        // Which installers can run by themselves, from the ISO's file name.
+        QCOMPARE(Unattended::kindForFile("Win11_26H2_EnglishInternational_x64.iso"), QString("windows"));
+        QCOMPARE(Unattended::kindForFile("26100.32230.260111-0550.lt_release_svc_refresh_SERVER_EVAL_x64FRE_en-us.iso"), QString("windows"));
+        QVERIFY(Unattended::kindForFile("Rocky-10.2-x86_64-boot.iso").isEmpty());
+        QCOMPARE(Unattended::kindForFile("ubuntu-26.04.1-live-server-amd64.iso"), QString("subiquity"));
+        QVERIFY(Unattended::kindForFile("ubuntu-26.04.1-desktop-amd64.iso").isEmpty());
+        IsoLibrary library;
+        QCOMPARE(library.identify("ubuntu-26.04.1-live-server-amd64.iso")["setup"].toString(), QString("subiquity"));
+        QCOMPARE(Unattended::windowsLanguage("Win11_26H2_EnglishInternational_x64.iso"), QString("en-GB"));
+        QCOMPARE(Unattended::windowsLanguage("26300.9457.260913-1737.26h2_ge_release_svc_refresh_CLIENTENTERPRISEEVAL_OEMRET_x64FRE_de-de.iso"), QString("de-DE"));
+        QCOMPARE(Unattended::windowsTimeZone("Europe/Berlin"), QString("W. Europe Standard Time"));
+        QCOMPARE(Unattended::windowsTimeZone("Nowhere/Special"), QString("UTC"));
+        QCOMPARE(Unattended::keyboardFor("de_DE"), QString("de")); QCOMPARE(Unattended::keyboardFor("en_US"), QString("us")); QCOMPARE(Unattended::keyboardFor("en_GB"), QString("gb"));
+        QCOMPARE(Unattended::computerName("my-very-long-windows-host"), QString("MY-VERY-LONG-WI"));
+        Unattended::Settings settings;
+        settings.user = "alex"; settings.password = "p<&>\"w'1"; settings.passwordHash = CloudSeed::hashPassword(settings.password);
+        settings.hostname = "lab-win"; settings.timezone = "America/New_York"; settings.locale = "en_US"; settings.keyboard = "us"; settings.uefi = true;
+        // Windows: well-formed, with the password escaped, a GPT layout on UEFI and the edition to install.
+        const auto pro = Unattended::autounattend(settings, "Win11_26H2_English_x64.iso");
+        QDomDocument doc; QVERIFY(doc.setContent(pro, true));
+        QCOMPARE(doc.documentElement().namespaceURI(), QString("urn:schemas-microsoft-com:unattend"));
+        QVERIFY(pro.contains("p&lt;&amp;&gt;")); QVERIFY(pro.contains(">EFI<")); QVERIFY(pro.contains(">Windows 11 Pro<")); QVERIFY(pro.contains("W269N-WFGWX-YVC9B-4J6C9-T83GX"));
+        QVERIFY(pro.contains(">Eastern Standard Time<")); QVERIFY(pro.contains(">LAB-WIN<")); QVERIFY(pro.contains("HideOnlineAccountScreens"));
+        settings.uefi = false;
+        const auto server = Unattended::autounattend(settings, "26100.32230.260111-0550.lt_release_svc_refresh_SERVER_EVAL_x64FRE_en-us.iso");
+        QVERIFY(QDomDocument().setContent(server)); QVERIFY(!server.contains(">EFI<")); QVERIFY(server.contains("<Active>true</Active>"));
+        QVERIFY(server.contains("AdministratorPassword")); QVERIFY(!server.contains("ProductKey")); QVERIFY(server.contains("Datacenter Evaluation (Desktop Experience)"));
+        // Ubuntu: cloud-config JSON with the autoinstall section; powers off when it's done.
+        const auto userData = Unattended::subiquityUserData(settings);
+        QVERIFY(userData.startsWith("#cloud-config\n")); QVERIFY(!userData.contains(settings.password.toUtf8()));
+        const auto config = QJsonDocument::fromJson(userData.mid(userData.indexOf('\n') + 1)).object()["autoinstall"].toObject();
+        QCOMPARE(config["identity"].toObject()["username"].toString(), QString("alex")); QCOMPARE(config["identity"].toObject()["password"].toString(), settings.passwordHash);
+        QCOMPARE(config["shutdown"].toString(), QString("poweroff")); QCOMPARE(config["timezone"].toString(), QString("America/New_York"));
+        QVERIFY(QJsonDocument::fromJson(Unattended::subiquityMetaData("omaware-setup-1")).object()["instance-id"].toString() == "omaware-setup-1");
+    }
+    void isoTrustAndKeeping() {
+        QTemporaryDir dir; QVERIFY(dir.isValid());
+        QFile source(dir.filePath("source.bin")); QVERIFY(source.open(QIODevice::WriteOnly)); const QByteArray body(1024 * 1024 + 3, 'y'); source.write(body); source.close();
+        IsoLibrary library; library.setFolder(dir.filePath("isos"));
+        QSignalSpy finished(&library, &IsoLibrary::finished);
+        auto row = [&](const QString &name) { for (const auto &f : library.files()) if (f.toMap()["name"] == name) return f.toMap(); return QVariantMap{}; };
+        // No checksum: refused for sources that publish one, allowed (and marked) for unverified ones.
+        QVERIFY(!library.fetch("debian", QUrl::fromLocalFile(source.fileName()), "", "debian-13.1.0-amd64-netinst.iso", 0, ""));
+        const QString eval = "26100.32230.260111-0550.lt_release_svc_refresh_SERVER_EVAL_x64FRE_en-us.iso";
+        QVERIFY(library.fetch("windows-server", QUrl::fromLocalFile(source.fileName()), "", eval, 0, ""));
+        QTRY_COMPARE(finished.count(), 2); QVERIFY2(finished.last()[1].toBool(), qPrintable(finished.last()[2].toString()));
+        QCOMPARE(row(eval)["check"].toString(), QString("unverified")); QCOMPARE(row(eval)["source"].toString(), QString("windows-server"));
+        QCOMPARE(row(eval)["version"].toString(), QString("26100.32230")); QCOMPARE(row(eval)["preset"].toString(), QString("win2k25"));
+        // MD5 (Parrot) still catches a damaged download.
+        const auto md5 = QString::fromLatin1(QCryptographicHash::hash(body, QCryptographicHash::Md5).toHex());
+        QVERIFY(library.fetch("parrot", QUrl::fromLocalFile(source.fileName()), QString(32, '0'), "Parrot-security-7.3_amd64.iso", 0, "md5"));
+        QTRY_COMPARE(finished.count(), 3); QVERIFY(!finished.last()[1].toBool());
+        QVERIFY(library.fetch("parrot", QUrl::fromLocalFile(source.fileName()), md5, "Parrot-security-7.3_amd64.iso", 0, "md5"));
+        QTRY_COMPARE(finished.count(), 4); QVERIFY2(finished.last()[1].toBool(), qPrintable(finished.last()[2].toString()));
+        QCOMPARE(row("Parrot-security-7.3_amd64.iso")["check"].toString(), QString("md5"));
+        // A checksum of the wrong length for its kind is refused.
+        QVERIFY(!library.fetch("parrot", QUrl::fromLocalFile(source.fileName()), md5, "Parrot-security-7.4_amd64.iso", 0, "sha256"));
+        // A kept older version isn't offered for deletion, and stays kept after a restart.
+        for (auto name : {"debian-13.0.0-amd64-netinst.iso", "debian-13.1.0-amd64-netinst.iso"}) { QFile f(dir.filePath(QString("isos/") + name)); QVERIFY(f.open(QIODevice::WriteOnly)); }
+        library.rescan();
+        QVERIFY(!row("debian-13.0.0-amd64-netinst.iso")["newest"].toBool()); QVERIFY(row("debian-13.0.0-amd64-netinst.iso")["check"].toString().isEmpty());
+        library.setKept("debian-13.0.0-amd64-netinst.iso", true);
+        QVERIFY(row("debian-13.0.0-amd64-netinst.iso")["kept"].toBool()); QVERIFY(row("debian-13.0.0-amd64-netinst.iso")["newest"].toBool());
+        library.setKept("../source.bin", true);
+        IsoLibrary again; again.setFolder(dir.filePath("isos"));
+        for (const auto &f : again.files()) {
+            const auto r = f.toMap();
+            if (r["name"] == "debian-13.0.0-amd64-netinst.iso") QVERIFY(r["kept"].toBool());
+            if (r["name"] == eval) QCOMPARE(r["check"].toString(), QString("unverified"));
+        }
+        QVERIFY(library.remove("debian-13.0.0-amd64-netinst.iso"));
+        { QFile f(dir.filePath("isos/debian-13.0.0-amd64-netinst.iso")); QVERIFY(f.open(QIODevice::WriteOnly)); }
+        library.rescan(); QVERIFY(!row("debian-13.0.0-amd64-netinst.iso")["kept"].toBool());
+        // A VM disk counts the space it really takes, not its listed (virtual) size.
+        { QFile f(dir.filePath("appliances/pfsense-2.7.2.qcow2")); QDir().mkpath(dir.filePath("appliances")); QVERIFY(f.open(QIODevice::WriteOnly)); f.write(QByteArray(65536, 'q')); QVERIFY(f.resize(qint64(20) << 30)); }
+        library.rescan();
+        QVERIFY(row("pfsense-2.7.2.qcow2")["size"].toDouble() < 1 << 20); QCOMPARE(row("pfsense-2.7.2.qcow2")["listedSize"].toDouble(), double(qint64(20) << 30));
+        // Picking a version: only the library's own sources, and remembered by the shop.
+        QSignalSpy chosen(&library, &IsoLibrary::versionChosen);
+        library.setVersion("debian", "12.12.0"); QCOMPARE(chosen.count(), 1);
+        library.setVersion("nonexistent", "1"); QCOMPARE(chosen.count(), 1);
+    }
+    void isoVmImages() {
+        // Kali's VM image: a .7z with one qcow2 disk, checked, then unpacked into appliances/ under the download's name.
+        QTemporaryDir dir; QVERIFY(dir.isValid());
+        const QByteArray disk = QByteArray("QFI\xfb", 4) + QByteArray(2 * 1024 * 1024, 'k');
+        const auto packed = dir.filePath("image.7z");
+        {
+            auto writer = archive_write_new(); QVERIFY(writer);
+            QCOMPARE(archive_write_set_format_7zip(writer), ARCHIVE_OK);
+            QCOMPARE(archive_write_open_filename(writer, QFile::encodeName(packed).constData()), ARCHIVE_OK);
+            auto add = [&](const char *name, const QByteArray &data) {
+                auto entry = archive_entry_new(); archive_entry_set_pathname(entry, name); archive_entry_set_size(entry, data.size());
+                archive_entry_set_filetype(entry, AE_IFREG); archive_entry_set_perm(entry, 0644);
+                archive_write_header(writer, entry); archive_write_data(writer, data.constData(), data.size()); archive_entry_free(entry);
+            };
+            add("kali/readme.txt", "hello");
+            add("kali/kali-linux-2026.2-qemu-amd64.qcow2", disk);
+            archive_write_close(writer); archive_write_free(writer);
+        }
+        QFile file(packed); QVERIFY(file.open(QIODevice::ReadOnly));
+        const auto sha = QString::fromLatin1(QCryptographicHash::hash(file.readAll(), QCryptographicHash::Sha256).toHex()); file.close();
+        IsoLibrary library; library.setFolder(dir.filePath("isos"));
+        QSignalSpy finished(&library, &IsoLibrary::finished);
+        QVERIFY(library.fetch("kali-vm", QUrl::fromLocalFile(packed), sha, "kali-linux-2026.2-qemu-amd64.7z"));
+        QTRY_VERIFY_WITH_TIMEOUT(!finished.isEmpty(), 20000); QVERIFY2(finished.last()[1].toBool(), qPrintable(finished.last()[2].toString()));
+        QFile unpacked(dir.filePath("appliances/kali-linux-2026.2-qemu-amd64.qcow2")); QVERIFY(unpacked.open(QIODevice::ReadOnly)); QCOMPARE(unpacked.readAll(), disk);
+        QVERIFY(!QFile::exists(dir.filePath("isos/kali-linux-2026.2-qemu-amd64.7z")));
+        QCOMPARE(QFileInfo(dir.filePath("appliances")).permissions() & (QFile::ReadGroup | QFile::WriteGroup | QFile::ReadOther | QFile::WriteOther), QFile::Permissions());
+        QCOMPARE(library.files().size(), 1);
+        const auto row = library.files().first().toMap();
+        QCOMPARE(row["source"].toString(), QString("kali-vm")); QCOMPARE(row["type"].toString(), QString("disk")); QCOMPARE(row["check"].toString(), QString("sha256"));
+        // An archive without a disk is reported, and nothing is left behind.
+        const auto empty = dir.filePath("empty.7z");
+        { auto writer = archive_write_new(); archive_write_set_format_7zip(writer); archive_write_open_filename(writer, QFile::encodeName(empty).constData());
+          auto entry = archive_entry_new(); archive_entry_set_pathname(entry, "notes.txt"); archive_entry_set_size(entry, 2); archive_entry_set_filetype(entry, AE_IFREG); archive_entry_set_perm(entry, 0644);
+          archive_write_header(writer, entry); archive_write_data(writer, "hi", 2); archive_entry_free(entry); archive_write_close(writer); archive_write_free(writer); }
+        QFile e(empty); QVERIFY(e.open(QIODevice::ReadOnly)); const auto emptySha = QString::fromLatin1(QCryptographicHash::hash(e.readAll(), QCryptographicHash::Sha256).toHex());
+        QVERIFY(library.fetch("kali-vm", QUrl::fromLocalFile(empty), emptySha, "kali-linux-2026.3-qemu-amd64.7z"));
+        QTRY_COMPARE(finished.count(), 2); QVERIFY(!finished.last()[1].toBool()); QVERIFY(finished.last()[2].toString().contains("no VM disk"));
+        QVERIFY(!QFile::exists(dir.filePath("appliances/kali-linux-2026.3-qemu-amd64.qcow2.part"))); QVERIFY(!QFile::exists(dir.filePath("isos/kali-linux-2026.3-qemu-amd64.7z")));
     }
     void updaterVersions() {
         QVERIFY(Updater::newer("1.0.1", "1.0.0")); QVERIFY(Updater::newer("1.10.0", "1.9.3")); QVERIFY(!Updater::newer("1.0.0", "1.0.0"));

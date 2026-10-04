@@ -5,7 +5,7 @@ OmaWare is a virtual machine manager for Linux desktops. It runs QEMU/KVM virtua
 ## Features
 
 - **Create VMs** from an ISO or an existing disk image, and change processors, memory, disks, boot order and network adapters.
-- **ISO Shop:** the newest official installers for 19 systems (Ubuntu, Mint, Fedora, Debian, Arch, openSUSE, Rocky, Alma, Kali, OPNsense and more), one click each, verified against the publisher's checksum, with update alerts.
+- **OS Shop:** official installers for 26 systems (Ubuntu, Mint, Fedora, Debian, Arch, Rocky, Alma, Kali, Parrot, Security Onion, OPNsense, Windows 11 and more) and a ready-made Kali VM, one click each, with earlier versions where publishers offer them, checked against the publisher's checksum (or clearly marked unverified), with update alerts.
 - **Built-in console** with fullscreen, a detachable window, clipboard sharing and display resizing.
 - **Snapshots** in a branching tree. Snapshots of a running VM include its memory, so going back resumes it exactly where it was, without rebooting.
 - **Networks made simple:** a live map of how your VMs connect, with their IP addresses. Drag a VM onto a network to connect it, pull a virtual cable to disconnect it, see at a glance which VMs can reach the internet, and cut them all off with one click. Changes apply to running VMs straight away.

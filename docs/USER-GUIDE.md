@@ -9,7 +9,7 @@
 - [Changing hardware](#changing-hardware)
 - [The network map](#the-network-map)
 - [Snapshots](#snapshots)
-- [The ISO Shop](#the-iso-shop)
+- [The OS Shop](#the-os-shop)
 - [Monitor, log and command prompt](#monitor-log-and-command-prompt)
 - [AI agents and labs](#ai-agents-and-labs)
 - [Updating OmaWare](#updating-omaware)
@@ -56,19 +56,28 @@ OmaWare works with VMs in your own libvirt session (`qemu:///session`). It only 
 Click **Create VM**.
 
 1. Enter a name and choose where the system comes from:
-   - **An installation ISO.** Choose one from your ISO library, get one from the **ISO Shop**, browse to a file, or drag an ISO onto the window. OmaWare creates a new empty disk and attaches the ISO. Picking a known ISO also picks the matching operating system and a name.
+   - **An installation ISO.** Choose one from your ISO library, get one from the **OS Shop**, browse to a file, or drag an ISO onto the window. OmaWare creates a new empty disk and attaches the ISO. Picking a known ISO also picks the matching operating system and a name.
    - **An existing disk image or appliance** (OVA, qcow2 or raw). OmaWare copies it into a new, independent qcow2 disk and leaves the VM stopped. The original file is never changed. Picking an OVA or qcow2 anywhere (your media list, **Browse file…**, or dropping it on the window) switches to this mode automatically; appliances are never attached as installer ISOs. See [Appliances (OVA and QCOW2)](#appliances-ova-and-qcow2).
 2. Choose the operating system type, so the VM gets sensible default devices.
 3. Optional: open **Advanced setup** for processors, memory, disk size, network, storage location and BIOS or UEFI firmware. UEFI needs firmware installed on the host.
 4. Review and create. The new VM starts out stopped; start it to run the installer.
 
-After installing from an ISO, shut the VM down and use **Details → Hardware → Edit hardware** to eject the ISO and boot from the disk first.
+After installing from an ISO by hand, shut the VM down and use **Details → Hardware → Edit hardware** to eject the ISO and boot from the disk first. With **Set it up for me** (below), OmaWare does that for you.
 
 The small arrow next to Create VM also offers a **diskless test VM**: a tiny VM with no disk or network, handy for trying things out. It shows "No bootable device", which is expected.
 
 **Windows:** pick a Windows ISO and OmaWare sets the VM up the way Windows expects: UEFI firmware with Secure Boot (when your computer has that firmware), a SATA disk and network card that Windows recognizes without extra drivers, and **Add a TPM 2.0 chip**, which Windows 11 requires. The TPM needs the `swtpm` package on your computer; snapshots keep the TPM's contents along with the disks. You need your own Windows license to activate it.
 
-OmaWare doesn't install operating systems unattended.
+### Set it up for me
+
+For some installers, the create dialog offers **Set it up for me** (on by default): enter a user name and a password, and the installer runs without asking anything. It works with:
+
+- **Windows 11** from Microsoft (installed as Windows 11 Pro without a product key; activate it with your own license), **Windows 11 Enterprise** and **Windows Server 2025** evaluation copies. Windows creates your account as a local administrator (no Microsoft account or internet needed); Windows Server's Administrator gets the same password, which must be complex. It takes 20–40 minutes and restarts a few times. When you first shut the VM down afterwards, OmaWare takes out the installation media. Windows Server ignores **Shut down** until someone has signed in: sign in and shut it down from its Start menu.
+- **Ubuntu Server.**
+
+Ubuntu gets your account as an administrator (sudo), the QEMU guest agent (so `run_command` and other agent tools work) and OpenSSH. It uses your computer's time zone and language, and its keyboard layout where OmaWare can tell. When its installer is done it switches the VM off; OmaWare then takes out the installation media and starts the new system, usually 10–20 minutes after you first started it.
+
+How it works: OmaWare writes the answers for the installer onto a small extra disc in the VM's private folder (`setup.iso`). Windows reads `autounattend.xml` from it, and Ubuntu reads its autoinstall settings from a `cidata` disc; for Ubuntu, the first start boots the installer straight away with `autoinstall`, so it doesn't stop to ask "Continue with autoinstall?". Ubuntu gets only a hash of the password; Windows needs the password itself, so it's on that disc until the setup is done and OmaWare deletes the disc. If you force a VM off while it's installing, the answers stay so the next start can try again. Turn **Set it up for me** off to answer the installer's questions yourself.
 
 ## The VM list
 
@@ -199,29 +208,37 @@ Snapshots are not backups: they live on the same disk as the VM.
 - **Log** (Ctrl+`) slides up a list of every operation. Type to filter, show only errors, copy lines, or open the full **activity history** (the last 200 operations, kept across restarts).
 - **Command prompt** (`:` or Ctrl+Shift+P; there's no sidebar button) searches every action and VM. Type part of a name, pick with the arrow keys and press Enter.
 
-## The ISO Shop
+## The OS Shop
 
-**ISO Shop** in the sidebar (Ctrl+4) offers free, official installation images, always the newest release:
+**OS Shop** in the sidebar (Ctrl+4) offers free, official operating systems: installer ISOs, and a few ready-made VMs that need no installing. The top of the page spotlights updates for your media and a few favourites; under it is the catalogue, one shelf per category:
 
 - **Desktop:** Ubuntu, Kubuntu, Xubuntu, Linux Mint, Fedora Workstation, Fedora KDE Plasma, Debian, Arch Linux, openSUSE Tumbleweed, Pop!_OS and NixOS.
 - **Server:** Ubuntu Server, Rocky Linux, AlmaLinux, Alpine Linux, Proxmox VE and FreeBSD.
-- **Security & networking:** Kali Linux, OPNsense, and REMnux (a malware-analysis appliance; see below).
-- **Windows:** Windows 11 straight from Microsoft, in the language you choose on its card (OmaWare picks your computer's language at first), checked against the SHA-256 checksum Microsoft publishes for that language. Microsoft sometimes refuses automated downloads from some networks or after many attempts; the card then says so and offers **Website**, and a Windows ISO you download there is recognized too.
-- **From the publisher's website:** pfSense (through Netgate's free store). Save the ISO into your ISO folder and the shop recognizes it.
+- **Security & networking:** Kali Linux, the ready-made **Kali Linux VM**, Parrot Security, Security Onion, CAINE, Tsurugi Linux, OPNsense, and REMnux and pfSense CE from their publishers' websites (see below).
+- **Windows:** Windows 11 straight from Microsoft, in the language you choose (OmaWare picks your computer's language at first), checked against the SHA-256 checksum Microsoft publishes for that language. Also **Windows 11 Enterprise** and **Windows Server 2025** evaluation copies (free for 90 and 180 days), which are *unverified* (see below). Microsoft sometimes refuses automated downloads from some networks or after many attempts; the card then says so and offers **Website**, and a Windows ISO you download there is recognized too.
 
-Filter by category or search by name. **Download** saves the ISO into `~/.local/share/omaware/isos/`. Every download is checked against the publisher's own SHA-256 checksum and thrown away if it doesn't match; compressed images (OPNsense) are unpacked after they're verified. Downloads keep going in the background (the sidebar shows their progress) and can be cancelled.
+Filter by category, or press `/` and type to search. Click a card (or its ⓘ button) for its details: the versions on offer, the language, the file name, its checksum and your copies of it.
 
-**Your own ISOs:** drag ISO files from your file manager onto any part of the OmaWare window. They're added to your ISO folder; a file on the same disk is added instantly and takes no extra space, anything else is copied (with progress and **Cancel**). Your original file stays where it was. Drop a single ISO and the create dialog opens with it chosen; drop it while that dialog is open and it switches to that ISO.
+**Download** saves the file into `~/.local/share/omaware/isos/`. Downloads keep going in the background, in the tray at the bottom of the page and in the sidebar, and can be cancelled. Each card says how its download is checked:
 
-When a newer release is out, its card says **Update**, and **Your ISOs** marks the older file.
+- **Checked:** the download is compared with the publisher's own SHA-256 (or SHA-512) checksum and thrown away if it doesn't match, so you get exactly the file the publisher released. Compressed images (OPNsense) are unpacked after they're checked.
+- **Unverified:** the publisher gives no such checksum. Microsoft publishes none for its evaluation copies, so only the secure (HTTPS) connection to Microsoft vouches for them. Parrot publishes only MD5 checksums, which OmaWare still uses to catch a damaged download but which can't prove the file is Parrot's. The details panel says why for each.
 
-Deleting ISOs is quick, and always asks once in place before anything is removed:
+**Earlier versions:** where the publisher still offers them, a card's details let you pick an earlier version, such as an older Ubuntu LTS, the previous Debian or Fedora release, or Rocky Linux and AlmaLinux 8, 9 or 10. OmaWare remembers your pick. A version you download on purpose is **kept**: it's never offered for deletion as an older version. Keep or un-keep any file with its pin button.
+
+**Ready-made VMs** (the Kali Linux VM) are a finished VM disk instead of an installer. OmaWare checks the download, unpacks the disk into `~/.local/share/omaware/appliances/`, and its button says **Import VM**: that makes a new, stopped VM from a copy of the disk, as for any appliance (see below).
+
+**Your own files:** drag ISO, OVA or QCOW2 files from your file manager onto any part of the OmaWare window, or use **Add files…**. ISOs go into your ISO folder (a file on the same disk is added instantly and takes no extra space; anything else is copied with progress and **Cancel**), appliances into `appliances/`. Your original file stays where it was. Drop a single file and the create dialog opens with it chosen; drop it while that dialog is open and it switches to that file.
+
+When a newer release is out, its card says **Update**, the spotlight shows it, and **Your media** marks the older file. **Your media** lists every file with how it was checked (or *added by you*), and a bar shows how much space your media takes next to what's left on the disk.
+
+Deleting files is quick, and always asks once in place before anything is removed:
 
 - **The trash button on a card** deletes your copies of that system.
-- **Delete older versions** in Your ISOs removes every ISO a newer download has replaced, and shows how much space that frees.
+- **Delete older versions** in Your media removes every file a newer download has replaced (kept files stay), and shows how much space that frees.
 - **Tick several files** (or **Select all**) and use **Delete selected**. Each file also has its own trash button.
 
-**New VM** on a card or file opens the create dialog with that ISO chosen, the matching operating system selected (when your computer knows it) and a name suggested. OmaWare only contacts the publishers when you open the shop or press **Check for updates**.
+**New VM** (or **Import VM**) on a card or file opens the create dialog with that file chosen, the matching operating system selected (when your computer knows it) and a name suggested. OmaWare only contacts the publishers when you open the shop or press **Check for updates**. AI agents can get media from the shop too, but only after you approve each download (see [AI agents and labs](#ai-agents-and-labs)).
 
 ### Appliances (OVA and QCOW2)
 
@@ -248,7 +265,9 @@ Agent access is off until you turn it on: **Settings → AI agents → Let AI ag
 claude mcp add omaware -- ~/.local/bin/omaware mcp
 ```
 
-`omaware mcp` is a small helper the agent starts: it speaks the Model Context Protocol (MCP) that agents use, and passes each request to the open OmaWare window. Other MCP-capable agents work the same way. OmaWare has to be open for the agent to use it. Turning the setting off disconnects agents at once.
+`omaware mcp` is a small helper the agent starts: it speaks the Model Context Protocol (MCP) that agents use, over its standard input and output, and passes each request to the open OmaWare window. Other MCP-capable agents work the same way. OmaWare has to be open for the agent to use it. Turning the setting off disconnects agents at once.
+
+If you start OmaWare through a launcher script of your own, make sure `mcp` (like `--version`) runs in the foreground with its input and output attached, not detached into a log file; otherwise the agent waits for an answer that never comes. To check, `printf '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}\n' | ~/.local/bin/omaware mcp` must print one line of JSON.
 
 ### Agent tools
 
@@ -256,27 +275,32 @@ The MCP interface exposes focused VM-management tools rather than unrestricted c
 
 | Tool | What it does |
 | --- | --- |
-| `omaware_overview` | Lists OmaWare VMs, networks, labs and cloud images. |
+| `omaware_overview` | Lists OmaWare VMs (with IP addresses and where each came from, and changes waiting for a restart), networks, labs and cloud images. |
 | `vm_details` | Inspects a VM's configuration and agent capabilities. |
 | `diagnose_vm` | Collects structured diagnostics for a VM. |
 | `wait_for_vm` | Waits for a requested readiness condition with a timeout. |
 | `vm_power` | Starts, shuts down, pauses, resumes or restarts a VM, or forces it off. |
 | `screenshot`, `vm_input` | Captures and operates a VM's screen. |
-| `type_login` | Enters a saved login without returning its password to the agent. |
-| `run_command` | Runs a command inside the guest, not on the host. |
+| `type_login` | Enters a saved login, on the screen or the serial console, without returning its password to the agent. |
+| `serial_console` | Types on a VM's serial console and returns what the guest printed, as text. For routers and appliances without a guest agent. |
+| `run_command` | Runs a command inside the guest, not on the host: through the QEMU guest agent on any network, isolated ones included, or over SSH for lab VMs. |
 | `transfer_file` | Transfers files between the guest and a dedicated host transfer folder. |
 | `update_vm_resources` | Previews or changes a VM's CPU and RAM allocation. |
 | `clone_vm` | Creates a separate working copy of a VM. |
 | `manage_iso` | Lists local installation media and attaches or ejects it. |
-| `manage_network_adapter` | Inspects and changes a VM's network adapters. |
+| `get_media` | Lists the OS Shop's systems (versions, languages, how each download is checked) and downloads one from its publisher. Every download asks you first, showing the name, version, size and whether it's checked or unverified; there's no "Don't ask again" for downloads. Agents can only pick the shop's own systems, never a web address. |
+| `manage_network_adapter` | Inspects and changes a VM's network adapters; can also restart the VM cleanly when a change can't apply while it runs. |
+| `manage_network` | Starts, stops, edits or deletes a network OmaWare created, or sets whether it starts with the computer. |
 | `set_cable` | Plugs or pulls an existing adapter's virtual cable. |
 | `list_snapshots`, `snapshot_vm`, `restore_snapshot` | Lists, saves and restores snapshots. |
 | `propose_lab`, `lab_status`, `delete_lab` | Proposes, tracks and removes labs. |
 | `list_installation_media`, `list_owned_networks` | Lists safe local ISO/appliance filenames and owned network UUIDs/revisions without selecting an existing VM. |
-| `create_vm`, `create_network`, `authorize_network` | After approval, creates a stopped VM from local media, creates/starts an owned network, or authorizes its bridge through the existing administrator helper. |
+| `create_vm`, `create_network`, `authorize_network` | After approval, creates a stopped VM from local media (with its adapters in the order given, including the private internet connection), creates/starts an owned network, or authorizes its bridge through the existing administrator helper. |
 | `provision_status` | Observes a background provisioning request; repeated IDs do not create duplicate work during the same app session. |
 
-The agent should use the server's `tools/list` response for exact arguments and limits. A successful MCP connection is not proof that OmaWare is reachable: the app must be open and agent access enabled before VM tools can work. A powered-on VM may still be booting; use readiness checks before sending commands.
+The agent should use the server's `tools/list` response for exact arguments and limits. A successful MCP connection is not proof that OmaWare is reachable: the app must be open and agent access enabled before VM tools can work. A powered-on VM may still be booting; use readiness checks before sending commands. For a VM's screen, `screenshot` and `vm_input` are reliable while OmaWare shows the console; `virsh send-key` and `virsh screenshot` can hang then.
+
+Every change an agent asks for answers with the VM's or network's new `revision`, so it can make the next change without listing everything again. When something fails, the answer has a stable `code` the agent can act on (for example `helper_missing` or `authorization_cancelled` when allowing VMs on a network), and OmaWare's activity log has the full story.
 
 Local-media provisioning does not need the agent to click or focus the desktop. User approval still happens in OmaWare; administrator authorization may also be necessary. Imports copy an independent disk and leave VMs stopped, without changing existing VMs. Windows/FLARE installation and pfSense configuration remain guest tasks. Read [Background provisioning through MCP](MCP-PROVISIONING.md) for media staging, safe network selection, exact retry rules, dry-run limits and examples. The running installed release must support these development tools before they can be used.
 
@@ -307,8 +331,11 @@ A lab VM's **Details → Overview** shows its **Lab login**, with the password h
 - They only see and use VMs and networks OmaWare created. Your other VMs aren't shown to them, and **contained** VMs (for untrusted software) are off limits, since what's on their screens could try to steer the agent.
 - They use a VM's screen by taking screenshots and sending mouse clicks and keys, like a person at the console. A banner says which VM's screen an agent is using, with **Watch** (opens its console) and **Stop agent** (turns agent access off). Text is typed as on a US keyboard layout.
 - When a login prompt asks for the password, the agent asks OmaWare to type it (**type login**); the agent doesn't receive it. It could still read it if it had it typed somewhere it's shown, so keep lab passwords separate from your others (**Generate** makes a fresh one).
-- They run commands in lab VMs over SSH as the lab user, with a key OmaWare made for that lab, checked against each VM's own host key; or through the QEMU guest agent where one runs. VMs only on **Isolated** networks can only be used through their screens.
-- **Restoring a snapshot** and **deleting a lab** always ask you first, in OmaWare. If you say no, the agent is told so.
+- They run commands through the QEMU guest agent where one runs in the VM (as root). The agent talks to OmaWare over a virtual serial channel, not the network, so this works on **Isolated** networks too; every VM OmaWare creates has the channel, and the guest needs the `qemu-guest-agent` package running. Without it, only lab VMs on Internet or Private networks can run commands, over SSH as the lab user, with a key OmaWare made for that lab, checked against each VM's own host key. Other VMs can only be used through their screens.
+- **Contained** VMs stay off limits to agents entirely, including through the guest agent: what runs inside them controls what comes back (output, addresses), and that could try to steer the agent. You can still use the guest agent yourself on a contained VM (see [Containment](NETWORKS.md#containment)).
+- **Routers and appliances without a guest agent** (pfSense, OPNsense, VyOS) can be configured through their serial console with `serial_console`: plain text in and out, no network needed, so an isolated lab stays isolated. pfSense has to use its serial console: install from the serial image, or set **System → Advanced → Admin Access → Serial Terminal** once (or choose it in the console menu). The tool refuses while someone else has the console open (for example `virsh console`), and what's typed is never logged.
+- **Restoring a snapshot**, **deleting a lab**, creating VMs and networks, allowing VMs on a network, changing adapters, CPU, memory or ISOs, managing networks, cloning and file transfers ask you first, in OmaWare. If you say no, the agent is told so. Power actions, taking snapshots and plugging or pulling cables don't ask. A restart an agent wants along with an adapter change is in the same question; it asks the guest to shut down and never forces it off.
+- **Fewer questions, if you want:** when an agent adds, moves or removes an adapter on an isolated or host-only network OmaWare created, the question has an unticked option, **Don't ask again for adapter changes on isolated and host-only networks**. If you tick it, such changes go ahead without asking until you turn agent access off (or the banner's **Revoke**), or for at most 8 hours; it's never saved. A banner shows it while it's on, and the activity log marks each such change as auto-approved. Connecting a VM to the internet (a NAT network or its private internet connection) or your local network, and everything else (deleting, restoring, creating, allowing VMs on networks, contained VMs) still asks every time.
 - Everything an agent does is listed in the activity log (Ctrl+`), marked "Agent:". What it types is never logged.
 
 Deleting a lab removes its VMs with their disks and snapshots, and its networks. Its saved login is kept.
@@ -355,7 +382,7 @@ Press `?` in OmaWare for the full list, or F1 for Help. Shortcuts are off while 
 | `?` | All shortcuts |
 | `:` or Ctrl+Shift+P | Command prompt |
 | Ctrl+K or Ctrl+F | Search VMs |
-| Ctrl+1 / 2 / 3 / 4 | VMs, Monitor, Networks, ISO Shop |
+| Ctrl+1 / 2 / 3 / 4 | VMs, Monitor, Networks, OS Shop |
 | Ctrl+B | Collapse or expand the sidebar |
 | Ctrl+` | Log |
 | j / k or ↑ / ↓ | Move through the VM list |
@@ -369,7 +396,7 @@ Press `?` in OmaWare for the full list, or F1 for Help. Shortcuts are off while 
 
 ## Where OmaWare keeps its files
 
-- **VMs, ISOs and the app:** `~/.local/share/omaware/` (or `$XDG_DATA_HOME/omaware`), with each VM's disks in `vms/`, installation ISOs in `isos/`, OVA and qcow2 appliances in `appliances/`, and OmaWare itself in `app/` when installed from the Linux package. A new VM can use another storage location, chosen when creating it.
+- **VMs, ISOs and the app:** `~/.local/share/omaware/` (or `$XDG_DATA_HOME/omaware`), with each VM's disks in `vms/`, installation ISOs in `isos/` (with a small `.omaware-media.json` noting kept files and how downloads were checked), OVA and qcow2 appliances and ready-made VMs in `appliances/`, and OmaWare itself in `app/` when installed from the Linux package. A new VM can use another storage location, chosen when creating it.
 - **Snapshots, pending changes and activity history:** `~/.local/share/Omaware/Omaware/`. VMs made by earlier versions keep their disks there too; nothing is moved.
 - **Settings** (theme, window size, folders, tags, notes): `~/.config/Omaware/Omaware/workspace.ini`.
 - **VM definitions** are kept by libvirt, not OmaWare.

@@ -31,17 +31,19 @@ class UiAgent : public QObject {
     Q_PROPERTY(QVariantMap build MEMBER build NOTIFY changed)
     Q_PROPERTY(QVariantList labs MEMBER labs NOTIFY changed)
     Q_PROPERTY(QVariantList logins MEMBER logins NOTIFY changed)
+    Q_PROPERTY(QVariantList grants MEMBER grants NOTIFY changed)
 public:
     bool enabled = false;
     QString error, command = "claude mcp add omaware -- omaware mcp";
     QVariantMap screen, proposal, confirmation, build;
-    QVariantList labs, logins;
+    QVariantList labs, logins, grants;
     Q_INVOKABLE QVariantMap vmLab(const QString &) const { return {}; }
     Q_INVOKABLE QString revealPassword(const QString &) const { return {}; }
     Q_INVOKABLE QString generatePassword() const { return "abcd-efgh-jkmn-pqrs"; }
     Q_INVOKABLE void approve(const QString &, const QString &, const QString &, const QString &, bool) {}
     Q_INVOKABLE void decline(const QString &) {}
-    Q_INVOKABLE void answer(const QString &, bool) {}
+    Q_INVOKABLE void answer(const QString &, bool, bool = false) {}
+    Q_INVOKABLE void revokeGrants() { grants.clear(); emit changed(); }
     Q_INVOKABLE void stop() { enabled = false; emit changed(); }
 signals:
     void changed();

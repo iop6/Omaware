@@ -104,6 +104,7 @@ void AgentBridge::setEnabled(bool on) {
         // again later. Decline while enabled_ is false so callbacks cannot dispatch.
         const auto questions = questions_.keys();
         for (const auto &id : questions) answer(id, false);
+        revokeGrants();
         if (!proposal_.isEmpty() && !localLab_) decline(proposal_["id"].toString());
         server_.close();
         QLocalServer::removeServer(socketPath());
@@ -184,20 +185,55 @@ QVariantMap AgentBridge::findVm(const QString &name, QString &error) const {
     error = "There's no OmaWare VM called “" + wanted + "”. Use omaware_overview to see the VMs.";
     return {};
 }
-void AgentBridge::ask(const QString &title, const QString &text, const QString &action, std::function<void(bool)> then) {
+void AgentBridge::ask(const QString &title, const QString &text, const QString &action, std::function<void(bool)> then, const QString &grantKind) {
     const auto id = QUuid::createUuid().toString(QUuid::WithoutBraces);
     // One question at a time; a newer one replaces (and declines) an unanswered one.
     if (!confirmation_.isEmpty()) answer(confirmation_["id"].toString(), false);
     questions_[id] = then;
     confirmation_ = {{"id", id}, {"title", title}, {"text", text}, {"action", action}};
+    if (!grantKind.isEmpty()) {
+        questionGrants_[id] = grantKind;
+        confirmation_["grant"] = grantKind;
+        confirmation_["grantLabel"] = "Don't ask again for " + AgentGrants::label(grantKind) + " until agent access is turned off (at most 8 hours)";
+    }
     emit confirmationChanged();
     QTimer::singleShot(300000, this, [this, id] { answer(id, false); });
 }
-void AgentBridge::answer(const QString &id, bool yes) {
+void AgentBridge::answer(const QString &id, bool yes, bool grant) {
     if (!questions_.contains(id)) return;
     const auto then = questions_.take(id);
+    const auto kind = questionGrants_.take(id);
     if (confirmation_.value("id") == id) { confirmation_.clear(); emit confirmationChanged(); }
+    // Only the kind this question offered, only while access is on, and never saved.
+    if (yes && grant && !kind.isEmpty() && enabled_) {
+        grants_[kind] = QDateTime::currentMSecsSinceEpoch() + AgentGrants::lifetimeMs;
+        note("you allowed " + AgentGrants::label(kind) + " without asking, for this session");
+        emit grantsChanged();
+    }
     then(yes);
+}
+bool AgentBridge::granted(const QString &kind) const { return enabled_ && !kind.isEmpty() && grants_.value(kind) > QDateTime::currentMSecsSinceEpoch(); }
+QVariantList AgentBridge::grants() const {
+    QVariantList out;
+    for (auto it = grants_.cbegin(); it != grants_.cend(); ++it)
+        if (granted(it.key())) out.append(QVariantMap{{"kind", it.key()}, {"label", AgentGrants::label(it.key())}, {"expires", it.value()}});
+    return out;
+}
+void AgentBridge::revokeGrants() {
+    if (grants_.isEmpty()) return;
+    grants_.clear();
+    note("session approvals revoked; every change asks again");
+    emit grantsChanged();
+}
+QString AgentGrants::label(const QString &kind) {
+    return kind == privateAdapters ? QString("adapter changes on isolated and host-only networks") : kind;
+}
+QString AgentGrants::forAdapterChange(const QString &action, const QVariantMap &target) {
+    if (action == "remove") return privateAdapters;
+    // Never the internet (NAT, the private internet connection), a local network or anything else.
+    if ((action == "add" || action == "update") && target["managed"].toBool() && target["kind"] == "bridge"
+        && QStringList{"Isolated", "Host-only"}.contains(target["category"].toString())) return privateAdapters;
+    return {};
 }
 
 // ---- Tools ------------------------------------------------------------------------------------
@@ -212,6 +248,8 @@ void AgentBridge::handle(const QString &tool, const QVariantMap &args, Reply rep
     if (tool == "lab_status") { labStatus(args, reply); return; }
     if (tool == "delete_lab") { deleteLab(LabPlan::slug(args.value("lab").toString()), reply); return; }
     if (AgentProvision::handles(tool)) { provisioningTool(tool, args, reply); return; }
+    if (tool == "manage_network") { manageNetwork(args, reply); return; }
+    if (tool == "get_media") { getMedia(args, reply); return; }
     const auto vm = vmArg();
     if (vm.isEmpty()) { reply(failure(error)); return; }
     const auto uuid = vm["uuid"].toString(), name = vm["short"].toString();
@@ -232,6 +270,7 @@ void AgentBridge::handle(const QString &tool, const QVariantMap &args, Reply rep
     if (tool == "screenshot") { screenshot(vm, args.value("max_width", 1280).toInt(), reply); return; }
     if (tool == "vm_input") { input(vm, args, reply); return; }
     if (tool == "type_login") { typeLogin(vm, args, reply); return; }
+    if (tool == "serial_console") { serialConsole(vm, args, reply); return; }
     if (tool == "run_command") { runCommand(vm, args, reply); return; }
     if (tool == "set_cable") { setCable(vm, args, reply); return; }
     if (tool == "list_snapshots") {
@@ -282,12 +321,13 @@ void AgentBridge::overview(Reply reply) {
             const auto n = v.toMap();
             networkOf[n["bridge"].toString()] = networkOf[n["name"].toString()] = shortName(n["name"].toString());
             if (!n["managed"].toBool()) continue;
-            networks.append(QVariantMap{{"name", shortName(n["name"].toString())}, {"type", n["mode"] == "nat" ? "internet" : n["mode"] == "hostonly" ? "private" : "isolated"},
-                {"subnet", n["cidr"]}, {"active", n["active"]}, {"vms", n["users"]}});
+            networks.append(QVariantMap{{"name", shortName(n["name"].toString())}, {"uuid", n["uuid"]}, {"type", n["mode"] == "nat" ? "internet" : n["mode"] == "hostonly" ? "private" : "isolated"},
+                {"subnet", n["cidr"]}, {"active", n["active"]}, {"autostart", n["autostart"]}, {"vms", n["users"]}});
         }
         QHash<QString, QVariantMap> topology;
         for (const auto &v : r["topology"].toList()) topology[v.toMap()["uuid"].toString()] = v.toMap();
-        QVariantList vms;
+        auto vms = std::make_shared<QVariantList>();
+        QStringList askAgent;   // running VMs with an adapter whose address the host doesn't know
         for (const auto &row : backend_->domains()) {
             const auto vm = row.toMap();
             if (!vm["owned"].toBool() || vm["contained"].toBool()) continue;
@@ -295,19 +335,58 @@ void AgentBridge::overview(Reply reply) {
             QVariantList adapters;
             for (const auto &i : (t["active"].toBool() ? t["liveInterfaces"] : t["interfaces"]).toList()) {
                 const auto nic = i.toMap();
+                const auto mac = nic["mac"].toString().toLower();
+                const auto ips = t["addresses"].toMap().value(mac);
                 adapters.append(QVariantMap{{"network", nic["type"] == "user" ? "internet (private to this VM)" : networkOf.value(nic["source"].toString(), nic["source"].toString())},
-                    {"mac", nic["mac"]}, {"cable", nic["linkUp"].toBool() ? "plugged" : "unplugged"}, {"ips", t["addresses"].toMap().value(nic["mac"].toString().toLower())}});
+                    {"mac", nic["mac"]}, {"cable", nic["linkUp"].toBool() ? "plugged" : "unplugged"}, {"ips", ips},
+                    {"ip_source", ips.toList().isEmpty() ? QString("unknown") : t["addressSources"].toMap().value(mac).toString()}});
+                // Private internet connections have an address only the guest knows; ask its agent too.
+                if (t["active"].toBool() && ips.toList().isEmpty() && !askAgent.contains(vm["uuid"].toString())) askAgent << vm["uuid"].toString();
             }
             const auto lab = vmLab(vm["uuid"].toString());
-            vms.append(QVariantMap{{"name", shortName(vm["name"].toString())}, {"uuid", vm["uuid"]}, {"state", vm["state"]}, {"cpus", vm["cpus"]},
-                {"memory_mib", vm["memoryMiB"]}, {"lab", lab.value("lab")}, {"user", lab.value("user")}, {"adapters", adapters}});
+            const int pending = t["pendingChanges"].toInt();
+            vms->append(QVariantMap{{"name", shortName(vm["name"].toString())}, {"uuid", vm["uuid"]}, {"state", vm["state"]}, {"cpus", vm["cpus"]},
+                {"memory_mib", vm["memoryMiB"]}, {"lab", lab.value("lab")}, {"user", lab.value("user")}, {"adapters", adapters},
+                {"pending_change_count", pending}, {"restart_needed", pending > 0}});
         }
         QVariantList images;
         for (const auto &id : CloudImages::ids()) {
             const auto local = CloudImages::local(id);
             images.append(QVariantMap{{"os", id}, {"downloaded", !local.isEmpty()}, {"version", local.value("version")}});
         }
-        reply(success({{"vms", vms}, {"networks", networks}, {"labs", labs()}, {"images", images}}));
+        const QVariantMap rest{{"networks", networks}, {"labs", labs()}, {"images", images}};
+        // Addresses the host can't see (a guest router's DHCP on an isolated network, for example) come
+        // from the QEMU guest agent when it runs, one VM at a time on the agent's own worker.
+        auto next = std::make_shared<std::function<void(int)>>();
+        *next = [this, vms, askAgent, rest, reply, next](int index) {
+            if (index >= askAgent.size()) {
+                auto result = rest; result["vms"] = *vms;
+                reply(success(result));
+                QTimer::singleShot(0, this, [next] { *next = nullptr; });
+                return;
+            }
+            callAgent("vm.addresses", {{"uuid", askAgent[index]}}, [vms, askAgent, index, next](bool ok, const QVariantMap &r) {
+                if (ok && r["agent"].toBool()) {
+                    for (auto &row : *vms) {
+                        auto vm = row.toMap();
+                        if (vm["uuid"] != askAgent[index]) continue;
+                        auto adapters = vm["adapters"].toList();
+                        for (auto &a : adapters) {
+                            auto adapter = a.toMap();
+                            if (!adapter["ips"].toList().isEmpty()) continue;
+                            for (const auto &n : r["interfaces"].toList())
+                                if (n.toMap()["mac"].toString().compare(adapter["mac"].toString(), Qt::CaseInsensitive) == 0 && n.toMap()["ipSource"] == "guest_agent") {
+                                    adapter["ips"] = n.toMap()["ips"]; adapter["ip_source"] = "guest_agent";
+                                }
+                            a = adapter;
+                        }
+                        vm["adapters"] = adapters; row = vm;
+                    }
+                }
+                (*next)(index + 1);
+            });
+        };
+        (*next)(0);
     });
 }
 
@@ -443,6 +522,17 @@ void AgentBridge::typeLogin(const QVariantMap &vm, const QVariantMap &args, Repl
     if (field != "user" && field != "password") { reply(failure("field must be user or password.")); return; }
     QString text = Logins::user(login), error;
     if (field == "password" && !Logins::password(login, text, error)) { reply(failure(error)); return; }
+    if (args.value("via", "screen") == "serial") {
+        note(vm["short"].toString() + ": typed the " + (field == "user" ? "user name" : "password") + " of login “" + login + "” on the serial console");
+        const auto secret = text;
+        callAgent("vm.serial", {{"uuid", vm["uuid"]}, {"send", text + (args.value("enter", true).toBool() ? "\n" : "")}, {"timeout", 5}}, [reply, field, login, secret](bool ok, const QVariantMap &r) {
+            if (!ok) { reply(failure(r["message"].toString(), {{"code", r.value("code", "console_unavailable")}})); return; }
+            // A guest that echoes a password would print it; the agent never gets it.
+            auto output = r["output"].toString(); if (!secret.isEmpty()) output.replace(secret, "********");
+            reply(success({{"message", "Typed the " + field + " of login “" + login + "” on the serial console."}, {"output", output}}));
+        });
+        return;
+    }
     QVariantList actions{QVariantMap{{"type", "type"}, {"text", text}}};
     if (args.value("enter", true).toBool()) actions.append(QVariantMap{{"type", "key"}, {"keys", "enter"}});
     note(vm["short"].toString() + ": typed the " + (field == "user" ? "user name" : "password") + " of login “" + login + "”");
@@ -451,6 +541,21 @@ void AgentBridge::typeLogin(const QVariantMap &vm, const QVariantMap &args, Repl
         if (out["ok"].toBool()) { auto result = out["result"].toMap(); result["message"] = "Typed the " + field + " of login “" + login + "”."; out["result"] = result; }
         reply(out);
     });
+}
+void AgentBridge::serialConsole(const QVariantMap &vm, const QVariantMap &args, Reply reply) {
+    const auto send = args.value("send").toString(), waitFor = args.value("wait_for").toString();
+    auto bounded = [&](const char *key, int low, int high) { return !args.contains(key) || (args[key].toInt() >= low && args[key].toInt() <= high); };
+    if (send.size() > 4000 || waitFor.size() > 200 || !bounded("timeout_seconds", 1, 60) || !bounded("max_bytes", 1024, 65536)) {
+        reply(failure("Send at most 4000 characters, wait_for at most 200, timeout_seconds 1–60 and max_bytes 1024–65536.", {{"code", "invalid_argument"}})); return;
+    }
+    // What's typed is never logged, since it may be a password.
+    note(vm["short"].toString() + ": serial console" + (send.isEmpty() ? QString(" (read)") : QString(" (%1 characters typed)").arg(send.size())));
+    markScreen(vm["uuid"].toString(), vm["short"].toString());
+    callAgent("vm.serial", {{"uuid", vm["uuid"]}, {"send", send}, {"waitFor", waitFor}, {"timeout", args.value("timeout_seconds", 10)}, {"maxBytes", args.value("max_bytes", 16384)}},
+        [reply](bool ok, const QVariantMap &r) {
+            if (!ok) { reply(failure(r["message"].toString(), {{"code", r.value("code", "operation_failed")}})); return; }
+            reply(success({{"output", r["output"]}, {"matched", r["matched"]}, {"timed_out", r["timedOut"]}, {"truncated", r["truncated"]}, {"console_closed", r["closed"]}, {"elapsed_ms", r["elapsedMs"]}}));
+        });
 }
 void AgentBridge::runCommand(const QVariantMap &vm, const QVariantMap &args, Reply reply) {
     const auto command = args.value("command").toString();
@@ -461,7 +566,9 @@ void AgentBridge::runCommand(const QVariantMap &vm, const QVariantMap &args, Rep
         if (ok) { reply(success({{"exit_code", r["exitCode"]}, {"stdout", r["stdout"]}, {"stderr", r["stderr"]}, {"via", "QEMU guest agent (as root)"}})); return; }
         if (!r.value("noAgent").toBool()) { reply(failure(r["message"].toString())); return; }
         const auto lab = Labs::load(vmLab(vm["uuid"].toString()).value("slug").toString());
-        if (lab.isEmpty()) { reply(failure("This VM has no QEMU guest agent and wasn't built as part of a lab, so OmaWare can't run commands in it. Use its screen instead.")); return; }
+        if (lab.isEmpty()) { reply(failure("The QEMU guest agent isn't running in " + vm["short"].toString() + ", and it wasn't built as part of a lab (no SSH login), so OmaWare can't run commands in it. "
+            "The guest agent doesn't need a network: once qemu-guest-agent is installed and running in the guest (OmaWare's VMs already have its channel), run_command works even on isolated networks. "
+            "Until then, use the VM's screen (screenshot and vm_input).", {{"code", "no_transport"}})); return; }
         runOverSsh(vm, lab, command, timeout, reply);
     });
 }
@@ -517,7 +624,14 @@ void AgentBridge::setCable(const QVariantMap &vm, const QVariantMap &args, Reply
             }
         if (mac.isEmpty()) { reply(failure(vm["short"].toString() + " has no adapter on “" + wanted + "”.")); return; }
         note(vm["short"].toString() + ": " + (plugged ? "plug in" : "pull") + " the cable to " + wanted);
-        linkWaiters_.append([reply, plugged] { reply(success({{"message", plugged ? "Cable plugged in." : "Cable pulled."}})); });
+        linkWaiters_.append([this, reply, plugged, vm] {
+            // The new revision, so the next change doesn't need a fresh list.
+            callAgent("vm.details", {{"uuid", vm["uuid"]}}, [reply, plugged](bool ok, const QVariantMap &r) {
+                QVariantMap result{{"message", plugged ? "Cable plugged in." : "Cable pulled."}};
+                if (ok) result["revision"] = r["revision"];
+                reply(success(result));
+            });
+        });
         backend_->setLinks({QVariantMap{{"uuid", vm["uuid"]}, {"mac", mac}}}, plugged);
     });
 }
