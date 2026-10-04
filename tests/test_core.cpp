@@ -1104,6 +1104,43 @@ private slots:
                          .size(),
                 1);
         QVERIFY(violations("<tpm model='tpm-crb'><backend type='emulator' version='2.0'/></tpm>").isEmpty());
+        // What OmaWare's own VMs use stays allowed.
+        QVERIFY(violations(
+                "<disk type='file' device='disk'><source file='/vms/system.qcow2'/><target dev='vda'/></disk>"
+                "<disk type='block' device='cdrom'><target dev='sda'/></disk>"
+                "<serial type='pty'/><console type='pty'/><input type='tablet' bus='usb'/>"
+                "<audio id='1' type='none'/><rng model='virtio'><backend model='random'/></rng>"
+                "<channel type='unix'><source mode='bind'/>"
+                "<target type='virtio' name='org.qemu.guest_agent.0'/></channel>")
+                        .isEmpty());
+        // Every other way out of the VM is refused.
+        for (const auto devices : {
+                     "<disk type='network' device='disk'><source protocol='nbd' name='x'><host name='10.0.0.1'/>"
+                     "</source><target dev='vdb'/></disk>",
+                     "<disk type='block' device='disk'><source dev='/dev/sda'/><target dev='vdb'/></disk>",
+                     "<disk type='dir' device='disk'><source dir='/home'/><target dev='vdb'/></disk>",
+                     "<disk type='file' device='lun'><source file='/x'/><target dev='sdb'/></disk>",
+                     "<channel type='unix'><source mode='connect' path='/run/user/1000/ssh-agent'/>"
+                     "<target type='virtio' name='x'/></channel>",
+                     "<serial type='dev'><source path='/dev/ttyS0'/></serial>",
+                     "<serial type='pipe'><source path='/tmp/pipe'/></serial>",
+                     "<input type='evdev'><source dev='/dev/input/event0'/></input>",
+                     "<smartcard mode='host'/>",
+                     "<audio id='1' type='pulseaudio'/>",
+                     "<rng model='virtio'><backend model='egd' type='tcp'><source host='1.2.3.4' service='1'/>"
+                     "</backend></rng>",
+                     "<video><model type='virtio'><acceleration accel3d='yes'/></model></video>",
+                     "<graphics type='vnc' port='-1' autoport='yes'/>",
+                     "<graphics type='egl-headless'/>",
+             })
+            QVERIFY2(!violations(devices).isEmpty(), devices);
+        QCOMPARE(Containment::check("<domain type='kvm' xmlns:qemu='http://libvirt.org/schemas/domain/qemu/1.0'>"
+                                    "<name>omaware-x</name><devices/><qemu:commandline><qemu:arg value='-netdev'/>"
+                                    "</qemu:commandline></domain>",
+                         bridges)["violations"]
+                         .toStringList()
+                         .size(),
+                1);
         const auto agent = Containment::check(
                 domain("<channel type='unix'><target type='virtio' name='org.qemu.guest_agent.0'/></channel>"),
                 bridges);

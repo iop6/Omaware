@@ -6,6 +6,7 @@
 #include "applianceimport.h"
 #include "cloudimages.h"
 #include "cloudseed.h"
+#include "containment.h"
 #include "domainconfig.h"
 #include "labs.h"
 #include "networkcatalog.h"
@@ -564,6 +565,11 @@ void VmWorker::finishSetup(const QString &uuid, int detail) {
         emit finished(
                 name + " finished setting up: OmaWare removed its answer disc and the Windows installation media.",
                 true);
+        return;
+    }
+    // Starting it is like any start: a VM contained meanwhile has to pass its checks.
+    if (const auto blocked = Containment::blocker(saved.get(), false); !blocked.isEmpty()) {
+        emit finished(name + " is installed, but wasn't started. " + blocked, false);
         return;
     }
     const int started = virDomainCreate(saved.get());

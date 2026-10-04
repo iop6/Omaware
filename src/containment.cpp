@@ -102,61 +102,115 @@ QHash<QString, QVariantMap> Containment::hostBridges() {
     return result;
 }
 
+namespace {
+// libvirt's namespace for raw QEMU arguments and property overrides, which bypass every device rule.
+const QString qemuNs = "http://libvirt.org/schemas/domain/qemu/1.0";
+
+QString adapterProblem(const QDomElement &nic, const QHash<QString, QVariantMap> &bridges) {
+    const auto mac = nic.firstChildElement("mac").attribute("address"), type = nic.attribute("type");
+    const auto label = "Adapter " + (mac.isEmpty() ? QString("without MAC") : mac);
+    if (type == "user")
+        return label + " uses a private internet connection, which reaches the internet through this computer.";
+    if (type != "bridge")
+        return label + " uses a " + (type.isEmpty() ? QString("custom") : type) +
+               " connection; only verified isolated switches are allowed.";
+    const auto bridge = nic.firstChildElement("source").attribute("bridge");
+    const auto verdict = bridges.value(bridge);
+    if (verdict.isEmpty())
+        return label + " uses bridge " + bridge + ", which is not an OmaWare-verifiable isolated switch.";
+    if (!verdict["isolated"].toBool())
+        return label + " uses " + verdict["name"].toString() + ", which failed isolation checks.";
+    return {};
+}
+
+// A disk or optical drive may only read the guest's own image file: not network storage, a host block or NVMe
+// device, a host folder presented as a disk, or SCSI passthrough.
+QString diskProblem(const QDomElement &disk) {
+    const auto target = disk.firstChildElement("target").attribute("dev");
+    const auto source = disk.firstChildElement("source");
+    if (disk.attribute("device") == "lun") return "Disk " + target + " passes a host SCSI device through to the guest.";
+    if (source.isNull() || !source.hasAttributes()) return {}; // an empty drive
+    const auto type = disk.attribute("type", "file");
+    if (type == "file") return {};
+    return "Disk " + target + " uses a " + type + " source; contained VMs may only use local image files.";
+}
+
+// Serial ports, consoles and channels: a terminal, a log file or a socket libvirt creates are fine; anything that
+// reaches a host device, pipe, existing host service or the network is not.
+void checkCharacterDevice(const QDomElement &device, QStringList &violations, QStringList &warnings) {
+    const auto tag = device.tagName(), type = device.attribute("type");
+    const auto source = device.firstChildElement("source");
+    const auto target = device.firstChildElement("target").attribute("name");
+    if (type == "spicevmc" ||
+            (type == "qemu-vdagent" && source.firstChildElement("clipboard").attribute("copypaste") == "yes"))
+        violations << "Clipboard sharing lets guest data reach the host desktop.";
+    else if (type == "tcp" || type == "udp")
+        violations << "A " + tag + " device is exposed on a network socket.";
+    else if (type == "unix" && source.attribute("mode") == "connect")
+        violations << "A " + tag + " device connects to a service on this computer (" + source.attribute("path") + ").";
+    else if (target == "org.qemu.guest_agent.0")
+        warnings << "The QEMU guest agent is configured; the host reads guest-controlled replies through it.";
+    else if (type == "unix")
+        warnings << "A " + tag + " device uses a host socket.";
+    else if (!QStringList{"pty", "null", "file", "vc", "qemu-vdagent"}.contains(type))
+        violations << "A " + tag + " device uses a " + type + " backend, which reaches a host device or pipe.";
+}
+
+// Whether a console accepts connections from the network. VNC and SPICE without a listen element listen on
+// TCP (127.0.0.1 by default); only no listener or a local socket is safe.
+bool listensOnNetwork(const QDomElement &graphics) {
+    if (!QStringList{"vnc", "spice", "rdp"}.contains(graphics.attribute("type"))) return false;
+    if (graphics.hasAttribute("socket")) return false;
+    const auto listen = graphics.firstChildElement("listen");
+    return listen.isNull() || !QStringList{"none", "socket"}.contains(listen.attribute("type"));
+}
+}
+
 QVariantMap Containment::check(const QString &domainXml, const QHash<QString, QVariantMap> &bridges) {
     QStringList violations, warnings;
     const auto doc = parse(domainXml);
-    const auto devices = doc.documentElement().firstChildElement("devices");
+    const auto root = doc.documentElement();
+    for (auto e = root.firstChildElement(); !e.isNull(); e = e.nextSiblingElement())
+        if (e.namespaceURI() == qemuNs)
+            violations << "Raw QEMU settings (" + e.localName() +
+                                  ") can add devices and connections OmaWare can't check.";
+    const auto devices = root.firstChildElement("devices");
     for (auto e = devices.firstChildElement(); !e.isNull(); e = e.nextSiblingElement()) {
         const auto tag = e.tagName(), type = e.attribute("type");
-        const auto mac = e.firstChildElement("mac").attribute("address");
         if (tag == "interface") {
-            const auto label = "Adapter " + (mac.isEmpty() ? QString("without MAC") : mac);
-            if (type == "user")
-                violations << label + " uses a private internet connection, which reaches the internet through this "
-                                      "computer.";
-            else if (type == "bridge") {
-                const auto bridge = e.firstChildElement("source").attribute("bridge");
-                const auto v = bridges.value(bridge);
-                if (v.isEmpty())
-                    violations << label + " uses bridge " + bridge +
-                                          ", which is not an OmaWare-verifiable isolated switch.";
-                else if (!v["isolated"].toBool())
-                    violations << label + " uses " + v["name"].toString() + ", which failed isolation checks.";
-            } else
-                violations << label + " uses a " + (type.isEmpty() ? QString("custom") : type) +
-                                      " connection; only verified isolated switches are allowed.";
+            if (const auto problem = adapterProblem(e, bridges); !problem.isEmpty()) violations << problem;
+        } else if (tag == "disk") {
+            if (const auto problem = diskProblem(e); !problem.isEmpty()) violations << problem;
         } else if (tag == "filesystem")
             violations << "Shared folder " + e.firstChildElement("target").attribute("dir") + " exposes host files.";
         else if (tag == "hostdev")
             violations << "Device passthrough gives the guest direct access to host hardware.";
         else if (tag == "redirdev")
             violations << "USB redirection connects host USB devices to the guest.";
+        else if (tag == "smartcard")
+            violations << "A smartcard device gives the guest this computer's card reader or certificates.";
         else if (tag == "shmem")
             violations << "Shared memory with the host is configured.";
         else if (tag == "vsock")
             violations << "A vsock device opens a direct socket channel between the guest and this computer.";
+        else if (tag == "input" && (type == "passthrough" || type == "evdev"))
+            violations << "Input passthrough gives the guest this computer's keyboard or other input device.";
+        else if (tag == "audio" && !QStringList{"none", "spice"}.contains(type))
+            violations << "Audio goes to this computer's sound system, which can include its microphone.";
+        else if (tag == "rng" && e.firstChildElement("backend").attribute("model") == "egd")
+            violations << "The random number device reads from a service outside the VM.";
         else if (tag == "tpm" && e.firstChildElement("backend").attribute("type") == "passthrough")
             violations << "TPM passthrough gives the guest this computer's TPM chip.";
+        else if (tag == "video" &&
+                 e.firstChildElement("model").firstChildElement("acceleration").attribute("accel3d") == "yes")
+            violations << "3D acceleration runs guest graphics code on this computer's GPU stack.";
         else if (tag == "graphics") {
-            const auto listen = e.firstChildElement("listen");
-            const bool networked = (!listen.isNull() && (listen.attribute("type") == "address" ||
-                                                                listen.attribute("type") == "network")) ||
-                                   (listen.isNull() && e.hasAttribute("listen"));
-            if (networked) violations << "The " + type + " console listens on a network address.";
-        } else if (tag == "channel" || tag == "serial" || tag == "parallel" || tag == "console") {
-            const auto target = e.firstChildElement("target").attribute("name");
-            if (type == "spicevmc" ||
-                    (type == "qemu-vdagent" &&
-                            e.firstChildElement("source").firstChildElement("clipboard").attribute("copypaste") ==
-                                    "yes"))
-                violations << "Clipboard sharing lets guest data reach the host desktop.";
-            else if (type == "tcp" || type == "udp")
-                violations << "A " + tag + " device is exposed on a network socket.";
-            else if (target == "org.qemu.guest_agent.0")
-                warnings << "The QEMU guest agent is configured; the host reads guest-controlled replies through it.";
-            else if (type == "unix")
-                warnings << "A " + tag + " device uses a host socket.";
-        }
+            if (listensOnNetwork(e)) violations << "The " + type + " console listens on a network address.";
+            if (type == "egl-headless" || type == "dbus" || e.firstChildElement("gl").attribute("enable") == "yes")
+                violations << "The " + type +
+                                      " display uses host GPU rendering or exports the screen to other programs.";
+        } else if (tag == "channel" || tag == "serial" || tag == "parallel" || tag == "console")
+            checkCharacterDevice(e, violations, warnings);
     }
     violations.removeDuplicates();
     warnings.removeDuplicates();

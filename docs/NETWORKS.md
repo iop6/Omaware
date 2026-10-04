@@ -107,10 +107,13 @@ Isolated networks created by early builds could leave an IPv6 link-local address
 | Blocked | Why |
 | --- | --- |
 | Every connection except verified “VMs only” networks (or no network) | Reaching the internet, your LAN or your computer |
-| Shared folders | Access to your files |
+| Shared folders, and disks other than local image files (network storage, host block or NVMe devices, host folders as disks, SCSI passthrough) | Access to your files, disks or other computers |
 | Clipboard sharing | Data reaching your desktop |
-| USB and PCI passthrough, USB redirection, shared memory | Direct access to your hardware or memory |
-| Consoles or serial ports listening on the network | Network exposure |
+| USB and PCI passthrough, USB redirection, smartcards, keyboard or input passthrough, TPM passthrough, shared memory, vsock | Direct access to your hardware, input or memory |
+| Host audio | Sound reaching your speakers, or your microphone reaching the VM |
+| Serial ports and channels that reach a host device, pipe, service or the network, and consoles that listen on the network (including VNC's default local TCP port) | Paths to programs on your computer |
+| 3D acceleration and GPU-rendered displays | Guest graphics code running in your computer's GPU stack |
+| Raw QEMU settings (`qemu:commandline`) | Devices and connections OmaWare can't check |
 
 The QEMU guest agent is allowed but listed as a warning: it's a channel between OmaWare and the guest, not a network, and it lets you run commands in the VM. **AI agents can't use contained VMs at all**, the guest agent included: software inside controls what comes back (command output, addresses, screens), and that could try to steer the agent. Only you decide what to run in a contained VM.
 
