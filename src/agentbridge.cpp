@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "agentbridge.h"
+#include "agentreply.h"
 #include "agentprovision.h"
 #include "backend.h"
 #include "cloudimages.h"
@@ -28,13 +29,15 @@
 #include <QUuid>
 #include <memory>
 
-namespace {
-QVariantMap failure(const QString &message, const QVariantMap &result = {}) {
-    return {{"ok", false}, {"error", message}, {"result", result}};
-}
+using AgentReply::failure;
+using AgentReply::success;
 
-QVariantMap success(const QVariantMap &result) {
-    return {{"ok", true}, {"result", result}};
+namespace {
+// Passes a worker operation's message on to the agent as the tool's result.
+auto relayMessage(AgentBridge::Reply reply) {
+    return [reply](bool ok, const QVariantMap &r) {
+        reply(ok ? success({{"message", r["message"]}}) : failure(r["message"].toString()));
+    };
 }
 
 QString shortName(const QString &name) {
@@ -197,10 +200,7 @@ void AgentBridge::markScreen(const QString &uuid, const QString &name) {
 
 // ---- Calls into OmaWare -----------------------------------------------------------------------
 void AgentBridge::call(const QString &op, QVariantMap input, Done done, int attempt) {
-    if (!enabled_ && !localLab_) {
-        done(false, {{"message", "AI agent access was turned off."}});
-        return;
-    }
+    if (!enabled_ && !localLab_) return done(false, {{"message", "AI agent access was turned off."}});
     input["agentRequest"] = true;
     const auto tag = QUuid::createUuid().toString(QUuid::WithoutBraces);
     input["requestTag"] = tag;
@@ -208,18 +208,12 @@ void AgentBridge::call(const QString &op, QVariantMap input, Done done, int atte
     if (backend_->request(op, input)) return;
     pending_.remove(tag);
     // OmaWare runs one change at a time; wait for the current one (for up to two minutes).
-    if (attempt >= 300) {
-        done(false, {{"message", "OmaWare is busy with another task. Try again in a minute."}});
-        return;
-    }
+    if (attempt >= 300) return done(false, {{"message", "OmaWare is busy with another task. Try again in a minute."}});
     QTimer::singleShot(400, this, [this, op, input, done, attempt] { call(op, input, done, attempt + 1); });
 }
 
 void AgentBridge::callAgent(const QString &op, QVariantMap input, Done done) {
-    if (!enabled_) {
-        done(false, {{"message", "AI agent access was turned off."}});
-        return;
-    }
+    if (!enabled_) return done(false, {{"message", "AI agent access was turned off."}});
     input["agentRequest"] = true;
     const auto tag = QUuid::createUuid().toString(QUuid::WithoutBraces);
     input["requestTag"] = tag;
@@ -325,191 +319,116 @@ QString AgentGrants::forAdapterChange(const QString &action, const QVariantMap &
 
 // ---- Tools ------------------------------------------------------------------------------------
 void AgentBridge::handle(const QString &tool, const QVariantMap &args, Reply reply) {
-    if (!enabled_ && tool != "ping") {
-        reply(failure("AI agent access is turned off in OmaWare's Settings."));
-        return;
-    }
+    if (!enabled_ && tool != "ping") return reply(failure("AI agent access is turned off in OmaWare's Settings."));
     QString error;
-    if (!Mcp::validateManagementArguments(tool, args, error)) {
-        reply(failure(error, {{"code", "invalid_argument"}}));
-        return;
-    }
-    auto vmArg = [&]() {
-        return findVm(args.value("vm").toString(), error);
+    if (!Mcp::validateManagementArguments(tool, args, error)) return reply(failure(error, "invalid_argument"));
+
+    // Tools that aren't about one VM.
+    if (tool == "ping") return reply(success({{"version", QCoreApplication::applicationVersion()}}));
+    if (tool == "omaware_overview") return overview(reply);
+    if (tool == "propose_lab") return proposeLab(args.contains("plan") ? args["plan"].toMap() : args, reply);
+    if (tool == "lab_status") return labStatus(args, reply);
+    if (tool == "delete_lab") return deleteLab(LabPlan::slug(args.value("lab").toString()), reply);
+    if (AgentProvision::handles(tool)) return provisioningTool(tool, args, reply);
+    if (tool == "manage_network") return manageNetwork(args, reply);
+    if (tool == "get_media") return getMedia(args, reply);
+
+    // Tools about one VM, which must be one agents may use.
+    const auto vm = findVm(args.value("vm").toString(), error);
+    if (vm.isEmpty()) return reply(failure(error));
+    static const QStringList managementTools{
+            "vm_details", "diagnose_vm", "update_vm_resources", "clone_vm", "manage_iso", "manage_network_adapter"};
+    if (managementTools.contains(tool)) return managementTool(tool, vm, args, reply);
+    if (tool == "screenshot") return screenshot(vm, args.value("max_width", 1280).toInt(), reply);
+    using VmTool = void (AgentBridge::*)(const QVariantMap &vm, const QVariantMap &args, Reply reply);
+    static const QHash<QString, VmTool> vmTools{
+            {"wait_for_vm", &AgentBridge::waitForVm},
+            {"transfer_file", &AgentBridge::transferFile},
+            {"vm_power", &AgentBridge::vmPower},
+            {"vm_input", &AgentBridge::input},
+            {"type_login", &AgentBridge::typeLogin},
+            {"serial_console", &AgentBridge::serialConsole},
+            {"run_command", &AgentBridge::runCommand},
+            {"set_cable", &AgentBridge::setCable},
+            {"list_snapshots", &AgentBridge::listSnapshots},
+            {"snapshot_vm", &AgentBridge::snapshotVm},
+            {"restore_snapshot", &AgentBridge::restoreSnapshot},
     };
-    if (tool == "ping") {
-        reply(success({{"version", QCoreApplication::applicationVersion()}}));
-        return;
-    }
-    if (tool == "omaware_overview") {
-        overview(reply);
-        return;
-    }
-    if (tool == "propose_lab") {
-        proposeLab(args.contains("plan") ? args["plan"].toMap() : args, reply);
-        return;
-    }
-    if (tool == "lab_status") {
-        labStatus(args, reply);
-        return;
-    }
-    if (tool == "delete_lab") {
-        deleteLab(LabPlan::slug(args.value("lab").toString()), reply);
-        return;
-    }
-    if (AgentProvision::handles(tool)) {
-        provisioningTool(tool, args, reply);
-        return;
-    }
-    if (tool == "manage_network") {
-        manageNetwork(args, reply);
-        return;
-    }
-    if (tool == "get_media") {
-        getMedia(args, reply);
-        return;
-    }
-    const auto vm = vmArg();
-    if (vm.isEmpty()) {
-        reply(failure(error));
-        return;
-    }
-    const auto uuid = vm["uuid"].toString(), name = vm["short"].toString();
-    if (QStringList{
-                "vm_details", "diagnose_vm", "update_vm_resources", "clone_vm", "manage_iso", "manage_network_adapter"}
-                    .contains(tool)) {
-        managementTool(tool, vm, args, reply);
-        return;
-    }
-    if (tool == "wait_for_vm") {
-        waitForVm(vm, args, reply);
-        return;
-    }
-    if (tool == "transfer_file") {
-        transferFile(vm, args, reply);
-        return;
-    }
-    if (tool == "vm_power") {
-        static const QMap<QString, QString> actions{{"start", "start"}, {"shutdown", "shutdown"},
-                {"force_off", "force-off"}, {"pause", "pause"}, {"resume", "resume"}, {"restart", "restart"}};
-        const auto action = actions.value(args.value("action").toString());
-        if (action.isEmpty()) {
-            reply(failure("action must be start, shutdown, force_off, pause, resume or restart."));
-            return;
-        }
-        note(name + ": " + args.value("action").toString());
-        if (action == "restart")
-            call("vm.restart", {{"uuid", uuid}}, [reply](bool ok, const QVariantMap &r) {
-                reply(ok ? success({{"message",
-                                   r.value("waiting").toBool()
-                                           ? "Shutdown requested; the VM starts again once the guest has shut down."
-                                           : r["message"]}})
-                         : failure(r["message"].toString()));
-            });
-        else
-            call("vm.power", {{"uuid", uuid}, {"action", action}}, [reply](bool ok, const QVariantMap &r) {
-                reply(ok ? success({{"message", r["message"]}}) : failure(r["message"].toString()));
-            });
-        return;
-    }
-    if (tool == "screenshot") {
-        screenshot(vm, args.value("max_width", 1280).toInt(), reply);
-        return;
-    }
-    if (tool == "vm_input") {
-        input(vm, args, reply);
-        return;
-    }
-    if (tool == "type_login") {
-        typeLogin(vm, args, reply);
-        return;
-    }
-    if (tool == "serial_console") {
-        serialConsole(vm, args, reply);
-        return;
-    }
-    if (tool == "run_command") {
-        runCommand(vm, args, reply);
-        return;
-    }
-    if (tool == "set_cable") {
-        setCable(vm, args, reply);
-        return;
-    }
-    if (tool == "list_snapshots") {
-        call("snapshots.list", {{"uuid", uuid}}, [reply](bool ok, const QVariantMap &r) {
-            if (!ok) {
-                reply(failure(r["message"].toString()));
-                return;
-            }
-            QVariantList items;
-            for (const auto &v : r["items"].toList()) {
-                const auto s = v.toMap();
-                items.append(
-                        QVariantMap{{"id", s["id"]}, {"name", s["name"]}, {"time", s["time"]}, {"notes", s["notes"]},
-                                {"memory", !s["memory"].toString().isEmpty()}, {"current", s["id"] == r["currentId"]}});
-            }
-            reply(success({{"snapshots", items}, {"can_snapshot", r["blocker"].toString().isEmpty()},
-                    {"why_not", r["blocker"]}}));
-        });
-        return;
-    }
-    if (tool == "snapshot_vm") {
-        const auto snap = args.value("name").toString().trimmed();
-        const bool running = vm["stateCode"].toInt() == 1 || vm["stateCode"].toInt() == 3;
-        note(name + ": snapshot “" + snap + "”");
-        call("snapshots.create",
-                {{"uuid", uuid}, {"name", snap},
-                        {"notes", "Taken by an AI agent." + QString(args.value("notes").toString().isEmpty()
-                                                                            ? ""
-                                                                            : " " + args.value("notes").toString())},
-                        {"memory", args.value("memory", running).toBool() && running}},
-                [reply](bool ok, const QVariantMap &r) {
-                    reply(ok ? success({{"message", r["message"]}}) : failure(r["message"].toString()));
-                });
-        return;
-    }
-    if (tool == "restore_snapshot") {
-        const auto wanted = args.value("snapshot").toString();
-        call("snapshots.list", {{"uuid", uuid}}, [this, reply, wanted, uuid, name](bool ok, const QVariantMap &r) {
-            if (!ok) {
-                reply(failure(r["message"].toString()));
-                return;
-            }
-            QVariantMap found;
-            for (const auto &v : r["items"].toList())
-                if (v.toMap()["id"] == wanted || v.toMap()["name"] == wanted) found = v.toMap();
-            if (found.isEmpty() || found["kind"] == "internal") {
-                reply(failure("There's no snapshot “" + wanted + "” on " + name + ". Use list_snapshots."));
-                return;
-            }
-            ask("Restore " + name + "?",
-                    "An AI agent wants to put " + name + " back to its snapshot “" + found["name"].toString() +
-                            "”. Changes since then are lost, unless you take a snapshot first.",
-                    "Restore", [this, reply, uuid, name, found](bool yes) {
-                        if (!yes) {
-                            note(name + ": restore declined", false);
-                            reply(failure("The user said no to restoring this snapshot."));
-                            return;
-                        }
-                        note(name + ": restore “" + found["name"].toString() + "”");
-                        call("snapshots.restore", {{"uuid", uuid}, {"id", found["id"]}, {"allowRestart", true}},
-                                [reply](bool ok, const QVariantMap &r) {
-                                    reply(ok ? success({{"message", r["message"]}}) : failure(r["message"].toString()));
-                                });
-                    });
-        });
-        return;
-    }
+    if (const auto handler = vmTools.value(tool)) return (this->*handler)(vm, args, reply);
     reply(failure("Unknown tool “" + tool + "”."));
+}
+
+void AgentBridge::vmPower(const QVariantMap &vm, const QVariantMap &args, Reply reply) {
+    static const QMap<QString, QString> actions{{"start", "start"}, {"shutdown", "shutdown"},
+            {"force_off", "force-off"}, {"pause", "pause"}, {"resume", "resume"}, {"restart", "restart"}};
+    const auto action = actions.value(args.value("action").toString());
+    if (action.isEmpty()) return reply(failure("action must be start, shutdown, force_off, pause, resume or restart."));
+    note(vm["short"].toString() + ": " + args.value("action").toString());
+    if (action != "restart") return call("vm.power", {{"uuid", vm["uuid"]}, {"action", action}}, relayMessage(reply));
+    call("vm.restart", {{"uuid", vm["uuid"]}}, [reply](bool ok, const QVariantMap &r) {
+        if (!ok) return reply(failure(r["message"].toString()));
+        reply(success({{"message", r.value("waiting").toBool()
+                                           ? "Shutdown requested; the VM starts again once the guest has shut down."
+                                           : r["message"]}}));
+    });
+}
+
+void AgentBridge::listSnapshots(const QVariantMap &vm, const QVariantMap &, Reply reply) {
+    call("snapshots.list", {{"uuid", vm["uuid"]}}, [reply](bool ok, const QVariantMap &r) {
+        if (!ok) return reply(failure(r["message"].toString()));
+        QVariantList items;
+        for (const auto &v : r["items"].toList()) {
+            const auto s = v.toMap();
+            items.append(QVariantMap{{"id", s["id"]}, {"name", s["name"]}, {"time", s["time"]}, {"notes", s["notes"]},
+                    {"memory", !s["memory"].toString().isEmpty()}, {"current", s["id"] == r["currentId"]}});
+        }
+        reply(success({{"snapshots", items}, {"can_snapshot", r["blocker"].toString().isEmpty()},
+                {"why_not", r["blocker"]}}));
+    });
+}
+
+void AgentBridge::snapshotVm(const QVariantMap &vm, const QVariantMap &args, Reply reply) {
+    const auto name = args.value("name").toString().trimmed();
+    const auto notes = args.value("notes").toString();
+    // Running or paused: the snapshot can include memory, and does unless the agent says otherwise.
+    const bool running = vm["stateCode"].toInt() == 1 || vm["stateCode"].toInt() == 3;
+    note(vm["short"].toString() + ": snapshot “" + name + "”");
+    call("snapshots.create",
+            {{"uuid", vm["uuid"]}, {"name", name},
+                    {"notes", "Taken by an AI agent." + (notes.isEmpty() ? QString() : " " + notes)},
+                    {"memory", args.value("memory", running).toBool() && running}},
+            relayMessage(reply));
+}
+
+// Asks the user first: restoring loses everything since the snapshot.
+void AgentBridge::restoreSnapshot(const QVariantMap &vm, const QVariantMap &args, Reply reply) {
+    const auto wanted = args.value("snapshot").toString();
+    const auto uuid = vm["uuid"].toString(), name = vm["short"].toString();
+    call("snapshots.list", {{"uuid", uuid}}, [this, reply, wanted, uuid, name](bool ok, const QVariantMap &r) {
+        if (!ok) return reply(failure(r["message"].toString()));
+        QVariantMap found;
+        for (const auto &v : r["items"].toList())
+            if (v.toMap()["id"] == wanted || v.toMap()["name"] == wanted) found = v.toMap();
+        if (found.isEmpty() || found["kind"] == "internal")
+            return reply(failure("There's no snapshot “" + wanted + "” on " + name + ". Use list_snapshots."));
+        ask("Restore " + name + "?",
+                "An AI agent wants to put " + name + " back to its snapshot “" + found["name"].toString() +
+                        "”. Changes since then are lost, unless you take a snapshot first.",
+                "Restore", [this, reply, uuid, name, found](bool yes) {
+                    if (!yes) {
+                        note(name + ": restore declined", false);
+                        return reply(failure("The user said no to restoring this snapshot."));
+                    }
+                    note(name + ": restore “" + found["name"].toString() + "”");
+                    call("snapshots.restore", {{"uuid", uuid}, {"id", found["id"]}, {"allowRestart", true}},
+                            relayMessage(reply));
+                });
+    });
 }
 
 void AgentBridge::overview(Reply reply) {
     call("networks.list", {}, [this, reply](bool ok, const QVariantMap &r) {
-        if (!ok) {
-            reply(failure(r["message"].toString()));
-            return;
-        }
+        if (!ok) return reply(failure(r["message"].toString()));
         QHash<QString, QString> networkOf; // bridge or libvirt network name -> display name
         QVariantList networks;
         for (const auto &v : r["items"].toList()) {
@@ -604,22 +523,15 @@ void AgentBridge::overview(Reply reply) {
 }
 
 void AgentBridge::proposeLab(const QVariantMap &plan, Reply reply, bool local) {
-    if (!current_.id.isEmpty()) {
-        reply(failure(
+    if (!current_.id.isEmpty())
+        return reply(failure(
                 "A lab is being built right now. Wait for it to finish (lab_status), then propose the next one."));
-        return;
-    }
-    if (!local && localLab_ && !proposal_.isEmpty()) {
-        reply(failure("The user is reviewing a lab of their own. Try again once they've finished."));
-        return;
-    }
+    if (!local && localLab_ && !proposal_.isEmpty())
+        return reply(failure("The user is reviewing a lab of their own. Try again once they've finished."));
     if (local) localLab_ = true;
     auto go = [this, plan, reply, local] {
         call("networks.list", {}, [this, plan, reply, local](bool ok, const QVariantMap &r) {
-            if (!ok) {
-                reply(failure(r["message"].toString()));
-                return;
-            }
+            if (!ok) return reply(failure(r["message"].toString()));
             LabPlan::Host host;
             host.cpus = host_.value("cpus", 1).toInt();
             host.memoryMiB = host_.value("memoryMiB").toLongLong();
@@ -634,11 +546,9 @@ void AgentBridge::proposeLab(const QVariantMap &plan, Reply reply, bool local) {
             if (!Labs::load(normalized["slug"].toString()).isEmpty())
                 problems << "A lab called “" + normalized["name"].toString() +
                                     "” already exists. Choose another name, or delete_lab it first.";
-            if (!problems.isEmpty()) {
-                reply(failure("The plan needs changes: " + problems.join(" "),
+            if (!problems.isEmpty())
+                return reply(failure("The plan needs changes: " + problems.join(" "),
                         {{"problems", problems}, {"warnings", check["warnings"]}}));
-                return;
-            }
             const auto id = QUuid::createUuid().toString(QUuid::WithoutBraces);
             if (!proposal_.isEmpty()) {
                 // A newer plan replaces one the user hasn't answered.
@@ -672,10 +582,7 @@ void AgentBridge::proposeLab(const QVariantMap &plan, Reply reply, bool local) {
         return;
     }
     call("capabilities", {}, [this, go, reply](bool ok, const QVariantMap &r) {
-        if (!ok) {
-            reply(failure(r["message"].toString()));
-            return;
-        }
+        if (!ok) return reply(failure(r["message"].toString()));
         host_ = {{"cpus", r["cpus"]}, {"memoryMiB", r["memoryMiB"]}};
         go();
     });
@@ -704,20 +611,15 @@ void AgentBridge::labStatus(const QVariantMap &args, Reply reply) {
     };
     if (!states_.contains(id)) {
         const auto lab = Labs::load(LabPlan::slug(byName.isEmpty() ? id : byName));
-        if (!lab.isEmpty()) {
-            reply(success({{"state", lab["state"]}, {"name", lab["name"]}, {"vms", lab["vms"]},
+        if (!lab.isEmpty())
+            return reply(success({{"state", lab["state"]}, {"name", lab["name"]}, {"vms", lab["vms"]},
                     {"networks", lab["networks"]}, {"user", lab["user"]}}));
-            return;
-        }
         reply(failure("There's no lab “" + (byName.isEmpty() ? id : byName) + "”."));
         return;
     }
     const int wait = std::clamp(args.value("wait_seconds", 0).toInt(), 0, 120);
     const auto state = states_.value(id)["state"].toString();
-    if (wait == 0 || (state != "waiting" && state != "building")) {
-        reply(success(describe(id)));
-        return;
-    }
+    if (wait == 0 || (state != "waiting" && state != "building")) return reply(success(describe(id)));
     // Answer when the state changes, or when the wait is over.
     const auto token = QUuid::createUuid().toString(QUuid::WithoutBraces);
     auto respond = [this, id, reply, token, describe] {
@@ -748,10 +650,8 @@ void AgentBridge::screenshot(const QVariantMap &vm, int maxWidth, Reply reply, c
     const auto uuid = vm["uuid"].toString(), name = vm["short"].toString();
     callAgent("vm.screenshot", {{"uuid", uuid}, {"maxWidth", maxWidth}},
             [this, reply, uuid, name, summary](bool ok, const QVariantMap &r) {
-                if (!ok) {
-                    reply(failure((summary.isEmpty() ? QString{} : summary + " ") + r["message"].toString()));
-                    return;
-                }
+                if (!ok)
+                    return reply(failure((summary.isEmpty() ? QString{} : summary + " ") + r["message"].toString()));
                 screenSizes_[uuid] = QSize(r["width"].toInt(), r["height"].toInt());
                 markScreen(uuid, name);
                 QVariantMap result{{"vm", name}, {"width", r["width"]}, {"height", r["height"]},
@@ -776,11 +676,9 @@ void AgentBridge::input(const QVariantMap &vm, const QVariantMap &args, Reply re
                 {{"uuid", uuid}, {"actions", actions}, {"width", size.width()}, {"height", size.height()}},
                 [this, vm, uuid, name, after, maxWidth, reply](bool ok, const QVariantMap &r) {
                     markScreen(uuid, name);
-                    if (!ok || !after) {
-                        reply(ok ? success({{"message", r["message"]}})
-                                 : failure(r["message"].toString(), {{"completed", r["completed"]}}));
-                        return;
-                    }
+                    if (!ok || !after)
+                        return reply(ok ? success({{"message", r["message"]}})
+                                        : failure(r["message"].toString(), {{"completed", r["completed"]}}));
                     // Give the guest a moment to draw the result.
                     QTimer::singleShot(700, this, [this, vm, maxWidth, reply, r] {
                         screenshot(vm, maxWidth, reply, r["message"].toString());
@@ -794,10 +692,7 @@ void AgentBridge::input(const QVariantMap &vm, const QVariantMap &args, Reply re
     // Clicks need the screen's size; take a screenshot first.
     callAgent("vm.screenshot", {{"uuid", uuid}, {"maxWidth", maxWidth}},
             [this, uuid, send, reply](bool ok, const QVariantMap &r) {
-                if (!ok) {
-                    reply(failure(r["message"].toString()));
-                    return;
-                }
+                if (!ok) return reply(failure(r["message"].toString()));
                 screenSizes_[uuid] = QSize(r["width"].toInt(), r["height"].toInt());
                 send();
             });
@@ -806,21 +701,13 @@ void AgentBridge::input(const QVariantMap &vm, const QVariantMap &args, Reply re
 void AgentBridge::typeLogin(const QVariantMap &vm, const QVariantMap &args, Reply reply) {
     const auto lab = vmLab(vm["uuid"].toString());
     const auto login = args.value("login", lab.value("login")).toString();
-    if (login.isEmpty() || !Logins::exists(login)) {
-        reply(failure(
+    if (login.isEmpty() || !Logins::exists(login))
+        return reply(failure(
                 "OmaWare has no saved login for " + vm["short"].toString() + ". Ask the user to log in themselves."));
-        return;
-    }
     const auto field = args.value("field", "password").toString();
-    if (field != "user" && field != "password") {
-        reply(failure("field must be user or password."));
-        return;
-    }
+    if (field != "user" && field != "password") return reply(failure("field must be user or password."));
     QString text = Logins::user(login), error;
-    if (field == "password" && !Logins::password(login, text, error)) {
-        reply(failure(error));
-        return;
-    }
+    if (field == "password" && !Logins::password(login, text, error)) return reply(failure(error));
     if (args.value("via", "screen") == "serial") {
         note(vm["short"].toString() + ": typed the " + (field == "user" ? "user name" : "password") + " of login “" +
                 login + "” on the serial console");
@@ -829,10 +716,9 @@ void AgentBridge::typeLogin(const QVariantMap &vm, const QVariantMap &args, Repl
                 {{"uuid", vm["uuid"]}, {"send", text + (args.value("enter", true).toBool() ? "\n" : "")},
                         {"timeout", 5}},
                 [reply, field, login, secret](bool ok, const QVariantMap &r) {
-                    if (!ok) {
-                        reply(failure(r["message"].toString(), {{"code", r.value("code", "console_unavailable")}}));
-                        return;
-                    }
+                    if (!ok)
+                        return reply(
+                                failure(r["message"].toString(), {{"code", r.value("code", "console_unavailable")}}));
                     // A guest that echoes a password would print it; the agent never gets it.
                     auto output = r["output"].toString();
                     if (!secret.isEmpty()) output.replace(secret, "********");
@@ -864,12 +750,10 @@ void AgentBridge::serialConsole(const QVariantMap &vm, const QVariantMap &args, 
         return !args.contains(key) || (args[key].toInt() >= low && args[key].toInt() <= high);
     };
     if (send.size() > 4000 || waitFor.size() > 200 || !bounded("timeout_seconds", 1, 60) ||
-            !bounded("max_bytes", 1024, 65536)) {
-        reply(failure(
+            !bounded("max_bytes", 1024, 65536))
+        return reply(failure(
                 "Send at most 4000 characters, wait_for at most 200, timeout_seconds 1–60 and max_bytes 1024–65536.",
                 {{"code", "invalid_argument"}}));
-        return;
-    }
     // What's typed is never logged, since it may be a password.
     note(vm["short"].toString() + ": serial console" +
             (send.isEmpty() ? QString(" (read)") : QString(" (%1 characters typed)").arg(send.size())));
@@ -878,10 +762,8 @@ void AgentBridge::serialConsole(const QVariantMap &vm, const QVariantMap &args, 
             {{"uuid", vm["uuid"]}, {"send", send}, {"waitFor", waitFor}, {"timeout", args.value("timeout_seconds", 10)},
                     {"maxBytes", args.value("max_bytes", 16384)}},
             [reply](bool ok, const QVariantMap &r) {
-                if (!ok) {
-                    reply(failure(r["message"].toString(), {{"code", r.value("code", "operation_failed")}}));
-                    return;
-                }
+                if (!ok)
+                    return reply(failure(r["message"].toString(), {{"code", r.value("code", "operation_failed")}}));
                 reply(success({{"output", r["output"]}, {"matched", r["matched"]}, {"timed_out", r["timedOut"]},
                         {"truncated", r["truncated"]}, {"console_closed", r["closed"]},
                         {"elapsed_ms", r["elapsedMs"]}}));
@@ -891,34 +773,26 @@ void AgentBridge::serialConsole(const QVariantMap &vm, const QVariantMap &args, 
 void AgentBridge::runCommand(const QVariantMap &vm, const QVariantMap &args, Reply reply) {
     const auto command = args.value("command").toString();
     const int timeout = std::clamp(args.value("timeout_seconds", 120).toInt(), 1, 900);
-    if (command.trimmed().isEmpty() || command.size() > 16000) {
-        reply(failure("Give a command of up to 16000 characters."));
-        return;
-    }
+    if (command.trimmed().isEmpty() || command.size() > 16000)
+        return reply(failure("Give a command of up to 16000 characters."));
     note(vm["short"].toString() + ": run “" + command.left(120) + (command.size() > 120 ? "…" : "") + "”");
     callAgent("vm.agentExec", {{"uuid", vm["uuid"]}, {"command", command}, {"timeout", timeout}},
             [this, vm, command, timeout, reply](bool ok, const QVariantMap &r) {
-                if (ok) {
-                    reply(success({{"exit_code", r["exitCode"]}, {"stdout", r["stdout"]}, {"stderr", r["stderr"]},
-                            {"via", "QEMU guest agent (as root)"}}));
-                    return;
-                }
-                if (!r.value("noAgent").toBool()) {
-                    reply(failure(r["message"].toString()));
-                    return;
-                }
+                if (ok)
+                    return reply(success({{"exit_code", r["exitCode"]}, {"stdout", r["stdout"]},
+                            {"stderr", r["stderr"]}, {"via", "QEMU guest agent (as root)"}}));
+                if (!r.value("noAgent").toBool()) return reply(failure(r["message"].toString()));
                 const auto lab = Labs::load(vmLab(vm["uuid"].toString()).value("slug").toString());
-                if (lab.isEmpty()) {
-                    reply(failure("The QEMU guest agent isn't running in " + vm["short"].toString() +
-                                          ", and it wasn't built as part of a lab (no SSH login), so OmaWare can't run "
-                                          "commands in it. "
-                                          "The guest agent doesn't need a network: once qemu-guest-agent is installed "
-                                          "and running in the guest (OmaWare's VMs already have its channel), "
-                                          "run_command works even on isolated networks. "
-                                          "Until then, use the VM's screen (screenshot and vm_input).",
+                if (lab.isEmpty())
+                    return reply(failure(
+                            "The QEMU guest agent isn't running in " + vm["short"].toString() +
+                                    ", and it wasn't built as part of a lab (no SSH login), so OmaWare can't run "
+                                    "commands in it. "
+                                    "The guest agent doesn't need a network: once qemu-guest-agent is installed "
+                                    "and running in the guest (OmaWare's VMs already have its channel), "
+                                    "run_command works even on isolated networks. "
+                                    "Until then, use the VM's screen (screenshot and vm_input).",
                             {{"code", "no_transport"}}));
-                    return;
-                }
                 runOverSsh(vm, lab, command, timeout, reply);
             });
 }
@@ -927,14 +801,9 @@ void AgentBridge::runOverSsh(
         const QVariantMap &vm, const QVariantMap &lab, const QString &command, int timeout, Reply reply) {
     callAgent("vm.addresses", {{"uuid", vm["uuid"]}},
             [this, vm, lab, command, timeout, reply](bool ok, const QVariantMap &r) {
-                if (!ok) {
-                    reply(failure(r["message"].toString()));
-                    return;
-                }
-                if (!r["active"].toBool()) {
-                    reply(failure(vm["short"].toString() + " isn't running. Start it first."));
-                    return;
-                }
+                if (!ok) return reply(failure(r["message"].toString()));
+                if (!r["active"].toBool())
+                    return reply(failure(vm["short"].toString() + " isn't running. Start it first."));
                 QString address;
                 for (const auto &v : r["interfaces"].toList()) {
                     const auto nic = v.toMap();
@@ -942,22 +811,17 @@ void AgentBridge::runOverSsh(
                     for (const auto &ip : nic["ips"].toList())
                         if (address.isEmpty()) address = ip.toString();
                 }
-                if (address.isEmpty()) {
-                    reply(failure(vm["short"].toString() +
-                                  " has no address OmaWare can reach yet. It may still be starting (wait a minute), or "
-                                  "it's only on isolated networks; then use its screen."));
-                    return;
-                }
+                if (address.isEmpty())
+                    return reply(failure(
+                            vm["short"].toString() +
+                            " has no address OmaWare can reach yet. It may still be starting (wait a minute), or "
+                            "it's only on isolated networks; then use its screen."));
                 QString eligibilityError;
-                if (!enabled_ || findVm(vm["uuid"].toString(), eligibilityError).isEmpty()) {
-                    reply(failure("Agent access or VM eligibility changed."));
-                    return;
-                }
+                if (!enabled_ || findVm(vm["uuid"].toString(), eligibilityError).isEmpty())
+                    return reply(failure("Agent access or VM eligibility changed."));
                 const auto slug = lab["slug"].toString(), user = lab["user"].toString();
-                if (!CloudSeed::validUser(user) || !QRegularExpression("^[0-9.]+$").match(address).hasMatch()) {
-                    reply(failure("The lab's login details are damaged."));
-                    return;
-                }
+                if (!CloudSeed::validUser(user) || !QRegularExpression("^[0-9.]+$").match(address).hasMatch())
+                    return reply(failure("The lab's login details are damaged."));
                 auto process = new QProcess(this);
                 process->start("ssh", {"-i", Labs::keyPath(slug), "-o", "IdentitiesOnly=yes", "-o", "BatchMode=yes",
                                               "-o", "ConnectTimeout=10", "-o", "StrictHostKeyChecking=yes", "-o",
@@ -979,20 +843,15 @@ void AgentBridge::runOverSsh(
                             process->deleteLater();
                             const auto out = QString::fromUtf8(process->readAllStandardOutput().right(65536)),
                                        err = QString::fromUtf8(process->readAllStandardError().right(65536));
-                            if (process->property("timedOut").toBool()) {
-                                reply(failure(QString("The command didn't finish within %1 seconds and was stopped.")
-                                                      .arg(timeout),
-                                        {{"stdout", out}, {"stderr", err}}));
-                                return;
-                            }
-                            if (code == -1 && status == QProcess::CrashExit && out.isEmpty()) {
-                                reply(failure("Couldn't start ssh. Is OpenSSH installed?"));
-                                return;
-                            }
-                            if (code == 255) {
-                                reply(failure("Couldn't connect over SSH to " + address + ": " + err.trimmed()));
-                                return;
-                            }
+                            if (process->property("timedOut").toBool())
+                                return reply(
+                                        failure(QString("The command didn't finish within %1 seconds and was stopped.")
+                                                        .arg(timeout),
+                                                {{"stdout", out}, {"stderr", err}}));
+                            if (code == -1 && status == QProcess::CrashExit && out.isEmpty())
+                                return reply(failure("Couldn't start ssh. Is OpenSSH installed?"));
+                            if (code == 255)
+                                return reply(failure("Couldn't connect over SSH to " + address + ": " + err.trimmed()));
                             reply(success({{"exit_code", code}, {"stdout", out}, {"stderr", err},
                                     {"via", "SSH as " + user + " (sudo works without a password)"}}));
                         });
@@ -1003,10 +862,7 @@ void AgentBridge::setCable(const QVariantMap &vm, const QVariantMap &args, Reply
     const auto wanted = args.value("network").toString().toLower();
     const bool plugged = args.value("plugged", true).toBool();
     call("networks.list", {}, [this, vm, wanted, plugged, reply](bool ok, const QVariantMap &r) {
-        if (!ok) {
-            reply(failure(r["message"].toString()));
-            return;
-        }
+        if (!ok) return reply(failure(r["message"].toString()));
         QString bridge, name;
         for (const auto &v : r["items"].toList()) {
             const auto n = v.toMap();
@@ -1025,10 +881,7 @@ void AgentBridge::setCable(const QVariantMap &vm, const QVariantMap &args, Reply
                             (!name.isEmpty() && nic["source"] == name))
                         mac = nic["mac"].toString();
                 }
-        if (mac.isEmpty()) {
-            reply(failure(vm["short"].toString() + " has no adapter on “" + wanted + "”."));
-            return;
-        }
+        if (mac.isEmpty()) return reply(failure(vm["short"].toString() + " has no adapter on “" + wanted + "”."));
         note(vm["short"].toString() + ": " + (plugged ? "plug in" : "pull") + " the cable to " + wanted);
         linkWaiters_.append([this, reply, plugged, vm] {
             // The new revision, so the next change doesn't need a fresh list.
@@ -1045,14 +898,8 @@ void AgentBridge::setCable(const QVariantMap &vm, const QVariantMap &args, Reply
 // ---- Deleting a lab ---------------------------------------------------------------------------
 void AgentBridge::deleteLab(const QString &slug, Reply reply) {
     const auto lab = Labs::load(slug);
-    if (lab.isEmpty()) {
-        reply(failure("There's no lab called “" + slug + "”."));
-        return;
-    }
-    if (current_.lab.value("slug") == slug) {
-        reply(failure("This lab is still being built."));
-        return;
-    }
+    if (lab.isEmpty()) return reply(failure("There's no lab called “" + slug + "”."));
+    if (current_.lab.value("slug") == slug) return reply(failure("This lab is still being built."));
     QStringList vmNames, netNames;
     for (const auto &v : lab["vms"].toList())
         vmNames << v.toMap()["name"].toString();
@@ -1113,10 +960,7 @@ void AgentBridge::deleteLab(const QString &slug, Reply reply) {
                                 revision = v.toMap()["revision"].toString();
                                 active = v.toMap()["active"].toBool();
                             }
-                        if (!exists || (op == "networks.stop" && !active)) {
-                            next();
-                            return;
-                        }
+                        if (!exists || (op == "networks.stop" && !active)) return next();
                         call(op, {{"uuid", uuid}, {"revision", revision}},
                                 [problems, n, next](bool ok, const QVariantMap &r) {
                                     if (!ok) *problems << n.toMap()["name"].toString() + ": " + r["message"].toString();
@@ -1249,10 +1093,7 @@ void AgentBridge::startBuild(const QString &login, const QString &user, const QS
                          input["dhcpEnd"] = QHostAddress(base + (subnet.second <= 24 ? 200 : hosts)).toString();
                      }
                      call("networks.save", input, [this, net, next](bool ok, const QVariantMap &r) {
-                         if (!ok) {
-                             next(r["message"].toString());
-                             return;
-                         }
+                         if (!ok) return next(r["message"].toString());
                          auto list = current_.lab["networks"].toList();
                          list.append(QVariantMap{{"name", net["name"]},
                                  {"fullName", "omaware-" + net["fullName"].toString()}, {"type", net["type"]},
@@ -1267,10 +1108,7 @@ void AgentBridge::startBuild(const QString &login, const QString &user, const QS
     if (!plan["networks"].toList().isEmpty())
         steps.append({"Letting the VMs join the networks (asks for your password)", [this](Next next) {
                           call("networks.list", {}, [this, next](bool ok, const QVariantMap &r) {
-                              if (!ok) {
-                                  next(r["message"].toString());
-                                  return;
-                              }
+                              if (!ok) return next(r["message"].toString());
                               QVariantList uuids;
                               auto list = current_.lab["networks"].toList();
                               for (auto &v : list) {
@@ -1293,20 +1131,14 @@ void AgentBridge::startBuild(const QString &login, const QString &user, const QS
                       const auto dir = Labs::folderOf(slug);
                       QDir().mkpath(dir + "/hostkeys");
                       const auto agentKey = makeKey(Labs::keyPath(slug), "omaware-lab-" + slug, error);
-                      if (agentKey.isEmpty()) {
-                          next(error);
-                          return;
-                      }
+                      if (agentKey.isEmpty()) return next(error);
                       current_.lab["agentKey"] = agentKey;
                       QVariantMap hostKeys;
                       for (const auto &v : current_.plan["vms"].toList()) {
                           const auto name = v.toMap()["name"].toString();
                           const auto path = dir + "/hostkeys/" + name.toLower();
                           const auto pub = makeKey(path, name.toLower(), error);
-                          if (pub.isEmpty()) {
-                              next(error);
-                              return;
-                          }
+                          if (pub.isEmpty()) return next(error);
                           hostKeys[name] = QVariantMap{{"public", pub}, {"private", readText(path)}};
                       }
                       current_.plan["hostKeys"] = hostKeys;
@@ -1319,10 +1151,7 @@ void AgentBridge::startBuild(const QString &login, const QString &user, const QS
         steps.append(
                 {"Creating " + spec["name"].toString(), [this, spec, slug](Next next) {
                      const auto image = CloudImages::local(spec["os"].toString());
-                     if (image.isEmpty()) {
-                         next("The " + spec["os"].toString() + " image is missing.");
-                         return;
-                     }
+                     if (image.isEmpty()) return next("The " + spec["os"].toString() + " image is missing.");
                      QHash<QString, QString> bridges;
                      for (const auto &n : current_.lab["networks"].toList())
                          bridges[n.toMap()["name"].toString()] = n.toMap()["bridge"].toString();
@@ -1342,10 +1171,7 @@ void AgentBridge::startBuild(const QString &login, const QString &user, const QS
                      for (const auto &n : spec["nics"].toList()) {
                          const auto mac = randomMac();
                          const auto bridge = bridges.value(n.toMap()["network"].toString());
-                         if (bridge.isEmpty()) {
-                             next("A network for " + spec["name"].toString() + " is missing.");
-                             return;
-                         }
+                         if (bridge.isEmpty()) return next("A network for " + spec["name"].toString() + " is missing.");
                          networks.append(QVariantMap{{"id", "bridge:" + bridge}, {"mac", mac}});
                          seed.nics.append({mac, n.toMap()["ip"].toString()});
                      }
@@ -1358,10 +1184,7 @@ void AgentBridge::startBuild(const QString &login, const QString &user, const QS
                              {"lab", QVariantMap{{"name", current_.plan["name"]}, {"slug", slug},
                                              {"login", current_.login}, {"user", current_.user}}}};
                      call("vm.create", input, [this, spec, slug, hostKey, image, next](bool ok, const QVariantMap &r) {
-                         if (!ok) {
-                             next(spec["name"].toString() + ": " + r["message"].toString());
-                             return;
-                         }
+                         if (!ok) return next(spec["name"].toString() + ": " + r["message"].toString());
                          auto list = current_.lab["vms"].toList();
                          list.append(QVariantMap{{"name", spec["name"]}, {"uuid", r["uuid"]}, {"dir", r["storage"]},
                                  {"os", image["name"]}, {"reachable", spec["reachable"]}});
