@@ -174,7 +174,9 @@ bool readOvf(const QByteArray &data, Envelope &envelope, QString &error) {
                 if (a.name() == u"key") key = a.value().toString();
                 if (a.name() == u"value") value = a.value().toString();
             }
-            if (key == "firmware") firmware = value;
+            // Reported back to the user (and agents) in the import notes, so only a plain token like "efi".
+            if (key == "firmware" && QRegularExpression("^[A-Za-z0-9_-]{1,16}$").match(value).hasMatch())
+                firmware = value;
         }
     }
     if (xml.hasError()) {

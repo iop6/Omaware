@@ -393,7 +393,8 @@ QJsonArray toolList() {
                     false, true),
             tool("set_cable", "Plug or pull a cable",
                     "Plugs in or pulls the virtual network cable between a VM and one of its networks (\"internet\" "
-                    "for a VM's private internet connection).",
+                    "for a VM's private internet connection). Plugging in a cable to anything but an isolated or "
+                    "host-only network OmaWare created asks the user first; pulling never asks.",
                     schema({{"vm", vm}, {"network", prop("string", "The network's name.")},
                                    {"plugged", prop("boolean", "true plugs in, false pulls.")}},
                             {"vm", "network", "plugged"})),

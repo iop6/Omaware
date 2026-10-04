@@ -111,9 +111,10 @@ AgentBridge::~AgentBridge() {
 }
 
 QString AgentBridge::socketPath() {
-    auto dir = QStandardPaths::writableLocation(QStandardPaths::RuntimeLocation);
-    if (dir.isEmpty()) dir = QDir::tempPath();
-    return dir + "/omaware-agent.sock";
+    // Only in the user's private runtime folder: in a shared one, another user could take the name first and
+    // answer an agent's tool calls.
+    const auto dir = QStandardPaths::writableLocation(QStandardPaths::RuntimeLocation);
+    return dir.isEmpty() ? QString{} : dir + "/omaware-agent.sock";
 }
 
 QString AgentBridge::command() const {
@@ -156,6 +157,11 @@ void AgentBridge::stop() {
 
 void AgentBridge::listen() {
     error_.clear();
+    if (socketPath().isEmpty()) {
+        error_ = "Agents can't connect: this session has no private runtime folder (XDG_RUNTIME_DIR).";
+        emit changed();
+        return;
+    }
     QLocalServer::removeServer(socketPath());
     if (!server_.listen(socketPath()))
         error_ = "Couldn't open the connection for agents: " + server_.errorString();
@@ -858,19 +864,19 @@ void AgentBridge::runOverSsh(
             });
 }
 
+// Plugs or pulls one of a VM's existing cables. Pulling is a safety action and never asks; plugging in a cable
+// that leads beyond OmaWare's isolated and host-only networks asks first, as connecting a new adapter there does.
 void AgentBridge::setCable(const QVariantMap &vm, const QVariantMap &args, Reply reply) {
     const auto wanted = args.value("network").toString().toLower();
     const bool plugged = args.value("plugged", true).toBool();
     call("networks.list", {}, [this, vm, wanted, plugged, reply](bool ok, const QVariantMap &r) {
         if (!ok) return reply(failure(r["message"].toString()));
-        QString bridge, name;
+        QVariantMap network;
         for (const auto &v : r["items"].toList()) {
             const auto n = v.toMap();
-            if (shortName(n["name"].toString()) == wanted || n["name"].toString() == wanted) {
-                bridge = n["bridge"].toString();
-                name = n["name"].toString();
-            }
+            if (shortName(n["name"].toString()) == wanted || n["name"].toString() == wanted) network = n;
         }
+        const auto bridge = network["bridge"].toString(), name = network["name"].toString();
         QString mac;
         for (const auto &v : r["topology"].toList())
             if (v.toMap()["uuid"] == vm["uuid"])
@@ -882,16 +888,29 @@ void AgentBridge::setCable(const QVariantMap &vm, const QVariantMap &args, Reply
                         mac = nic["mac"].toString();
                 }
         if (mac.isEmpty()) return reply(failure(vm["short"].toString() + " has no adapter on “" + wanted + "”."));
-        note(vm["short"].toString() + ": " + (plugged ? "plug in" : "pull") + " the cable to " + wanted);
-        linkWaiters_.append([this, reply, plugged, vm] {
-            // The new revision, so the next change doesn't need a fresh list.
-            callAgent("vm.details", {{"uuid", vm["uuid"]}}, [reply, plugged](bool ok, const QVariantMap &r) {
-                QVariantMap result{{"message", plugged ? "Cable plugged in." : "Cable pulled."}};
-                if (ok) result["revision"] = r["revision"];
-                reply(success(result));
+        const auto apply = [this, vm, wanted, plugged, mac, reply] {
+            note(vm["short"].toString() + ": " + (plugged ? "plug in" : "pull") + " the cable to " + wanted);
+            linkWaiters_.append([this, reply, plugged, vm] {
+                // The new revision, so the next change doesn't need a fresh list.
+                callAgent("vm.details", {{"uuid", vm["uuid"]}}, [reply, plugged](bool ok, const QVariantMap &r) {
+                    QVariantMap result{{"message", plugged ? "Cable plugged in." : "Cable pulled."}};
+                    if (ok) result["revision"] = r["revision"];
+                    reply(success(result));
+                });
             });
-        });
-        backend_->setLinks({QVariantMap{{"uuid", vm["uuid"]}, {"mac", mac}}}, plugged);
+            backend_->setLinks({QVariantMap{{"uuid", vm["uuid"]}, {"mac", mac}}}, plugged);
+        };
+        const bool privateNetwork = wanted != "internet" && network["managed"].toBool() &&
+                                    QStringList{"isolated", "hostonly"}.contains(network["mode"].toString());
+        if (!plugged || privateNetwork) return apply();
+        ask("Plug in " + vm["short"].toString() + "'s cable?",
+                "An AI agent wants to plug in " + vm["short"].toString() + "'s cable to “" + wanted +
+                        "”, which can reach the internet or your local network.",
+                "Plug in", [this, vm, apply, reply](bool yes) {
+                    if (yes) return apply();
+                    note(vm["short"].toString() + ": plugging in a cable declined", false);
+                    reply(failure("The user said no to plugging in this cable.", "declined"));
+                });
     });
 }
 

@@ -112,7 +112,8 @@ void Updater::check() {
         }
         latest_ = release["version"].toString();
         notes_ = release["notes"].toString();
-        if (!release["page"].toString().isEmpty()) page_ = release["page"].toString();
+        // The window opens this link in the browser, so only a web page.
+        if (release["page"].toString().startsWith("https://")) page_ = release["page"].toString();
         package_ = release["package"].toString();
         packageUrl_ = release["packageUrl"].toString();
         sumsUrl_ = release["sumsUrl"].toString();
