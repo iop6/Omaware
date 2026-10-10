@@ -8,6 +8,7 @@
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QLocalSocket>
+#include <QSet>
 #include <cmath>
 #include <cstdio>
 #include <iostream>
@@ -344,16 +345,20 @@ QJsonArray toolList() {
                     schema({{"vm", vm},
                                    {"actions", QJsonObject{{"type", "array"}, {"items", action},
                                                        {"description", "1 to 50 actions."}}},
-                                   {"screenshot", prop("boolean", "Return a screenshot afterwards (default true).")}},
+                                   {"screenshot", prop("boolean", "Return a screenshot afterwards (default true).")},
+                                   {"max_width", prop("integer", "Scale the screenshot down to this width (default "
+                                                                 "1280).")}},
                             {"vm", "actions"})),
             tool("type_login", "Type the login",
-                    "Types the user name or the password of the VM's saved login where the cursor is (for example at a "
-                    "login prompt), then presses Enter. You never see the password.",
+                    "Types the user name or the password of the lab login this VM was built with, where the cursor "
+                    "is (for example at a login prompt), then presses Enter. The password isn't returned to you, but "
+                    "it is typed wherever the cursor is, so only use it at a login prompt.",
                     schema({{"vm", vm},
                                    {"field", QJsonObject{{"type", "string"}, {"enum", QJsonArray{"user", "password"}}}},
                                    {"enter", prop("boolean", "Press Enter afterwards (default true).")},
                                    {"via", QJsonObject{{"type", "string"}, {"enum", QJsonArray{"screen", "serial"}},
-                                                   {"description", "screen (default) or the serial console."}}}},
+                                                   {"description", "screen (default) or the serial console."}}},
+                                   {"screenshot", prop("boolean", "Return a screenshot afterwards (default true).")}},
                             {"vm", "field"})),
             tool("serial_console", "Serial console",
                     "Sends text to the VM's serial console and returns what the guest printed, as text: for routers "
@@ -428,20 +433,29 @@ QVariantMap forwardToApp(const QString &name, const QVariantMap &args) {
 }
 
 QVariantList Mcp::tools() {
-    auto list = toolList().toVariantList();
-    list.append(AgentProvision::tools());
+    static const QVariantList list = [] {
+        auto all = toolList().toVariantList();
+        all.append(AgentProvision::tools());
+        return all;
+    }();
     return list;
 }
 
 bool Mcp::validateManagementArguments(const QString &name, const QVariantMap &args, QString &error) {
     if (AgentProvision::handles(name)) return AgentProvision::validate(name, args, error);
-    if (!QStringList{"vm_details", "diagnose_vm", "wait_for_vm", "transfer_file", "update_vm_resources", "clone_vm",
-                "manage_iso", "manage_network_adapter", "manage_network", "serial_console", "get_media"}
-                    .contains(name))
-        return true;
-    QJsonObject input;
-    for (const auto &t : toolList())
-        if (t.toObject()["name"] == name) input = t.toObject()["inputSchema"].toObject();
+    // Every tool refuses arguments its schema doesn't list, so an undocumented key can't change what it does.
+    // propose_lab also accepts the plan's fields directly, as its first versions did.
+    static const QHash<QString, QJsonObject> schemas = [] {
+        QHash<QString, QJsonObject> out;
+        for (const auto &t : toolList())
+            out[t.toObject()["name"].toString()] = t.toObject()["inputSchema"].toObject();
+        return out;
+    }();
+    if (!schemas.contains(name) || name == "propose_lab") return true;
+    // Tools whose arguments are all simple values are also type-checked here; the others check their own.
+    static const QStringList typed{"vm_details", "diagnose_vm", "wait_for_vm", "transfer_file", "update_vm_resources",
+            "clone_vm", "manage_iso", "manage_network_adapter", "manage_network", "serial_console", "get_media"};
+    const auto input = schemas[name];
     const auto properties = input["properties"].toObject();
     for (const auto &v : input["required"].toArray())
         if (!args.contains(v.toString())) {
@@ -454,6 +468,7 @@ bool Mcp::validateManagementArguments(const QString &name, const QVariantMap &ar
             error = "Unknown argument: " + it.key();
             return false;
         }
+        if (!typed.contains(name)) continue;
         const auto p = properties[it.key()].toObject();
         const auto type = p["type"].toString();
         const auto v = it.value();
@@ -498,10 +513,13 @@ QByteArray Mcp::respond(
     if (method == "tools/list") return answer({{"tools", QJsonArray::fromVariantList(tools())}});
     if (method == "tools/call") {
         const auto name = params["name"].toString();
-        bool known = false;
-        for (const auto &t : tools())
-            known |= t.toMap()["name"].toString() == name;
-        if (!known) return error(-32602, "Unknown tool: " + name);
+        static const QSet<QString> names = [] {
+            QSet<QString> out;
+            for (const auto &t : tools())
+                out.insert(t.toMap()["name"].toString());
+            return out;
+        }();
+        if (!names.contains(name)) return error(-32602, "Unknown tool: " + name);
         if (AgentProvision::handles(name)) {
             QString why;
             if (!params["arguments"].isObject() ||

@@ -1,6 +1,16 @@
 # Changelog
 
-## 1.10.0 (2026-10-04)
+## 1.11.0 (2026-10-09)
+
+- Starting a VM whose network is stopped (after a reboot, for example) now starts the network first, with the same administrator prompt as **Start** in Networks, instead of failing with libvirt's "Unable to restore from managed state … Maybe the file is corrupted?" or a bridge error. Networks made outside OmaWare, and bridges no network defines, are reported by name instead. This applies to VMs started from the sidebar, the map, **Resume all**, a restart, an unattended setup and AI agents.
+- AI agents: `type_login` only types the login the VM's own lab was built with; the undocumented `login` argument that could name any saved login is gone, and every tool now refuses arguments its description doesn't list. The tool's description says that the password is typed wherever the cursor is.
+- Appliances: OVAs that put the manifest after the disk (VirtualBox exports) are imported and checked, with SHA1, SHA256 or SHA512 manifests.
+- ISOs you add from elsewhere on the same disk (which OmaWare links instead of copying) are now offered to AI agents' `create_vm` too.
+- A cloud image, OS Shop download or update whose file couldn't be written completely (a full disk) is reported and thrown away instead of being kept with a matching checksum.
+- Snapshot and agent operations recover after the local libvirt daemon restarts, instead of failing until OmaWare is reopened.
+- The updater only fetches packages and checksums over HTTPS, whatever the release feed says.
+- The installer no longer treats a missing terminal as a yes (`--yes` says so explicitly) and works without `$USER` set.
+- Faster network listing with many VMs: each VM's definition is read once per listing instead of once per network, and containment checks read the host's bridges once.
 
 - **Containment** closes more ways out of a contained VM: raw QEMU settings, disks other than local image files (network storage, host block or NVMe devices, host folders, SCSI passthrough), serial ports and channels that reach host devices or services, keyboard and input passthrough, smartcards, host audio, network entropy sources, 3D acceleration, and VNC's default local TCP port. A VM that finishes setting itself up is checked before it starts.
 - Everything OmaWare shows from guests, files, AI agents and other programs is plain text, so markup in a file name or an agent's request can't change the window or disguise what you approve.

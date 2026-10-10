@@ -115,8 +115,13 @@ void Updater::check() {
         // The window opens this link in the browser, so only a web page.
         if (release["page"].toString().startsWith("https://")) page_ = release["page"].toString();
         package_ = release["package"].toString();
-        packageUrl_ = release["packageUrl"].toString();
-        sumsUrl_ = release["sumsUrl"].toString();
+        // Only over TLS, whatever the release feed says (tests use local files).
+        auto safe = [](const QString &url) {
+            const auto scheme = QUrl(url).scheme();
+            return scheme == "https" || scheme == "file" ? url : QString{};
+        };
+        packageUrl_ = safe(release["packageUrl"].toString());
+        sumsUrl_ = safe(release["sumsUrl"].toString());
         if (!newer(latest_, current_)) {
             set("upToDate");
             return;
@@ -182,12 +187,14 @@ void Updater::downloadPackage(const QString &expected) {
         set("error", "Couldn't save the update.");
         return;
     }
-    reply_ = network_.get(request(QUrl(packageUrl_)));
-    auto reply = reply_.data();
-    connect(reply, &QNetworkReply::readyRead, this, [reply, file, hash] {
-        const auto data = reply->readAll();
+    auto reply = network_.get(request(QUrl(packageUrl_)));
+    // The checksum covers what came in; a short write (full disk) must not pass as a good download.
+    auto store = [file, hash](const QByteArray &data) {
         hash->addData(data);
-        file->write(data);
+        return file->write(data) == data.size();
+    };
+    connect(reply, &QNetworkReply::readyRead, this, [reply, store] {
+        if (!store(reply->readAll())) reply->abort();
     });
     connect(reply, &QNetworkReply::downloadProgress, this, [this](qint64 got, qint64 total) {
         if (total > 0) {
@@ -195,12 +202,11 @@ void Updater::downloadPackage(const QString &expected) {
             emit changed();
         }
     });
-    connect(reply, &QNetworkReply::finished, this, [this, reply, file, hash, expected] {
+    connect(reply, &QNetworkReply::finished, this, [this, reply, file, hash, store, expected] {
         reply->deleteLater();
-        const auto rest = reply->readAll();
-        hash->addData(rest);
-        file->write(rest);
+        const bool written = store(reply->readAll()) && file->flush();
         file->close();
+        if (!written) return discard("The update couldn't be saved: " + file->errorString() + " Is the disk full?");
         if (reply->error() != QNetworkReply::NoError)
             return discard("The update couldn't be downloaded: " + reply->errorString());
         if (QString::fromLatin1(hash->result().toHex()) != expected)

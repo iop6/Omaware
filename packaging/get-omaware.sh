@@ -30,11 +30,13 @@ fail() { printf 'OmaWare install: %s\n' "$*" >&2; exit 1; }
 ask() {
     [[ $assume_yes == 1 ]] && return 0
     local answer
-    { exec 3< /dev/tty; } 2>/dev/null || return 0
+    # Without a terminal nobody can answer: don't take that as a yes to changing the system.
+    { exec 3< /dev/tty; } 2>/dev/null || fail "no terminal to ask on. Run it again with --yes to continue without asking."
     read -r -p "$1 [Y/n] " answer <&3 || answer=
     exec 3<&-
     [[ -z $answer || $answer == [Yy]* ]]
 }
+me=$(id -un)
 run() { if [[ $dry_run == 1 ]]; then echo "  would run: $*"; else "$@"; fi; }
 
 [[ $(uname -m) == x86_64 ]] || fail "OmaWare runs on 64-bit x86 Linux; this computer is $(uname -m)."
@@ -82,9 +84,9 @@ if [[ $system_step == 1 ]]; then
         services=(libvirtd.socket)
     fi
     groups=()
-    getent group libvirt >/dev/null && ! id -nG "$USER" | tr ' ' '\n' | grep -qx libvirt && groups+=(libvirt)
+    getent group libvirt >/dev/null && ! id -nG "$me" | tr ' ' '\n' | grep -qx libvirt && groups+=(libvirt)
     # Most systems already let every user use /dev/kvm; only ask for the group where they don't.
-    [[ -e /dev/kvm && ! -w /dev/kvm ]] && getent group kvm >/dev/null && ! id -nG "$USER" | tr ' ' '\n' | grep -qx kvm && groups+=(kvm)
+    [[ -e /dev/kvm && ! -w /dev/kvm ]] && getent group kvm >/dev/null && ! id -nG "$me" | tr ' ' '\n' | grep -qx kvm && groups+=(kvm)
 
     if [[ ${#missing[@]} -gt 0 || ${#services[@]} -gt 0 || ${#groups[@]} -gt 0 ]]; then
         [[ ${#missing[@]} -gt 0 ]] && what="install QEMU, libvirt and Qt from ${NAME:-your distribution}" || what="turn on libvirt"
@@ -99,14 +101,14 @@ if [[ $system_step == 1 ]]; then
             if [[ ${#services[@]} -eq 1 && ${services[0]} == libvirtd.socket ]] && systemctl list-unit-files virtqemud.socket 2>/dev/null | grep -q virtqemud; then
                 services=(virtqemud.socket virtnetworkd.socket virtstoraged.socket)
             fi
-            if [[ ! " ${groups[*]} " == *" libvirt "* ]] && getent group libvirt >/dev/null && ! id -nG "$USER" | tr ' ' '\n' | grep -qx libvirt; then
+            if [[ ! " ${groups[*]} " == *" libvirt "* ]] && getent group libvirt >/dev/null && ! id -nG "$me" | tr ' ' '\n' | grep -qx libvirt; then
                 groups+=(libvirt)
             fi
         fi
         say "Setting up libvirt…"
         [[ ${#services[@]} -gt 0 ]] && { run sudo systemctl enable --now "${services[@]}" 2>/dev/null || run sudo systemctl enable --now libvirtd 2>/dev/null || true; }
         # OmaWare picks up new groups when it starts, so there's no need to log out.
-        [[ ${#groups[@]} -gt 0 ]] && run sudo usermod -aG "$(IFS=,; echo "${groups[*]}")" "$USER"
+        [[ ${#groups[@]} -gt 0 ]] && run sudo usermod -aG "$(IFS=,; echo "${groups[*]}")" "$me"
     fi
 fi
 

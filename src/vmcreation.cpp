@@ -568,7 +568,7 @@ void VmWorker::finishSetup(const QString &uuid, int detail) {
         return;
     }
     // Starting it is like any start: a VM contained meanwhile has to pass its checks.
-    if (const auto blocked = Containment::blocker(saved.get(), false); !blocked.isEmpty()) {
+    if (const auto blocked = startBlocker(saved.get()); !blocked.isEmpty()) {
         emit finished(name + " is installed, but wasn't started. " + blocked, false);
         return;
     }

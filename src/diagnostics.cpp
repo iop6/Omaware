@@ -1,5 +1,14 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "diagnostics.h"
+#include <QDateTime>
+#include <QDir>
+#include <QFile>
+#include <QFileInfo>
+#include <QJsonDocument>
+#include <QLockFile>
+#include <QSaveFile>
+#include <QStandardPaths>
+#include <QUuid>
 
 QString Diagnostics::nextStep(const QString &message) {
     const auto text = message.toLower();
@@ -25,16 +34,6 @@ QString Diagnostics::nextStep(const QString &message) {
         return "Check that the selected local path exists and your account can access it.";
     return "Review the operation details, correct the indicated setting, and try again.";
 }
-
-#include <QDateTime>
-#include <QDir>
-#include <QFile>
-#include <QFileInfo>
-#include <QJsonDocument>
-#include <QLockFile>
-#include <QSaveFile>
-#include <QStandardPaths>
-#include <QUuid>
 
 QVariantMap Diagnostics::advice(const QString &message) {
     const auto text = message.toLower();

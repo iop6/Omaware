@@ -5,7 +5,9 @@
 #include "backend.h"
 #include "virtutil.h"
 #include <QDomDocument>
+#include <QHash>
 #include <QStringList>
+#include <QVariantMap>
 
 // One manage() call, as its handlers see it. Every handler ends by calling done() or fail() exactly once.
 struct VmWorker::Request {
@@ -54,4 +56,13 @@ QDomElement child(QDomDocument &doc, QDomElement parent, const QString &name, co
 bool managedNetwork(const QString &xml);
 // Every host network's DHCP leases: IPv4 addresses by lower-case MAC.
 QHash<QString, QStringList> dhcpLeases(virConnectPtr system);
+// What a VM's bridge adapters need before it can start, from its definition and the host networks by bridge
+// name ({uuid, name, active, managed}, see bridgeNetworks()): {start: [{uuid, name, bridge}] stopped OmaWare
+// networks, foreign: [name] stopped networks made elsewhere, missing: [bridge] bridges no network defines}.
+QVariantMap networksToStart(const QString &domainXml, const QHash<QString, QVariantMap> &networks);
+QHash<QString, QVariantMap> bridgeNetworks(virConnectPtr system);
+// Starts the stopped OmaWare networks the VM's adapters are plugged into, so the VM can start (libvirt refuses
+// a VM whose bridge is missing, and after a reboot blames the saved state). Administrator authorization may be
+// asked, as for Start in Networks. Empty when the VM can go ahead; otherwise why it can't.
+QString startNetworksFor(virDomainPtr domain);
 }

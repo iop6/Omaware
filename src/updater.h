@@ -3,7 +3,6 @@
 #include <QNetworkAccessManager>
 #include <QNetworkRequest>
 #include <QObject>
-#include <QPointer>
 #include <QUrl>
 #include <QVariantMap>
 
@@ -105,5 +104,4 @@ private:
     QString appDir_;
     QUrl feed_;
     QNetworkAccessManager network_;
-    QPointer<QNetworkReply> reply_;
 };

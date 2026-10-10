@@ -705,8 +705,8 @@ void AgentBridge::input(const QVariantMap &vm, const QVariantMap &args, Reply re
 }
 
 void AgentBridge::typeLogin(const QVariantMap &vm, const QVariantMap &args, Reply reply) {
-    const auto lab = vmLab(vm["uuid"].toString());
-    const auto login = args.value("login", lab.value("login")).toString();
+    // Only the login the VM's own lab was built with: never one the agent names.
+    const auto login = vmLab(vm["uuid"].toString()).value("login").toString();
     if (login.isEmpty() || !Logins::exists(login))
         return reply(failure(
                 "OmaWare has no saved login for " + vm["short"].toString() + ". Ask the user to log in themselves."));
@@ -1037,8 +1037,8 @@ void AgentBridge::approve(
             error = "Choose a user name of lower-case letters, digits, dashes or underscores.";
         else if (password.size() < 8)
             error = "Use a password of at least 8 characters.";
-        else if (!Logins::save(login, user, password, store, error)) {
-        }
+        else
+            Logins::save(login, user, password, store, error); // sets error on failure
         if (!error.isEmpty()) {
             build_ = {{"id", id}, {"state", "error"}, {"message", error}};
             emit buildChanged();
@@ -1270,7 +1270,6 @@ void AgentBridge::finishBuild(bool ok, const QString &message) {
     const auto id = current_.id;
     current_.lab["state"] = ok ? "ready" : "failed";
     current_.lab["message"] = message;
-    current_.lab.remove("hostKeys");
     Labs::save(current_.lab);
     // Each VM's private host key now lives only on its own setup disc; the lab keeps the public keys in known_hosts.
     QDir(Labs::folderOf(current_.lab["slug"].toString()) + "/hostkeys").removeRecursively();

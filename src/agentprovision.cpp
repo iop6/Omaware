@@ -57,7 +57,8 @@ bool mediaName(QString kind, QString s) {
 }
 }
 
-QVariantList AgentProvision::tools() {
+namespace {
+QVariantList buildTools() {
     const auto request =
             field("string", "Client-generated lowercase UUID. Reuse the same ID and arguments after a lost response; "
                             "never resubmit with a new ID. Deduplication lasts for this running app only.");
@@ -125,11 +126,22 @@ QVariantList AgentProvision::tools() {
                     "Approval-gated networks.authorize using installed trusted helper; separate administrator "
                     "authorization may be required. No passwords or helper installation through MCP.")};
 }
+}
+
+// Built once: every tool call looks these up, from the app's worker threads too.
+QVariantList AgentProvision::tools() {
+    static const QVariantList list = buildTools();
+    return list;
+}
 
 bool AgentProvision::handles(const QString &tool) {
-    for (const auto &v : tools())
-        if (v.toMap()["name"] == tool) return true;
-    return false;
+    static const QHash<QString, QVariantMap> byName = [] {
+        QHash<QString, QVariantMap> out;
+        for (const auto &v : tools())
+            out[v.toMap()["name"].toString()] = v.toMap();
+        return out;
+    }();
+    return byName.contains(tool);
 }
 
 QString AgentProvision::admission(const QString &id, const QVariantMap &request,
@@ -236,13 +248,16 @@ int AgentProvision::openMedia(const QString &kind, const QString &name, QVariant
         ::close(fd);
         fd = next;
         struct stat s{};
+        // ISOs the user adds on the same disk are hard links into the library (IsoLibrary::importFiles), so
+        // they may have more than one link; appliances are always private copies.
         if (fd < 0 || ::fstat(fd, &s) != 0 ||
-                (leaf ? (!S_ISREG(s.st_mode) || s.st_uid != ::getuid() || s.st_nlink != 1 || s.st_size <= 0)
+                (leaf ? (!S_ISREG(s.st_mode) || s.st_uid != ::getuid() || !(kind == "iso" || s.st_nlink == 1) ||
+                                s.st_size <= 0)
                       : (!S_ISDIR(s.st_mode) || (s.st_uid != 0 && s.st_uid != ::getuid()))) ||
                 (s.st_mode & (S_IWGRP | S_IWOTH))) {
             if (fd >= 0) ::close(fd);
-            error = "Media library must contain user-owned regular, non-empty, single-link files; no symlinks or "
-                    "writable shared components.";
+            error = "Media library must contain user-owned regular, non-empty files (appliances with a single link); "
+                    "no symlinks or writable shared components.";
             return -1;
         }
         if (leaf)

@@ -203,12 +203,21 @@ private slots:
         QCOMPARE(AgentProvision::media().size(), 2);
         QVERIFY(QFile::link(Paths::isos() + "/Windows.iso", Paths::isos() + "/linked.iso"));
         QVERIFY(AgentProvision::openMedia("iso", "linked.iso", identity, error) < 0);
+        // ISOs added from the same disk are hard links (IsoLibrary::importFiles), so those stay usable.
         QCOMPARE(::link(QFile::encodeName(Paths::isos() + "/Windows.iso").constData(),
                          QFile::encodeName(Paths::isos() + "/hard.iso").constData()),
                 0);
-        QVERIFY(AgentProvision::openMedia("iso", "hard.iso", identity, error) < 0);
-        QVERIFY(AgentProvision::openMedia("iso", "Windows.iso", identity, error) < 0);
+        fd = AgentProvision::openMedia("iso", "hard.iso", identity, error);
+        QVERIFY2(fd >= 0, qPrintable(error));
+        ::close(fd);
         QVERIFY(QFile::remove(Paths::isos() + "/hard.iso"));
+        // Appliances are private copies: a second link means something else can change the approved file.
+        QCOMPARE(::link(QFile::encodeName(Paths::root() + "/appliances/remnux.qcow2").constData(),
+                         QFile::encodeName(Paths::root() + "/appliances/hard.qcow2").constData()),
+                0);
+        QVERIFY(AgentProvision::openMedia("disk", "hard.qcow2", identity, error) < 0);
+        QVERIFY(AgentProvision::openMedia("disk", "remnux.qcow2", identity, error) < 0);
+        QVERIFY(QFile::remove(Paths::root() + "/appliances/hard.qcow2"));
         QFile empty(Paths::isos() + "/empty.iso");
         QVERIFY(empty.open(QIODevice::WriteOnly));
         empty.close();

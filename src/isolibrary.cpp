@@ -1284,7 +1284,11 @@ void IsoLibrary::request(const QString &id) {
             }
             const auto rest = reply->readAll();
             if (job->hash) job->hash->addData(rest);
-            job->out->write(rest);
+            if (job->out->write(rest) != rest.size() || !job->out->flush()) {
+                cancel(id);
+                fail(id, "Writing the download failed. Is the disk full?");
+                return;
+            }
             job->received += rest.size();
             complete(id);
             return;

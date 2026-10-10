@@ -13,6 +13,7 @@
 #include <QHostAddress>
 #include <QNetworkInterface>
 #include <QProcess>
+#include <QSet>
 #include <QUuid>
 
 namespace {
@@ -26,16 +27,25 @@ struct ExistingNetwork {
     QVariantList users;
 };
 
-// Names of the VMs on `conn` with an adapter on this bridge or libvirt network, in their saved or running
-// definition.
-QVariantList usersOf(virConnectPtr conn, const QString &bridge, const QString &name) {
-    QVariantList users;
-    if (!conn) return users;
+// Where every VM on a connection is attached, in its saved and running definition: each VM's name with its
+// sources ("bridge:<name>" and "network:<name>"), plus problems reading the inventory. Read once per request,
+// since listing asks the same question for every host network.
+struct Attachments {
+    QList<QPair<QString, QSet<QString>>> vms;
+    QStringList problems;
+};
+
+Attachments attachmentsOn(virConnectPtr conn) {
+    Attachments result;
+    if (!conn) return result;
     virDomainPtr *domains = nullptr;
     const int count = virConnectListAllDomains(conn, &domains, 0);
-    if (count < 0) return {"VM inventory unavailable"};
+    if (count < 0) {
+        result.problems << "VM inventory unavailable";
+        return result;
+    }
     for (int i = 0; i < count; ++i) {
-        bool attached = false;
+        QSet<QString> sources;
         for (bool live : {false, true}) {
             if (live && virDomainIsActive(domains[i]) != 1) continue;
             const unsigned flags = !live && virDomainIsPersistent(domains[i]) == 1 ? VIR_DOMAIN_XML_INACTIVE : 0;
@@ -43,21 +53,34 @@ QVariantList usersOf(virConnectPtr conn, const QString &bridge, const QString &n
             QString failure;
             const auto info = xml.isEmpty() ? QVariantMap{} : DomainConfig::describe(xml, failure);
             if (xml.isEmpty() || !failure.isEmpty()) {
-                users.append("VM network configuration unavailable");
+                result.problems << "VM network configuration unavailable";
                 continue;
             }
             for (const auto &v : info["interfaces"].toList()) {
                 const auto nic = v.toMap();
-                if ((nic["type"] == "bridge" && nic["source"] == bridge) ||
-                        (nic["type"] == "network" && nic["source"] == name))
-                    attached = true;
+                if (nic["type"] == "bridge" || nic["type"] == "network")
+                    sources.insert(nic["type"].toString() + ":" + nic["source"].toString());
             }
         }
-        if (attached) users.append(QString::fromUtf8(virDomainGetName(domains[i])));
+        result.vms.append({QString::fromUtf8(virDomainGetName(domains[i])), sources});
         virDomainFree(domains[i]);
     }
     free(domains);
+    return result;
+}
+
+// Names of the VMs with an adapter on this bridge or libvirt network, with any inventory problems first.
+QVariantList usersFrom(const Attachments &attachments, const QString &bridge, const QString &name) {
+    QVariantList users;
+    for (const auto &problem : attachments.problems)
+        users.append(problem);
+    for (const auto &[vm, sources] : attachments.vms)
+        if (sources.contains("bridge:" + bridge) || sources.contains("network:" + name)) users.append(vm);
     return users;
+}
+
+QVariantList usersOf(virConnectPtr conn, const QString &bridge, const QString &name) {
+    return usersFrom(attachmentsOn(conn), bridge, name);
 }
 
 bool overlaps(const QString &subnet, const QString &other) {
@@ -158,7 +181,7 @@ QVariantMap helperFailure(const QString &code) {
 
 // One host network as the Networks page shows it.
 QVariantMap describeHostNetwork(
-        virNetworkPtr network, virConnectPtr system, virConnectPtr session, const QVariantList &choices) {
+        virNetworkPtr network, const Attachments &system, const Attachments &session, const QVariantList &choices) {
     const auto xml = Virt::networkXml(network);
     auto data = NetworkCatalog::describe(xml);
     QDomDocument doc;
@@ -170,8 +193,8 @@ QVariantMap describeHostNetwork(
     data["active"] = virNetworkIsActive(network) == 1;
     data["managed"] = managedNetwork(xml);
     data["revision"] = DomainConfig::revision(xml);
-    data["users"] = usersOf(session, data["bridge"].toString(), data["name"].toString());
-    data["systemUsers"] = usersOf(system, data["bridge"].toString(), data["name"].toString());
+    data["users"] = usersFrom(session, data["bridge"].toString(), data["name"].toString());
+    data["systemUsers"] = usersFrom(system, data["bridge"].toString(), data["name"].toString());
     data["mode"] = !root.firstChildElement("forward").isNull() ? "nat" : ip.isNull() ? "isolated" : "hostonly";
     if (data["mode"] == "isolated") data["isolation"] = Containment::verifyNetwork(xml, data["active"].toBool());
     data["cidr"] = cidrOf(ip);
@@ -243,11 +266,12 @@ QVariantMap topologyEntry(virDomainPtr domain, const QHash<QString, QStringList>
 void listHostNetworks(const VmWorker::Request &request, virConnectPtr system, virConnectPtr session) {
     QString status;
     const auto choices = NetworkCatalog::discover(session, status);
+    const auto sessionVms = attachmentsOn(session), systemVms = attachmentsOn(system);
     QVariantList networks;
     virNetworkPtr *all = nullptr;
     const int count = virConnectListAllNetworks(system, &all, 0);
     for (int i = 0; i < count; ++i) {
-        networks.append(describeHostNetwork(all[i], system, session, choices));
+        networks.append(describeHostNetwork(all[i], systemVms, sessionVms, choices));
         virNetworkFree(all[i]);
     }
     free(all);
@@ -420,4 +444,91 @@ void VmWorker::manageHostNetworks(const Request &request) {
         return request.fail("The network configuration changed. Refresh Networks before retrying.");
     if (op == "networks.save") return saveHostNetwork(request, system.get(), existing);
     changeHostNetwork(request, existing);
+}
+
+namespace Management {
+QHash<QString, QVariantMap> bridgeNetworks(virConnectPtr system) {
+    QHash<QString, QVariantMap> result;
+    if (!system) return result;
+    virNetworkPtr *networks = nullptr;
+    const int count = virConnectListAllNetworks(system, &networks, 0);
+    for (int i = 0; i < count; ++i) {
+        const auto xml = Virt::networkXml(networks[i]);
+        QDomDocument doc;
+        doc.setContent(xml);
+        const auto root = doc.documentElement();
+        const auto bridge = root.firstChildElement("bridge").attribute("name");
+        if (!bridge.isEmpty())
+            result[bridge] = {{"uuid", root.firstChildElement("uuid").text()},
+                    {"name", root.firstChildElement("name").text()}, {"active", virNetworkIsActive(networks[i]) == 1},
+                    {"managed", managedNetwork(xml)}};
+        virNetworkFree(networks[i]);
+    }
+    free(networks);
+    return result;
+}
+
+QVariantMap networksToStart(const QString &domainXml, const QHash<QString, QVariantMap> &networks) {
+    QVariantList start;
+    QStringList foreign, missing;
+    QDomDocument doc;
+    doc.setContent(domainXml);
+    const auto devices = doc.documentElement().firstChildElement("devices");
+    QSet<QString> seen;
+    for (auto e = devices.firstChildElement("interface"); !e.isNull(); e = e.nextSiblingElement("interface")) {
+        if (e.attribute("type") != "bridge") continue;
+        const auto bridge = e.firstChildElement("source").attribute("bridge");
+        if (bridge.isEmpty() || seen.contains(bridge)) continue;
+        seen.insert(bridge);
+        const auto network = networks.value(bridge);
+        if (network.isEmpty())
+            missing << bridge;
+        else if (network["active"].toBool())
+            continue;
+        else if (!network["managed"].toBool())
+            foreign << network["name"].toString();
+        else
+            start.append(QVariantMap{{"uuid", network["uuid"]}, {"name", network["name"]}, {"bridge", bridge}});
+    }
+    return {{"start", start}, {"foreign", foreign}, {"missing", missing}};
+}
+
+QString startNetworksFor(virDomainPtr domain) {
+    const auto xml = Virt::domainXml(domain, VIR_DOMAIN_XML_INACTIVE);
+    if (xml.isEmpty()) return "The VM definition could not be read.";
+    if (!xml.contains("type='bridge'") && !xml.contains("type=\"bridge\"")) return {};
+    Connection readOnly(virConnectOpenReadOnly("qemu:///system"), virConnectClose);
+    // Without a look at the host networks, libvirt's own start report is all there is.
+    if (!readOnly) return {};
+    const auto plan = networksToStart(xml, bridgeNetworks(readOnly.get()));
+    readOnly.reset();
+    QStringList missing;
+    for (const auto &bridge : plan["missing"].toStringList())
+        if (!QNetworkInterface::interfaceFromName(bridge).isValid()) missing << bridge;
+    if (!missing.isEmpty())
+        return "A network adapter is plugged into " + missing.join(", ") +
+               ", which doesn't exist on this computer. Connect it to a network in Hardware, or start the "
+               "network that owns that bridge.";
+    if (const auto foreign = plan["foreign"].toStringList(); !foreign.isEmpty())
+        return "Network " + foreign.join(", ") +
+               " is stopped. Start it first; OmaWare only starts networks it created.";
+    const auto start = plan["start"].toList();
+    if (start.isEmpty()) return {};
+    QStringList names;
+    for (const auto &v : start)
+        names << v.toMap()["name"].toString();
+    Connection system(virConnectOpen("qemu:///system"), virConnectClose);
+    if (!system)
+        return Virt::lastError("Start network " + names.join(", ") + "; administrator authorization may be required");
+    for (const auto &v : start) {
+        const auto entry = v.toMap();
+        Network network(
+                virNetworkLookupByUUIDString(system.get(), entry["uuid"].toString().toUtf8().constData()),
+                virNetworkFree);
+        if (!network) return Virt::lastError("Start network " + entry["name"].toString());
+        if (virNetworkIsActive(network.get()) != 1 && virNetworkCreate(network.get()) < 0)
+            return Virt::lastError("Start network " + entry["name"].toString());
+    }
+    return {};
+}
 }

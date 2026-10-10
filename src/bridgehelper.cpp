@@ -37,8 +37,10 @@ QString BridgeHelper::check(const QString &candidate) {
 
 QString BridgeHelper::trusted(QString *reason) {
     QString why = "helper_missing";
-    for (const auto &candidate : QStringList{destination(), "/usr/local/libexec/omaware/authorize-bridge",
-                 "/usr/libexec/omaware/authorize-bridge"}) {
+    QStringList candidates{
+            destination(), "/usr/local/libexec/omaware/authorize-bridge", "/usr/libexec/omaware/authorize-bridge"};
+    candidates.removeDuplicates();
+    for (const auto &candidate : candidates) {
         const auto found = check(candidate);
         if (found.isEmpty()) {
             if (reason) reason->clear();

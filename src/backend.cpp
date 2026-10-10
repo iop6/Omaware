@@ -184,11 +184,17 @@ void VmWorker::createTest() {
     emit finished("Created " + name + " · diskless, no network", true);
 }
 
+QString VmWorker::startBlocker(virDomainPtr d) {
+    // Networks first: a contained VM's isolated switch only passes its checks once it runs.
+    if (const auto problem = Management::startNetworksFor(d); !problem.isEmpty()) return problem;
+    return Containment::blocker(d, false);
+}
+
 // Runs one power operation on a VM; returns an empty string on success.
 QString VmWorker::power(virDomainPtr d, const QString &operation) {
     if (!owned(d)) return "OmaWare only changes VMs it created; this one is read-only.";
     if (operation == "start" || operation == "resume") {
-        const auto blocker = Containment::blocker(d, operation == "resume");
+        const auto blocker = operation == "start" ? startBlocker(d) : Containment::blocker(d, true);
         if (!blocker.isEmpty()) return blocker;
     }
     int result = -1;
@@ -394,10 +400,12 @@ void VmWorker::inspect(QString uuid, quint64 request, bool guestInfo) {
             active && networkSignature(details["interfaces"].toList()) != networkSignature(live["interfaces"].toList());
     details["agentConnected"] = active && live["agentConnected"].toBool();
     {
-        // Containment policy and its current verdict, including live devices of a running VM.
-        auto verdict = Containment::check(xml);
+        // Containment policy and its current verdict, including live devices of a running VM. The host's
+        // bridges are read once for both checks (each read opens a system connection).
+        const auto bridges = Containment::hostBridges();
+        auto verdict = Containment::check(xml, bridges);
         if (active) {
-            const auto liveVerdict = Containment::check(Virt::domainXml(domain, 0));
+            const auto liveVerdict = Containment::check(Virt::domainXml(domain, 0), bridges);
             auto merge = [&](const char *key) {
                 auto list = verdict[key].toStringList() + liveVerdict[key].toStringList();
                 list.removeDuplicates();

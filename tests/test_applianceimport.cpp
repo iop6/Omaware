@@ -182,6 +182,42 @@ private slots:
         QVERIFY(qemu({"compare", "-f", "raw", "-F", "qcow2", dir.filePath("payload.raw"), output}));
     }
 
+    // VirtualBox writes the manifest after the disk, with SHA1 or SHA256; both orders and kinds must check.
+    void manifestAfterDisk_data() {
+        QTest::addColumn<QString>("algorithm");
+        QTest::newRow("sha1") << "SHA1";
+        QTest::newRow("sha256") << "SHA256";
+        QTest::newRow("sha512") << "SHA512";
+    }
+
+    void manifestAfterDisk() {
+        QFETCH(QString, algorithm);
+        const auto kind = algorithm == "SHA1"     ? QCryptographicHash::Sha1
+                          : algorithm == "SHA256" ? QCryptographicHash::Sha256
+                                                  : QCryptographicHash::Sha512;
+        QTemporaryDir work;
+        const auto ova = work.filePath("vbox-fixture.ova"), output = work.filePath("out.qcow2");
+        const auto description = ovf();
+        const QByteArray manifest =
+                algorithm.toUtf8() + "(x.ovf)= " + QCryptographicHash::hash(description, kind).toHex() + "\n" +
+                algorithm.toUtf8() + "(disk.vmdk)= " + QCryptographicHash::hash(vmdk, kind).toHex() + "\n";
+        QVERIFY(tar(ova, {{"x.ovf", description}, {"disk.vmdk", vmdk}, {"x.mf", manifest}}));
+        ApplianceImport importer(work.path());
+        QString error;
+        QVERIFY2(importer.prepare(ova, ova, error), qPrintable(error));
+        QVERIFY(importer.notes().join(' ').contains("matched the OVA's manifest"));
+        QVERIFY2(importer.convert(output, error), qPrintable(error));
+        // A wrong checksum after the disk is still caught.
+        QByteArray wrong = manifest;
+        wrong.replace(QCryptographicHash::hash(vmdk, kind).toHex(),
+                QByteArray(int(QCryptographicHash::hashLength(kind)) * 2, '0'));
+        const auto bad = work.filePath("bad.ova");
+        QVERIFY(tar(bad, {{"x.ovf", description}, {"disk.vmdk", vmdk}, {"x.mf", wrong}}));
+        ApplianceImport second(work.path());
+        QVERIFY(!second.prepare(bad, bad, error));
+        QVERIFY2(error.contains("does not match its manifest"), qPrintable(error));
+    }
+
     // qemu reads an embedded-descriptor sparse VMDK from the file itself, so a hostile extent
     // name pointing at a host file must not leak it into the new disk.
     void hostileExtentNameReadsNothingElse() {
@@ -214,8 +250,7 @@ private slots:
                 {"external-reference", "unsafe or invalid file reference"},
                 {"multi-system", "exactly one virtual machine"}, {"multi-disk", "more than one disk"},
                 {"chunked", "split into chunks"}, {"unknown-compression", "unsupported disk compression"},
-                {"ovf-not-first", "must start with its OVF"},
-                {"manifest-after-disk", "manifest must come once, before the disk"},
+                {"ovf-not-first", "must start with its OVF"}, {"manifest-twice", "manifest must come once"},
                 {"manifest-mismatch", "does not match its manifest"},
                 {"manifest-unknown-file", "lists a file that is not in the OVA"},
                 {"corrupt-gzip", "compressed disk is corrupt"}, {"truncated-gzip", "truncated"},
@@ -256,9 +291,9 @@ private slots:
             members << Member{"bad.ovf", description} << Member{"disk.vmdk.gz", packed};
         } else if (scenario == "ovf-not-first")
             members << Member{"disk.vmdk", disk} << Member{"bad.ovf", description};
-        else if (scenario == "manifest-after-disk")
-            members << Member{"bad.ovf", description} << Member{"disk.vmdk", disk}
-                    << Member{"bad.mf", "SHA256(disk.vmdk)= " + sha256(disk)};
+        else if (scenario == "manifest-twice")
+            members << Member{"bad.ovf", description} << Member{"bad.mf", "SHA256(disk.vmdk)= " + sha256(disk)}
+                    << Member{"disk.vmdk", disk} << Member{"again.mf", "SHA256(disk.vmdk)= " + sha256(disk)};
         else if (scenario == "manifest-mismatch")
             members << Member{"bad.ovf", description} << Member{"bad.mf", "SHA256(disk.vmdk)= " + QByteArray(64, '0')}
                     << Member{"disk.vmdk", disk};

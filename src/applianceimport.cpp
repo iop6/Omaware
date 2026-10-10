@@ -260,7 +260,7 @@ bool ApplianceImport::stageOva(int fd, QString &error) {
     QString ovfName;
     QByteArray ovf, manifest;
     QHash<QString, QPair<QCryptographicHash::Algorithm, QByteArray>> expected; // member -> algorithm, hex digest
-    QByteArray diskDigest;
+    QHash<int, QByteArray> diskDigests; // algorithm -> hex digest of the disk member
     bool haveDisk = false, certificate = false;
     QByteArray buffer(chunk, Qt::Uninitialized);
     archive_entry *entry = nullptr;
@@ -288,8 +288,17 @@ bool ApplianceImport::stageOva(int fd, QString &error) {
             continue;
         }
         if (name == envelope.disk) {
-            const auto check = expected.contains(name) ? std::optional(expected[name].first) : std::nullopt;
-            QCryptographicHash hash(check.value_or(QCryptographicHash::Sha256));
+            // The manifest may follow the disk (VirtualBox exports), so every checksum kind it could name is
+            // computed while the disk streams past, unless it already said which one it uses.
+            const auto known = expected.contains(name) ? std::optional(expected[name].first) : std::nullopt;
+            QCryptographicHash sha1(QCryptographicHash::Sha1), sha256(QCryptographicHash::Sha256),
+                    sha512(QCryptographicHash::Sha512);
+            auto digest = [&](const char *data, qint64 n) {
+                const QByteArrayView view(data, n);
+                if (!known || *known == QCryptographicHash::Sha1) sha1.addData(view);
+                if (!known || *known == QCryptographicHash::Sha256) sha256.addData(view);
+                if (!known || *known == QCryptographicHash::Sha512) sha512.addData(view);
+            };
             const bool gzip = envelope.compression == "gzip";
             QFile out(staging_.filePath("disk.vmdk"));
             if (!out.open(QIODevice::WriteOnly | QIODevice::NewOnly)) {
@@ -332,7 +341,7 @@ bool ApplianceImport::stageOva(int fd, QString &error) {
                     error = "The OVA disk is longer than its archive entry.";
                     return false;
                 }
-                if (check) hash.addData(QByteArrayView(buffer.constData(), n));
+                digest(buffer.constData(), n);
                 if (!gzip) {
                     if (!store(buffer.constData(), n)) return false;
                     continue;
@@ -368,11 +377,16 @@ bool ApplianceImport::stageOva(int fd, QString &error) {
                 return false;
             }
             out.close();
-            if (check) diskDigest = hash.result().toHex();
+            if (!known || *known == QCryptographicHash::Sha1)
+                diskDigests[QCryptographicHash::Sha1] = sha1.result().toHex();
+            if (!known || *known == QCryptographicHash::Sha256)
+                diskDigests[QCryptographicHash::Sha256] = sha256.result().toHex();
+            if (!known || *known == QCryptographicHash::Sha512)
+                diskDigests[QCryptographicHash::Sha512] = sha512.result().toHex();
             haveDisk = true;
         } else if (suffix == "mf") {
-            if (haveDisk || !manifest.isEmpty()) {
-                error = "The OVA manifest must come once, before the disk.";
+            if (!manifest.isEmpty()) {
+                error = "The OVA manifest must come once.";
                 return false;
             }
             if (!readSmall(ar.get(), bytes, manifest) || manifest.isEmpty()) {
@@ -419,7 +433,7 @@ bool ApplianceImport::stageOva(int fd, QString &error) {
     }
     for (auto it = expected.cbegin(); it != expected.cend(); ++it) {
         const auto actual = it.key() == ovfName         ? QCryptographicHash::hash(ovf, it->first).toHex()
-                            : it.key() == envelope.disk ? diskDigest
+                            : it.key() == envelope.disk ? diskDigests.value(it->first)
                                                         : QByteArray();
         if (actual.isEmpty()) {
             error = "The OVA manifest lists a file that is not in the OVA: " + it.key();

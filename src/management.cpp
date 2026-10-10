@@ -237,6 +237,12 @@ void VmWorker::manage(QString op, QVariantMap in) {
         // A folder problem belongs to this picker, not the global connection.
         return request.done(true, "ISO library refreshed", Workspace::mediaFiles(in["folder"].toString()));
     }
+    // A storage-only worker has no event thread or close callback (see open()), so it notices a connection the
+    // daemon dropped here and opens a new one instead of failing every request until the app restarts.
+    if (storageOnly_ && conn_ && virConnectIsAlive(conn_) != 1) {
+        virConnectClose(conn_);
+        conn_ = nullptr;
+    }
     if (!conn_ && storageOnly_) conn_ = virConnectOpen("qemu:///session");
     if (!conn_) return request.fail("Reconnect to the local VM session first.");
 

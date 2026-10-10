@@ -1350,9 +1350,10 @@ bool Checkpoints::restore(virConnectPtr connection, virDomainPtr domain, QString
         // A contained VM stays contained, even when returning to a snapshot taken before containment.
         doc.setContent(Containment::withMarker(doc.toString(-1), true));
         if (memory) memoryXml = Containment::withMarker(memoryXml, true);
-        auto verdict = Containment::check(doc.toString(-1));
+        const auto bridges = Containment::hostBridges();
+        auto verdict = Containment::check(doc.toString(-1), bridges);
         if (memory) {
-            auto live = Containment::check(memoryXml);
+            auto live = Containment::check(memoryXml, bridges);
             auto list = verdict["violations"].toStringList() + live["violations"].toStringList();
             list.removeDuplicates();
             verdict["violations"] = list;

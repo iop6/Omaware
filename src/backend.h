@@ -94,6 +94,9 @@ private:
     bool owned(virDomainPtr domain);
     // Runs one power operation on a VM; returns an empty string on success.
     QString power(virDomainPtr domain, const QString &operation);
+    // Before a VM starts: brings up the stopped OmaWare networks its adapters use (see
+    // Management::startNetworksFor), then checks containment. Empty when it may start; otherwise why not.
+    QString startBlocker(virDomainPtr domain);
     // Starts a VM. One being set up unattended (see unattended.h) first boots its installer: Ubuntu's
     // kernel directly with "autoinstall", Windows on UEFI with a few key presses for "Press any key".
     int start(virDomainPtr domain);

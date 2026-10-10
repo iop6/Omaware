@@ -4466,6 +4466,24 @@ private slots:
         QTRY_VERIFY(!backend->busy());
         command("networks.stop", {{"uuid", networkUuid}, {"revision", network["revision"]}});
         QVERIFY(!resultOk);
+        // After a reboot the network is down (here: stopped behind OmaWare's back). Starting the VM starts it.
+        backend->action(uuid, "force-off");
+        QTRY_VERIFY(!active(uuid));
+        QTRY_VERIFY(!backend->busy());
+        {
+            auto system = virConnectOpen("qemu:///system");
+            QVERIFY(system);
+            auto net = virNetworkLookupByUUIDString(system, networkUuid.toUtf8().constData());
+            QVERIFY(net);
+            QCOMPARE(virNetworkDestroy(net), 0);
+            virNetworkFree(net);
+            virConnectClose(system);
+        }
+        QVERIFY(!QNetworkInterface::interfaceFromName(network["bridge"].toString()).isValid());
+        backend->action(uuid, "start");
+        QTRY_VERIFY2_WITH_TIMEOUT(active(uuid), qPrintable(backend->message()), 15000);
+        QTRY_VERIFY(!backend->busy());
+        QVERIFY(QNetworkInterface::interfaceFromName(network["bridge"].toString()).isValid());
         backend->action(uuid, "force-off");
         QTRY_VERIFY(!active(uuid));
         QTRY_VERIFY(!backend->busy());

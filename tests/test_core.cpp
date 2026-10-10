@@ -11,6 +11,7 @@
 #include "diagnostics.h"
 #include "snapshothistory.h"
 #include "containment.h"
+#include "management.h"
 #include "instance.h"
 #include "isolibrary.h"
 #include "updater.h"
@@ -1064,6 +1065,40 @@ private slots:
         }
         Theme present(dir.filePath("colors.toml"));
         QVERIFY(present.omarchyAvailable());
+    }
+
+    void networksAVmNeeds() {
+        // Host networks by bridge: a running and a stopped OmaWare network, and a stopped one made elsewhere.
+        const QHash<QString, QVariantMap> networks{
+                {"omaup", QVariantMap{{"uuid", "u1"}, {"name", "omaware-up"}, {"active", true}, {"managed", true}}},
+                {"omadown", QVariantMap{{"uuid", "u2"}, {"name", "omaware-down"}, {"active", false}, {"managed", true}}},
+                {"virbr9", QVariantMap{{"uuid", "u3"}, {"name", "theirs"}, {"active", false}, {"managed", false}}}};
+        auto plan = [&](QString devices) {
+            return Management::networksToStart(
+                    "<domain type='kvm'><name>omaware-x</name><devices>" + devices + "</devices></domain>", networks);
+        };
+        auto nic = [](QString bridge) {
+            return "<interface type='bridge'><mac address='52:54:00:00:00:01'/><source bridge='" + bridge +
+                   "'/></interface>";
+        };
+        // Nothing to do: no adapters, a private internet connection, or a network that already runs.
+        for (const auto &devices : {QString{}, QString("<interface type='user'/>"), nic("omaup")}) {
+            const auto result = plan(devices);
+            QVERIFY(result["start"].toList().isEmpty());
+            QVERIFY(result["foreign"].toStringList().isEmpty());
+            QVERIFY(result["missing"].toStringList().isEmpty());
+        }
+        // A stopped OmaWare network is started once, however many adapters are on it.
+        auto result = plan(nic("omadown") + nic("omadown") + nic("omaup"));
+        QCOMPARE(result["start"].toList().size(), 1);
+        QCOMPARE(result["start"].toList().first().toMap()["uuid"].toString(), "u2");
+        QCOMPARE(result["start"].toList().first().toMap()["name"].toString(), "omaware-down");
+        QCOMPARE(result["start"].toList().first().toMap()["bridge"].toString(), "omadown");
+        // Stopped networks made elsewhere, and bridges no network defines, are reported, not started.
+        result = plan(nic("virbr9") + nic("omanowhere"));
+        QVERIFY(result["start"].toList().isEmpty());
+        QCOMPARE(result["foreign"].toStringList(), QStringList{"theirs"});
+        QCOMPARE(result["missing"].toStringList(), QStringList{"omanowhere"});
     }
 
     void containmentPolicy() {

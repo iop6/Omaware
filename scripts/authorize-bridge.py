@@ -39,7 +39,7 @@ for argument in sys.argv[1:]:
     root = ET.fromstring(raw)
     if not root.findtext('name', '').startswith('omaware-') or root.find('metadata/{https://omaware.org/xmlns/network/1}managed') is None:
         fail(NOT_OWNED, 'The selected network is not managed by OmaWare.')
-    bridge = root.find('bridge').get('name', '')
+    bridge = root.find('bridge').get('name', '') if root.find('bridge') is not None else ''
     if not bridge.startswith('oma') or len(bridge) > 15 or not bridge.isalnum() or not Path('/sys/class/net', bridge, 'bridge').is_dir():
         fail(INACTIVE, 'The managed bridge is not active. Start the network first.')
     grants.append((identity, bridge))

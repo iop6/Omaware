@@ -627,7 +627,7 @@ void VmWorker::guestAddresses(const Request &request, const Target &vm) {
 // "vm.restart": asks the guest to shut down, then starts the VM again with its saved settings. Never forces it
 // off: after two minutes without a shutdown it gives up.
 void VmWorker::restartVm(const Request &request, const Target &vm) {
-    if (const auto blocked = Containment::blocker(vm.domain, false); !blocked.isEmpty()) return request.fail(blocked);
+    if (const auto blocked = startBlocker(vm.domain); !blocked.isEmpty()) return request.fail(blocked);
     if (!vm.active) {
         const int result = start(vm.domain);
         return request.done(
@@ -652,7 +652,7 @@ void VmWorker::restartVm(const Request &request, const Target &vm) {
             if (virDomainIsActive(d.get()) != 0) return;
             restartTimer_->stop();
             restartUuid_.clear();
-            const auto blocked = Containment::blocker(d.get(), false);
+            const auto blocked = owned(d.get()) ? startBlocker(d.get()) : QString{};
             const int result = owned(d.get()) && blocked.isEmpty() ? start(d.get()) : -1;
             refresh();
             emit finished(result == 0          ? "VM started with its saved settings."
@@ -670,9 +670,10 @@ void VmWorker::restartVm(const Request &request, const Target &vm) {
 void VmWorker::setContainment(const Request &request, const Target &vm) {
     const bool on = request.in["enabled"].toBool();
     if (on) {
-        auto verdict = Containment::check(vm.xml);
+        const auto bridges = Containment::hostBridges();
+        auto verdict = Containment::check(vm.xml, bridges);
         if (vm.active) {
-            const auto live = Containment::check(Virt::definition(vm.domain, true));
+            const auto live = Containment::check(Virt::definition(vm.domain, true), bridges);
             auto list = verdict["violations"].toStringList() + live["violations"].toStringList();
             list.removeDuplicates();
             verdict["violations"] = list;

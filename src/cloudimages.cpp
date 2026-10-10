@@ -199,18 +199,26 @@ void CloudImages::download(const QString &id, const Image &image) {
         job->total = total;
         emit changed();
     });
-    connect(job->reply, &QNetworkReply::readyRead, this, [job] {
-        const auto data = job->reply->readAll();
+    // The checksum covers what came in; a short write must not pass as a good image.
+    auto store = [job](const QByteArray &data) {
         job->hash->addData(data);
-        job->out->write(data);
+        if (job->out->write(data) != data.size()) job->writeFailed = true;
+    };
+    connect(job->reply, &QNetworkReply::readyRead, this, [job, store] {
+        store(job->reply->readAll());
+        if (job->writeFailed) job->reply->abort();
     });
-    connect(job->reply, &QNetworkReply::finished, this, [this, id, job] {
+    connect(job->reply, &QNetworkReply::finished, this, [this, id, job, store] {
         job->reply->deleteLater();
-        const auto data = job->reply->readAll();
-        job->hash->addData(data);
-        job->out->write(data);
+        store(job->reply->readAll());
+        if (!job->out->flush()) job->writeFailed = true;
         job->out->close();
         const auto part = job->out->fileName(), final = part.left(part.size() - 5);
+        if (job->writeFailed) {
+            QFile::remove(part);
+            finish(id, false, "The image couldn't be written to " + folder() + ". Is the disk full?");
+            return;
+        }
         if (job->reply->error() != QNetworkReply::NoError) {
             QFile::remove(part);
             finish(id, false, "The image download failed: " + job->reply->errorString());

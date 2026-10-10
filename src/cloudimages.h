@@ -51,6 +51,7 @@ private:
         std::unique_ptr<QFile> out;
         std::unique_ptr<QCryptographicHash> hash;
         qint64 received = 0, total = 0;
+        bool writeFailed = false; // a short write (full disk): the file can't be trusted even if the hash matches
         QList<std::function<void(bool, const QString &)>> waiting;
     };
 

@@ -57,7 +57,7 @@ For networks created outside OmaWare, add `allow <bridge>` to `/etc/qemu/bridge.
 
 **Networks → List** shows each network with its type, addresses, status, the VMs on it, any problem with its fix, and **Start**, **Stop**, **Edit**, **Show on map** and **Remove**. OmaWare only changes networks it created. A network can't be stopped, edited or removed while a VM (running or not) still uses it. Subnets already in use are refused.
 
-**Starts with the computer** is on by default, for networks made here, by labs and by AI agents: a network that's stopped after a reboot leaves its VMs unable to start until you start it. Turn it off under **Edit** (an agent uses `manage_network`). OmaWare doesn't start networks for you when a VM starts.
+**Starts with the computer** is on by default, for networks made here, by labs and by AI agents. Turn it off under **Edit** (an agent uses `manage_network`). When you start a VM whose network is stopped (after a reboot, say), OmaWare starts that network first, with the same administrator prompt as **Start**; a network made outside OmaWare has to be started by you.
 
 ## The network map
 
