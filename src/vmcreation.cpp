@@ -433,6 +433,13 @@ void VmWorker::createVm(const Request &request) {
     if (!doc.setContent(output)) return abandon("virt-install did not return a valid domain definition.");
 
     auto root = doc.documentElement(), devices = root.firstChildElement("devices");
+    // Windows has no driver for QEMU's display adapters and keeps the screen size the firmware booted with, which
+    // is 1280×800 unless the adapter advertises a preferred size. Full HD fits the console scaled on any screen.
+    if (auto model = devices.firstChildElement("video").firstChildElement("model"); windows && !model.isNull()) {
+        auto resolution = child(doc, model, "resolution");
+        resolution.setAttribute("x", "1920");
+        resolution.setAttribute("y", "1080");
+    }
     if (!importing) {
         // virt-install's first stage normally stops at reboot so its own installer can swap the definition.
         // OmaWare keeps the media attached instead and lets the user eject it.

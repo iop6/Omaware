@@ -2,6 +2,8 @@
 
 ## 1.12.0 (unreleased)
 
+- Windows VMs no longer get stuck at a 1280×800 screen. Windows has no driver for QEMU's display adapters and keeps the size the firmware booted with, so new Windows VMs now tell the firmware to start at 1920×1080, and **Edit hardware → Integration** sets the boot screen size of any VM (applied at its next start, listed in Pending changes). Installers whose windows were taller than the screen, such as FLARE-VM's package selection, now fit.
+
 ## 1.11.0 (2026-10-09)
 
 - Starting a VM whose network is stopped (after a reboot, for example) now starts the network first, with the same administrator prompt as **Start** in Networks, instead of failing with libvirt's "Unable to restore from managed state … Maybe the file is corrupted?" or a bridge error. Networks made outside OmaWare, and bridges no network defines, are reported by name instead. This applies to VMs started from the sidebar, the map, **Resume all**, a restart, an unattended setup and AI agents.

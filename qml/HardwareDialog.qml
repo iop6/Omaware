@@ -15,7 +15,7 @@ EditorDialog {
     property bool isoChanged: false
     heading: reviewing ? "Review hardware changes" : "Edit hardware"
     headerIcon: "cpu"
-    subtitle: reviewing ? "Review what will change" : "Resources, boot media and guest integration"
+    subtitle: reviewing ? "Review what will change" : "Resources, boot media, display and guest integration"
     actionText: reviewing ? (info.active ? "Save for next start" : "Save settings") : "Review changes"
     function openFor(details) {
         cpuAdvanced.expanded = false;
@@ -35,6 +35,14 @@ EditorDialog {
         iso.text = cd ? cd.source : "";
         isoChanged = false;
         clipboard.checked = !!details.clipboardConfigured;
+        const sizes = ["", "1366x768", "1600x900", "1920x1080", "2560x1440", "3840x2160"];
+        if (sizes.indexOf(details.videoResolution || "") < 0)
+            sizes.push(details.videoResolution);
+        resolution.sizes = sizes;
+        resolution.model = sizes.map(function (s) {
+            return s ? s.replace("x", "×") : "Firmware default (1280×800)";
+        });
+        resolution.currentIndex = sizes.indexOf(details.videoResolution || "");
         open();
     }
     function values() {
@@ -51,7 +59,12 @@ EditorDialog {
             result.iso = iso.text;
         if (clipboard.checked !== !!info.clipboardConfigured)
             result.clipboard = clipboard.checked;
+        if (resolutionChanged())
+            result.resolution = resolution.sizes[resolution.currentIndex];
         return result;
+    }
+    function resolutionChanged() {
+        return resolution.currentIndex >= 0 && resolution.sizes[resolution.currentIndex] !== (info.videoResolution || "");
     }
     onSubmitted: {
         if (!reviewing)
@@ -191,6 +204,27 @@ EditorDialog {
             Layout.fillWidth: true
             wrapMode: Text.WordWrap
         }
+        SectionHeading {
+            title: "Display"
+            iconName: "monitor"
+        }
+        Label {
+            text: "Screen size"
+        }
+        AppSelect {
+            id: resolution
+            objectName: "hardwareResolution"
+            property var sizes: []
+            Layout.fillWidth: true
+            enabled: !!dialog.info.videoModel
+        }
+        Label {
+            text: "The size the VM's screen starts at. A guest without a display driver (Windows on QEMU's adapters) keeps it; one with a driver can change it from inside."
+            color: theme.colors.muted
+            font.pixelSize: Math.round((11) * theme.textScale)
+            Layout.fillWidth: true
+            wrapMode: Text.WordWrap
+        }
     }
     ColumnLayout {
         visible: dialog.reviewing
@@ -226,6 +260,12 @@ EditorDialog {
             Layout.fillWidth: true
             label: "Clipboard"
             value: clipboard.checked ? "Guest channel enabled" : "Guest channel disabled"
+        }
+        DetailRow {
+            visible: dialog.resolutionChanged()
+            Layout.fillWidth: true
+            label: "Screen size"
+            value: resolution.currentText
         }
         AppButton {
             text: "Back to settings"

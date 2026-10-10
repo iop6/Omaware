@@ -184,6 +184,9 @@ QVariantMap DomainConfig::describe(const QString &xml, QString &error) {
             result["videoModel"] = attr(e, "model", "type");
             result["videoMemoryKiB"] = attr(e, "model", "vram").toLongLong();
             result["videoHeads"] = attr(e, "model", "heads", "1").toInt();
+            const auto resolution = e.firstChildElement("model").firstChildElement("resolution");
+            result["videoResolution"] =
+                    resolution.isNull() ? QString() : resolution.attribute("x") + "x" + resolution.attribute("y");
             result["acceleration3d"] = attr(e.firstChildElement("model"), "acceleration", "accel3d", "no") == "yes";
         } else if (e.tagName() == "channel" && attr(e, "target", "name") == "org.qemu.guest_agent.0") {
             agentConfigured = true;

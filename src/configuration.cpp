@@ -31,6 +31,7 @@ QString deviceKey(QDomElement e) {
     if (e.tagName() == "interface") return "nic:" + e.firstChildElement("mac").attribute("address");
     if (e.tagName() == "disk") return "disk:" + e.firstChildElement("target").attribute("dev");
     if (e.tagName() == "channel" && e.attribute("type") == "qemu-vdagent") return "clipboard";
+    if (e.tagName() == "video") return "display";
     return {};
 }
 
@@ -52,6 +53,10 @@ QVariantMap summaries(const QString &xml) {
         const auto d = v.toMap();
         out["disk:" + d["target"].toString()] =
                 d["source"].toString() + " · " + d["format"].toString() + " · " + d["bus"].toString();
+    }
+    if (const auto adapter = info["videoModel"].toString(); !adapter.isEmpty()) {
+        const auto resolution = info["videoResolution"].toString();
+        out["display"] = adapter + " · " + (resolution.isEmpty() ? QString("default screen size") : resolution);
     }
     QDomDocument doc;
     doc.setContent(xml);
@@ -211,6 +216,30 @@ bool setClipboard(QDomDocument &doc, bool on, QString &error) {
 }
 }
 
+// The screen size the display adapter advertises as preferred ("1920x1080"; empty for QEMU's default). The firmware
+// boots at that size, and a guest without a display driver (Windows on QEMU's adapters) stays at it.
+bool setResolution(QDomDocument &doc, const QString &value, QString &error) {
+    auto model = doc.documentElement().firstChildElement("devices").firstChildElement("video").firstChildElement("model");
+    if (model.isNull()) {
+        error = "This VM has no display adapter to set a screen size on.";
+        return false;
+    }
+    if (value.isEmpty()) {
+        model.removeChild(model.firstChildElement("resolution"));
+        return true;
+    }
+    const auto match = QRegularExpression("^(\\d{3,4})x(\\d{3,4})$").match(value);
+    const int x = match.captured(1).toInt(), y = match.captured(2).toInt();
+    if (!match.hasMatch() || x < 640 || x > 7680 || y < 480 || y > 4320) {
+        error = "Choose a screen size between 640x480 and 7680x4320, written as WIDTHxHEIGHT.";
+        return false;
+    }
+    auto resolution = ensure(doc, model, "resolution");
+    resolution.setAttribute("x", x);
+    resolution.setAttribute("y", y);
+    return true;
+}
+
 QString Configuration::hardware(const QString &xml, const QVariantMap &values, QString &error) {
     QDomDocument doc;
     if (!doc.setContent(xml)) {
@@ -230,6 +259,7 @@ QString Configuration::hardware(const QString &xml, const QVariantMap &values, Q
     if (values.contains("boot") && !setBootOrder(doc, values["boot"].toString(), error)) return {};
     if (values.contains("iso") && !setInstallationMedia(doc, values["iso"].toString(), error)) return {};
     if (values.contains("clipboard") && !setClipboard(doc, values["clipboard"].toBool(), error)) return {};
+    if (values.contains("resolution") && !setResolution(doc, values["resolution"].toString(), error)) return {};
     return doc.toString(-1);
 }
 
@@ -249,6 +279,7 @@ QVariantList Configuration::changes(const QString &before, const QString &after)
                             : key == "memory"        ? "Memory"
                             : key == "boot"          ? "Boot order"
                             : key == "clipboard"     ? "Clipboard integration"
+                            : key == "display"       ? "Display"
                             : key.startsWith("nic:") ? "Adapter " + key.mid(4)
                                                      : "Disk " + key.mid(5);
             result.append(QVariantMap{{"key", key}, {"label", label}, {"before", a.value(key, "Not attached")},
@@ -284,7 +315,7 @@ QString Configuration::revert(const QString &baseline, const QString &current, c
                     old = old.nextSiblingElement())
                 if (!deviceKey(e).isEmpty() && deviceKey(old) == deviceKey(e)) restore(old, e, "boot");
         }
-    } else if (key.startsWith("nic:") || key.startsWith("disk:") || key == "clipboard") {
+    } else if (key.startsWith("nic:") || key.startsWith("disk:") || key == "clipboard" || key == "display") {
         auto devices = root.firstChildElement("devices");
         for (auto e = devices.firstChildElement(); !e.isNull();) {
             auto next = e.nextSiblingElement();

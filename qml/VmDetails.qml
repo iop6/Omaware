@@ -1246,7 +1246,7 @@ ColumnLayout {
                                 },
                                 {
                                     label: "Video adapter",
-                                    value: panel.value("videoModel")
+                                    value: panel.value("videoModel") + (panel.info.videoResolution ? " · " + panel.info.videoResolution.replace("x", "×") : "")
                                 },
                                 {
                                     label: "Video memory",

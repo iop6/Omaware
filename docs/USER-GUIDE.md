@@ -111,7 +111,7 @@ Selecting a running VM opens its screen in the **Console** tab.
 - **Fullscreen** gives the whole window to the VM. Move the mouse to the top edge to show the toolbar. Esc leaves fullscreen once input is released.
 - The **tools menu** has focus view, detaching the console into its own window (close that window to dock it again), **Send keys** (for example Ctrl+Alt+Delete), **Display size** requests and connection controls.
 - **Clipboard:** off by default. Choose to share text **To guest** or **Both directions**. This needs the clipboard channel enabled in the VM's hardware and `spice-vdagent` running inside the guest. Text is limited to 1 MiB.
-- Resizing the VM's display to fit the window depends on the guest's display driver.
+- Resizing the VM's display to fit the window depends on the guest's display driver. Windows has no driver for QEMU's display adapters and keeps the size the VM booted with; set that size under **Details → Hardware → Edit hardware → Integration**. New Windows VMs start at 1920×1080.
 
 ## Details: overview, hardware and networks
 
@@ -124,7 +124,7 @@ Values can be selected and copied.
 
 ## Changing hardware
 
-**Details → Hardware → Edit hardware** changes processors, memory, CPU mode, boot order, the installation ISO and the clipboard channel. **Add disk** creates an extra disk; detaching a disk keeps its file. Network adapters are edited under **Details → Networks**.
+**Details → Hardware → Edit hardware** changes processors, memory, CPU mode, boot order, the installation ISO, the clipboard channel and the screen size the VM boots with. **Add disk** creates an extra disk; detaching a disk keeps its file. Network adapters are edited under **Details → Networks**.
 
 Changes to a **running** VM are saved for its next start; it keeps its current hardware until then. A banner lists each pending change with its old and new value:
 

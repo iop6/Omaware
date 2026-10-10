@@ -1332,11 +1332,11 @@ private slots:
 
     void hardwareAndPendingChanges() {
         const QString xml =
-                R"(<domain type='kvm'><name>fixture</name><uuid>87ba849e-e633-4ab2-b13c-25ba3c071912</uuid><memory unit='MiB'>512</memory><currentMemory unit='MiB'>512</currentMemory><vcpu>1</vcpu><os><type arch='x86_64'>hvm</type><boot dev='hd'/></os><devices><disk type='file' device='disk'><driver name='qemu' type='qcow2'/><source file='/untouched/system.qcow2'/><target dev='vda' bus='virtio'/><boot order='1'/></disk><interface type='user'><mac address='52:54:00:11:22:33'/><model type='virtio'/></interface></devices></domain>)";
+                R"(<domain type='kvm'><name>fixture</name><uuid>87ba849e-e633-4ab2-b13c-25ba3c071912</uuid><memory unit='MiB'>512</memory><currentMemory unit='MiB'>512</currentMemory><vcpu>1</vcpu><os><type arch='x86_64'>hvm</type><boot dev='hd'/></os><devices><disk type='file' device='disk'><driver name='qemu' type='qcow2'/><source file='/untouched/system.qcow2'/><target dev='vda' bus='virtio'/><boot order='1'/></disk><interface type='user'><mac address='52:54:00:11:22:33'/><model type='virtio'/></interface><video><model type='vga'/></video></devices></domain>)";
         QString error;
         auto changed = Configuration::hardware(xml,
                 {{"cpus", 2}, {"memoryMiB", 1024}, {"cpuMode", "host-model"}, {"boot", "cdrom,hd"},
-                        {"clipboard", true}},
+                        {"clipboard", true}, {"resolution", "1920x1080"}},
                 error);
         QVERIFY2(error.isEmpty(), qPrintable(error));
         QVERIFY(changed.contains("/untouched/system.qcow2"));
@@ -1344,7 +1344,8 @@ private slots:
         QCOMPARE(info["vcpus"].toInt(), 2);
         QCOMPARE(info["memoryMiB"].toInt(), 1024);
         QVERIFY(info["clipboardConfigured"].toBool());
-        QCOMPARE(Configuration::changes(xml, changed).size(), 4);
+        QCOMPARE(info["videoResolution"].toString(), QString("1920x1080"));
+        QCOMPARE(Configuration::changes(xml, changed).size(), 5);
         auto discarded = Configuration::revert(xml, changed, "memory", error);
         QCOMPARE(DomainConfig::describe(discarded, error)["memoryMiB"].toInt(), 512);
         QCOMPARE(DomainConfig::describe(discarded, error)["vcpus"].toInt(), 2);
@@ -1352,6 +1353,22 @@ private slots:
         QVERIFY(bootRestored.contains("order=\"1\""));
         auto invalid = Configuration::hardware(xml, {{"cpus", 0}}, error);
         QVERIFY(invalid.isEmpty());
+        error.clear();
+        // Screen size: discarding restores the adapter, clearing removes the preference, odd values are refused.
+        auto originalDisplay = Configuration::revert(xml, changed, "display", error);
+        QVERIFY(DomainConfig::describe(originalDisplay, error)["videoResolution"].toString().isEmpty());
+        QCOMPARE(Configuration::changes(xml, originalDisplay).size(), 4);
+        auto cleared = Configuration::hardware(changed, {{"resolution", ""}}, error);
+        QVERIFY(DomainConfig::describe(cleared, error)["videoResolution"].toString().isEmpty());
+        QVERIFY(Configuration::hardware(xml, {{"resolution", "1920×1080"}}, error).isEmpty());
+        QVERIFY(error.contains("WIDTHxHEIGHT"));
+        error.clear();
+        QVERIFY(Configuration::hardware(xml, {{"resolution", "100x100"}}, error).isEmpty());
+        error.clear();
+        QString headless = xml;
+        headless.remove("<video><model type='vga'/></video>");
+        QVERIFY(Configuration::hardware(headless, {{"resolution", "1920x1080"}}, error).isEmpty());
+        QVERIFY(error.contains("display adapter"));
         error.clear();
         auto advanced = xml;
         advanced.replace("<vcpu>", "<cputune/><vcpu>");
