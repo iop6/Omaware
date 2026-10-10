@@ -1,5 +1,7 @@
 # Changelog
 
+## 1.12.0 (unreleased)
+
 ## 1.11.0 (2026-10-09)
 
 - Starting a VM whose network is stopped (after a reboot, for example) now starts the network first, with the same administrator prompt as **Start** in Networks, instead of failing with libvirt's "Unable to restore from managed state … Maybe the file is corrupted?" or a bridge error. Networks made outside OmaWare, and bridges no network defines, are reported by name instead. This applies to VMs started from the sidebar, the map, **Resume all**, a restart, an unattended setup and AI agents.
