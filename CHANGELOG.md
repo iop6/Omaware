@@ -3,6 +3,7 @@
 ## 1.12.0 (unreleased)
 
 - Windows VMs no longer get stuck at a 1280×800 screen. Windows has no driver for QEMU's display adapters and keeps the size the firmware booted with, so new Windows VMs now tell the firmware to start at 1920×1080, and **Edit hardware → Integration** sets the boot screen size of any VM (applied at its next start, listed in Pending changes). Installers whose windows were taller than the screen, such as FLARE-VM's package selection, now fit.
+- Copy and paste: new VMs come with the clipboard channel already in place (it stays off until you turn it on in the console's Clipboard menu), and the menu has a new **Type clipboard into guest** button that types the text as key presses, so pasting a command or password works in any guest, even one without spice-vdagent.
 
 ## 1.11.0 (2026-10-09)
 

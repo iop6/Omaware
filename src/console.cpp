@@ -158,6 +158,17 @@ void VncWorker::clipboard(QString text) {
     }
 }
 
+// Types text as key presses, which needs nothing installed in the guest (unlike the clipboard channel).
+void VncWorker::typeText(QString text) {
+    for (uint cp : text.toUcs4()) {
+        quint32 symbol = cp == '\n' ? XK_Return : cp == '\t' ? XK_Tab : cp < 0x20 || cp == 0x7f ? 0 : cp <= 0xff ? cp : 0x01000000 | cp;
+        if (!symbol) continue;
+        key(symbol, true);
+        key(symbol, false);
+        if (!client_) return;
+    }
+}
+
 void VncWorker::resizeGuest(int width, int height) {
     if (!client_ || width < 640 || height < 480 || width > 3840 || height > 2160) return;
     if (!SupportsClient2Server(client_, rfbSetDesktopSize)) {
@@ -228,6 +239,17 @@ void Console::pasteClipboard() {
     if (!connected_ || clipboardMode_ == "off") return;
     auto text = QGuiApplication::clipboard()->text();
     QMetaObject::invokeMethod(worker_, [this, text] { worker_->clipboard(text); });
+}
+
+void Console::typeClipboard() {
+    if (!connected_) return;
+    auto text = QGuiApplication::clipboard()->text();
+    if (text.size() > 20000) {
+        status_ = "That text is too long to type into the guest (limit 20,000 characters).";
+        emit statusChanged();
+        return;
+    }
+    QMetaObject::invokeMethod(worker_, [this, text] { worker_->typeText(text); });
 }
 
 void Console::resizeGuest(int width, int height) {

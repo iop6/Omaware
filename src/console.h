@@ -27,6 +27,7 @@ public slots:
     void key(quint32 symbol, bool down);
     void pointer(int x, int y, int buttons);
     void clipboard(QString text);
+    void typeText(QString text);
     void resizeGuest(int width, int height);
 signals:
     void frame(FrameHandle mailbox, quint64 generation);
@@ -76,6 +77,7 @@ public:
     Q_INVOKABLE void releaseInput();
     Q_INVOKABLE void sendSpecial(QString key);
     Q_INVOKABLE void pasteClipboard();
+    Q_INVOKABLE void typeClipboard();
     Q_INVOKABLE void resizeGuest(int width, int height);
     Q_INVOKABLE QString checkpointPreview() const;
 

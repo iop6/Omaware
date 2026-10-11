@@ -298,6 +298,24 @@ Item {
                     clipboardPopup.close();
                 }
             }
+            AppButton {
+                objectName: "consoleTypeClipboard"
+                text: "Type clipboard into guest"
+                iconName: "keyboard"
+                Layout.fillWidth: true
+                enabled: toolbar.guestDisplay.connected
+                onClicked: {
+                    toolbar.guestDisplay.typeClipboard();
+                    clipboardPopup.close();
+                }
+            }
+            Label {
+                text: "Types the text as key presses. Works in any guest, even without spice-vdagent, for single lines like commands or passwords."
+                Layout.fillWidth: true
+                wrapMode: Text.WordWrap
+                color: theme.colors.muted
+                font.pixelSize: Math.round(11 * theme.textScale)
+            }
         }
     }
     AppDialog {

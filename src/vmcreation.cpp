@@ -440,6 +440,17 @@ void VmWorker::createVm(const Request &request) {
         resolution.setAttribute("x", "1920");
         resolution.setAttribute("y", "1080");
     }
+    // Clipboard sharing is ready from the first start: it only needs spice-vdagent in the guest, and the console's
+    // clipboard menu stays off until the user turns it on.
+    {
+        auto agent = doc.createElement("channel");
+        agent.setAttribute("type", "qemu-vdagent");
+        devices.appendChild(agent);
+        auto target = child(doc, agent, "target");
+        target.setAttribute("type", "virtio");
+        target.setAttribute("name", "com.redhat.spice.0");
+        child(doc, child(doc, agent, "source"), "clipboard").setAttribute("copypaste", "yes");
+    }
     if (!importing) {
         // virt-install's first stage normally stops at reboot so its own installer can swap the definition.
         // OmaWare keeps the media attached instead and lets the user eject it.
