@@ -9,6 +9,7 @@ Item {
     required property var guestDisplay
     required property var history
     property bool showLabels: false
+    signal clipboardSetupRequested
     readonly property bool keyboardNavigation: {
         for (let i = 0; i < actions.children.length; ++i)
             if (actions.children[i].visualFocus === true)
@@ -248,10 +249,21 @@ Item {
             }
             Label {
                 visible: !toolbar.clipboardConfigured
-                text: "Turn it on in Details → Hardware, restart the VM, and install spice-vdagent in it."
+                text: "To guest and Both directions need the clipboard channel on this VM, a full restart, and spice-vdagent in the guest."
                 Layout.fillWidth: true
                 wrapMode: Text.WordWrap
                 color: theme.colors.muted
+            }
+            AppButton {
+                objectName: "clipboardSetup"
+                visible: !toolbar.clipboardConfigured
+                text: "Set up the clipboard channel…"
+                iconName: "clipboard"
+                Layout.fillWidth: true
+                onClicked: {
+                    clipboardPopup.close();
+                    toolbar.clipboardSetupRequested();
+                }
             }
             Label {
                 visible: toolbar.clipboardConfigured

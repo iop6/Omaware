@@ -2765,6 +2765,12 @@ ApplicationWindow {
     ConsoleToolbar {
         id: consoleToolbar
         objectName: "consoleTools"
+        onClipboardSetupRequested: {
+            if (backend.details.uuid === root.selectedUuid) {
+                hardwareDialog.openFor(backend.details);
+                hardwareDialog.configurationPage = 2;
+            }
+        }
         parent: root.consoleFullScreen ? fullscreenBar : root.consoleDetached ? detachedTools : embeddedTools
         anchors.right: parent.right
         anchors.rightMargin: root.consoleFullScreen ? 8 : 0
